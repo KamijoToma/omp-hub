@@ -193,6 +193,7 @@ async function main(): Promise<void> {
 					name: frame.name,
 					prompt: frame.prompt,
 					profile: frame.profile,
+					sessionFile: frame.sessionFile,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})

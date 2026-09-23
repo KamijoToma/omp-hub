@@ -2,7 +2,28 @@
 
 Headless remote-control suite for [omp](https://github.com/can1357/oh-my-pi) agent sessions.
 
-Three components:
+## Preview
+
+**Manage machines and sessions in one place.** Pick a machine and profile, start or resume work,
+and copy full or view-only links.
+
+![Hub dashboard with a connected machine, session controls, and recent history](docs/screenshots/dashboard.png)
+
+**Drive the live session from a browser.** Follow the transcript, expand tool output, and send prompts.
+
+![Live session showing a greeting CLI and its expanded bash result](docs/screenshots/live-session.png)
+
+<details>
+<summary>Mobile session view</summary>
+
+<img src="docs/screenshots/mobile-session.png" alt="Mobile session with transcript, tool result, and prompt composer" width="390">
+
+</details>
+
+These captures use an isolated demo machine and a sample transcript; no provider request or
+personal session history was used.
+
+## Components
 
 | Package | Runs where | Purpose |
 |---|---|---|
