@@ -8,8 +8,19 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import type * as Sdk from "@oh-my-pi/pi-coding-agent";
 import { errorMessage } from "./log";
-import { listProfiles } from "./profiles";
+import { defaultProfilesRoot, listProfiles } from "./profiles";
+
+/**
+ * The daemon's single, deliberately lazy SDK touchpoint: a broken install or
+ * native binding must surface as a normal `cmd-result` error (protocol §2), not
+ * kill the daemon at startup — and daemons on machines that never answer a
+ * history command must not load it at all. Static imports cannot do either.
+ */
+async function loadSdk(): Promise<typeof Sdk> {
+	return await import("@oh-my-pi/pi-coding-agent");
+}
 
 /** One browsable child directory of the listing root. */
 export interface DirEntry {
@@ -66,6 +77,8 @@ export interface SessionListEntry {
 	status?: string;
 	/** First user message, single line, truncated. */
 	firstMessage: string;
+	/** Named omp profile the session belongs to; absent means the default profile. */
+	profile?: string;
 }
 
 /** `list-sessions` payload: most recently modified first. */
@@ -82,6 +95,12 @@ export interface MachineCmdFrame {
 	path?: string;
 	/** `list-sessions` project filter; empty or missing lists every project. */
 	cwd?: string;
+	/**
+	 * `list-sessions` across every omp profile: the default profile plus each
+	 * named profile merge into one recency-sorted listing whose entries carry
+	 * `profile`; the 200 cap applies once. `cwd` is ignored in this mode.
+	 */
+	allProfiles?: boolean;
 }
 
 export type MachineCmdResult =
@@ -142,15 +161,30 @@ export interface ListSessionsOptions {
 	maxEntries?: number;
 }
 
+/** Wire shape for one scanned session, optionally stamped with its owning profile. */
+function toEntry(entry: Sdk.SessionInfo, profile?: string): SessionListEntry {
+	return {
+		path: entry.path,
+		id: entry.id,
+		cwd: entry.cwd,
+		...(entry.title ? { title: entry.title } : {}),
+		created: entry.created.toISOString(),
+		modified: entry.modified.toISOString(),
+		messageCount: entry.messageCount,
+		...(entry.assistantTurns === undefined ? {} : { assistantTurns: entry.assistantTurns }),
+		...(entry.status === undefined ? {} : { status: entry.status }),
+		firstMessage: firstLine(entry.firstMessage, FIRST_MESSAGE_CHARS),
+		...(profile === undefined ? {} : { profile }),
+	};
+}
+
 /**
  * `list-sessions`: recent sessions known to this machine's omp install, most
- * recently modified first. The SDK import is lazy — the daemon never touches it
- * otherwise, so native-binding or install failures surface as a normal
- * `cmd-result` error instead of a dead daemon.
+ * recently modified first.
  */
 export async function listSessions(options: ListSessionsOptions = {}): Promise<SessionListing> {
 	const maxEntries = options.maxEntries ?? MAX_SESSION_ENTRIES;
-	const { SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+	const { SessionManager } = await loadSdk();
 	const found = options.cwd
 		? await SessionManager.listForPicker(options.cwd, options.sessionDir)
 		: await SessionManager.listAllForPicker();
@@ -158,20 +192,62 @@ export async function listSessions(options: ListSessionsOptions = {}): Promise<S
 	const sorted = [...found].sort((a, b) => b.modified.getTime() - a.modified.getTime());
 	const truncated = sorted.length > maxEntries;
 	return {
-		sessions: sorted.slice(0, maxEntries).map(entry => ({
-			path: entry.path,
-			id: entry.id,
-			cwd: entry.cwd,
-			...(entry.title ? { title: entry.title } : {}),
-			created: entry.created.toISOString(),
-			modified: entry.modified.toISOString(),
-			messageCount: entry.messageCount,
-			...(entry.assistantTurns === undefined ? {} : { assistantTurns: entry.assistantTurns }),
-			...(entry.status === undefined ? {} : { status: entry.status }),
-			firstMessage: firstLine(entry.firstMessage, FIRST_MESSAGE_CHARS),
-		})),
+		sessions: sorted.slice(0, maxEntries).map(entry => toEntry(entry)),
 		truncated,
 	};
+}
+
+export interface ListAllProfilesOptions {
+	/** Profiles root override (tests); defaults to `~/$PI_CONFIG_DIR|.omp/profiles`. */
+	profilesRoot?: string;
+	/**
+	 * Default-profile sessions root override (tests); unset uses the SDK's
+	 * ambient resolution (`PI_CODING_AGENT_DIR`/XDG honored) via
+	 * `SessionManager.listAllForPicker`.
+	 */
+	defaultSessionsRoot?: string;
+	maxEntries?: number;
+}
+
+/**
+ * `list-sessions` with `allProfiles`: the default profile's history plus every
+ * named profile's (`<profilesRoot>/<name>/agent/sessions` — the same root the
+ * supervisor validates starts against), merged most-recent-first and capped
+ * once. Named-profile entries carry `profile`; the default profile's do not
+ * (absent ⇒ default, like `start.profile`). Empty-stub filtering matches the
+ * picker listing. When the daemon itself runs under a named profile, its
+ * ambient "default" scan resolves to that profile's directory, so named scans
+ * claim their paths first and the ambient scan only adds unseen files — rows
+ * keep the profile that actually owns them instead of duplicating.
+ */
+export async function listAllProfileSessions(options: ListAllProfilesOptions = {}): Promise<SessionListing> {
+	const maxEntries = options.maxEntries ?? MAX_SESSION_ENTRIES;
+	const { SessionManager, FileSessionStorage, listAllSessions, filterSessionsForPicker } = await loadSdk();
+	const storage = new FileSessionStorage();
+	const root = options.profilesRoot ?? defaultProfilesRoot();
+	const defaultFound = options.defaultSessionsRoot
+		? filterSessionsForPicker(await listAllSessions(storage, options.defaultSessionsRoot), new Set())
+		: await SessionManager.listAllForPicker(storage);
+	const seen = new Set<string>();
+	const merged: SessionListEntry[] = [];
+	await Promise.all(
+		(await listProfiles(root)).map(async profile => {
+			const sessionsDir = path.join(root, profile, "agent", "sessions");
+			for (const entry of filterSessionsForPicker(await listAllSessions(storage, sessionsDir), new Set())) {
+				if (seen.has(entry.path)) continue;
+				seen.add(entry.path);
+				merged.push(toEntry(entry, profile));
+			}
+		}),
+	);
+	for (const entry of defaultFound) {
+		if (seen.has(entry.path)) continue;
+		seen.add(entry.path);
+		merged.push(toEntry(entry));
+	}
+	merged.sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+	const truncated = merged.length > maxEntries;
+	return { sessions: merged.slice(0, maxEntries), truncated };
 }
 
 /**
@@ -205,7 +281,8 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 	}
 	if (frame.cmd === "list-sessions") {
 		try {
-			return { ok: true, data: await listSessions({ cwd: frame.cwd }) };
+			const data = frame.allProfiles ? await listAllProfileSessions() : await listSessions({ cwd: frame.cwd });
+			return { ok: true, data };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
 		}

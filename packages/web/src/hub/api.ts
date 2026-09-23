@@ -553,6 +553,8 @@ export interface MachineSession {
 	assistantTurns?: number;
 	status?: string;
 	firstMessage: string;
+	/** Named omp profile the session belongs to; absent means the default profile. */
+	profile?: string;
 }
 
 /** Machine session history behind the resume picker (protocol §2 "Machine commands"). */
@@ -562,14 +564,13 @@ export interface SessionListing {
 }
 
 /**
- * Recent omp sessions on an agent machine, most recently modified first;
- * omit `cwd` to list every project. Status codes mirror
- * {@link listMachineDirectories}.
+ * Recent omp sessions on an agent machine across every profile, most recently
+ * modified first; entries from named profiles carry {@link MachineSession.profile}.
+ * Status codes mirror {@link listMachineDirectories}.
  */
-export async function getMachineSessions(machineId: string, cwd?: string): Promise<SessionListing> {
-	const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+export async function getMachineSessions(machineId: string): Promise<SessionListing> {
 	const reply = await api<{ ok: true; listing: SessionListing }>(
-		`/api/machines/${encodeURIComponent(machineId)}/sessions${query}`,
+		`/api/machines/${encodeURIComponent(machineId)}/sessions`,
 	);
 	return reply.listing;
 }

@@ -149,6 +149,8 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 			entry =>
 				(entry.title ?? "").toLowerCase().includes(needle) ||
 				entry.cwd.toLowerCase().includes(needle) ||
+				// Absent profile means the default profile, so it stays filterable.
+				(entry.profile ?? "default").toLowerCase().includes(needle) ||
 				entry.firstMessage.toLowerCase().includes(needle),
 		);
 	}, [history, historyFilter]);
@@ -163,6 +165,8 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				machineId,
 				cwd: entry.cwd,
 				name: entry.title || undefined,
+				// The resumed session must run under the profile that owns it.
+				profile: entry.profile,
 				sessionFile: entry.path,
 			});
 			setBusy(false);
@@ -480,7 +484,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 								type="text"
 								value={historyFilter}
 								onChange={e => setHistoryFilter(e.target.value)}
-								placeholder="filter by title, directory, or first message"
+								placeholder="filter by title, directory, profile, or first message"
 								spellCheck={false}
 								autoComplete="off"
 							/>
@@ -509,6 +513,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 												<span className="hb-mono" title={entry.cwd}>
 													{entry.cwd}
 												</span>
+												{entry.profile && (
+													<span className="hb-mono" title="omp profile">
+														{entry.profile}
+													</span>
+												)}
 												<span className="hb-mono">{relTime(Date.parse(entry.modified))}</span>
 												<span className="hb-mono">{entry.messageCount} msgs</span>
 											</span>

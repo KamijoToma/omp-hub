@@ -77,8 +77,9 @@ Semantics:
   The agent refuses a `start` whose `sessionFile` already belongs to a starting/live child
   on that machine — session files carry no cross-process lock, so two live writers would
   corrupt the transcript — and reports `session-error` `"session file already in use by
-  session <id>"`. A session that has exited releases the file for further resumes.
->>>>>>> feat/resume-history-sessions
+  session <id>"`. A session that has exited releases the file for further resumes. A file
+  that lives under a named profile's session store should be resumed with the same
+  `start.profile`, so config and credentials resolve from the profile that owns it.
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
@@ -215,7 +216,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 ```ts
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
 { t: "cmd", reqId: string, cmd: "list-profiles" }
-{ t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string }  // cwd omitted ⇒ every project
+{ t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -238,6 +239,11 @@ interface DirListing {
 - `list-sessions` → `data: SessionListing`: resumable omp sessions known to the machine, most
   recently modified first. Reads the machine's omp session store (SDK picker listing), so empty
   0-turn stubs are excluded. `cwd` scopes the listing to the project that directory belongs to.
+  `allProfiles: true` merges the default profile with every named omp profile
+  (`~/.omp/profiles/<name>/agent/sessions`, the root `start.profile` validates against) into one
+  recency-sorted listing capped once; `cwd` is ignored in that mode, and named-profile entries
+  carry `profile` (absent ⇒ default profile). The hub always requests `allProfiles` so the resume
+  picker sees — and can restart under — the profile that owns each session.
   ```ts
 interface SessionListing {
   sessions: {
@@ -251,6 +257,7 @@ interface SessionListing {
     assistantTurns?: number;   // persisted assistant turns; 0 = agent never replied
     status?: string;           // complete | interrupted | aborted | error | pending | unknown
     firstMessage: string;      // single-line preview
+    profile?: string;          // owning omp profile in allProfiles mode; absent ⇒ default
   }[];
   truncated: boolean;          // sessions hit the 200 cap
 }
@@ -300,7 +307,7 @@ interface MachineRecord {
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
 | `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to the machine's local omp stats dashboard; status/content-type/body replayed verbatim. 404 unknown machine, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
-| `GET /api/machines/:machineId/sessions?cwd=` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `cwd` omitted ⇒ every project); error set as for `/fs` |
+| `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
