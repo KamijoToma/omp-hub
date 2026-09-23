@@ -2,6 +2,7 @@ import { LogOut, PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import type { GuestSnapshot } from "../../lib/client";
 import { fmtPercent, fmtTokens, shortenPath } from "../../lib/format";
+import { activeModelRole } from "../../lib/model-role";
 import { contextPercent } from "../../lib/usage";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -16,6 +17,11 @@ export interface HeaderBarProps {
 	 * the chip stays display-only.
 	 */
 	onOpenModel?(): void;
+	/**
+	 * Hub-only (`/s/<id>`): open the thinking-level dialog. Left unset on
+	 * `/join`, where the chip stays display-only.
+	 */
+	onOpenThinking?(): void;
 	/**
 	 * Hub-only (`/s/<id>`): open the context breakdown. Left unset on `/join`,
 	 * where the gauge stays display-only.
@@ -42,9 +48,11 @@ export function HeaderBar({
 	onToggleRail,
 	onLeave,
 	onOpenModel,
+	onOpenThinking,
 	onOpenContext,
 }: HeaderBarProps): ReactNode {
 	const { header, state, phase, readOnly } = snapshot;
+	const activeRole = activeModelRole(snapshot.entries, state?.model);
 	const title = header?.title ?? state?.sessionName ?? "session";
 	const usage = state?.contextUsage;
 	const pct = usage ? (usage.percent ?? contextPercent(usage.tokens, usage.contextWindow)) : null;
@@ -85,7 +93,24 @@ export function HeaderBar({
 					) : (
 						<span className="sh-chip sh-chip-meta">{state.model.name}</span>
 					))}
-				{state?.thinkingLevel && <span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>}
+				{activeRole !== null && activeRole !== "default" && (
+					<span className="sh-chip sh-chip-meta" title={`active model role @${activeRole}`}>
+						@{activeRole}
+					</span>
+				)}
+				{state?.thinkingLevel &&
+					(onOpenThinking ? (
+						<button
+							type="button"
+							className="sh-chip sh-chip-meta sh-chip-btn"
+							onClick={onOpenThinking}
+							title={`thinking · ${state.thinkingLevel} — switch level`}
+						>
+							{state.thinkingLevel}
+						</button>
+					) : (
+						<span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>
+					))}
 				{onOpenContext ? (
 					pct != null ? (
 						<button
