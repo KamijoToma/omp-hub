@@ -9,7 +9,7 @@ Single Bun process, single port. Four logical surfaces:
 | Surface | Route | Auth | Purpose |
 |---|---|---|---|
 | collab relay | `GET /r/<roomId>?role=host\|guest` (WS upgrade) | none (roomId+key is the capability, upstream model) | content-blind frame routing between session-hosts and guests |
-| agent channel | `GET /agent?token=…` (WS upgrade) | shared token | wrapper registration, heartbeat, command dispatch, session reports |
+| agent channel | `GET /agent` (WS upgrade) | shared `Authorization: Bearer` token | wrapper registration, heartbeat, command dispatch, session reports |
 | HTTP API | `/api/*` | `Authorization: Bearer <token>` | machine/session registry for the web UI |
 | static | `/*` | none (UI itself prompts for token) | serves `packages/web` dist with SPA fallback |
 
@@ -121,17 +121,23 @@ Hub additions:
 
 ## Security model (MVP)
 
-- **Single shared token** (`HUB_TOKEN` env) gates the agent channel and the API. Empty token ⇒
-  hub runs open with a loud startup warning (dev only).
+- **Single shared token** (`HUB_TOKEN` env) gates the agent channel and the API. Startup
+  refuses an empty token, even on loopback.
+- The hub defaults to loopback (`HOST=127.0.0.1`); direct remote access requires an explicit
+  `HOST` override, TLS, and a trusted ingress.
 - **The hub holds room keys.** Sessions mint their links on the wrapper and upload them; the web
   UI distributes the *full* (write) link to any authenticated user. E2E confidentiality ends at
   the hub: it is a trusted party. Per-user ACL, view-only distribution, and hub-proxied prompts
   (no write-token distribution) are post-MVP (milestones M6).
-- Relay endpoints stay unauthenticated by design (upstream model): a roomId is 128-bit random,
-  payloads are AES-GCM sealed; a stranger attaching with no key sees ciphertext and dies on
-  decryption failure.
-- Token never appears in URLs except the agent-channel `?token=` (server-to-server WS); the
-  browser uses the `Authorization` header.
+- The authenticated machine history endpoint lists recent sessions from the daemon's omp store
+  across projects, including paths, titles and first-message excerpts; all token holders can
+  browse and resume them. Use a dedicated OS account to isolate private history.
+- Relay endpoints stay unauthenticated for upstream wire compatibility; room IDs are random and
+  payloads are AES-GCM sealed. There is no host-identity proof or global room quota: a viewer
+  with a room link can claim the host slot after a disconnect, and an unauthenticated client can
+  create rooms until resources are exhausted. Restrict relay ingress to trusted networks.
+- The token travels in an `Authorization: Bearer` header on both the API and agent channel,
+  never in a URL. Restrict access to reverse-proxy logs and stored browser tokens.
 
 ## TLS / LAN notes (hard constraints from upstream)
 

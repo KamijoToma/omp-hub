@@ -58,7 +58,7 @@ interface FakeAgent {
 }
 
 async function connectAgent(machineId: string, name: string): Promise<FakeAgent> {
-	const ws = new WebSocket(`${main.ws}/agent?token=t`);
+	const ws = new WebSocket(`${main.ws}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
 	ws.addEventListener("message", (event: MessageEvent) => {
@@ -202,7 +202,7 @@ describe("usage relay", () => {
 		try {
 			const http = hub.url;
 			const ws = hub.url.replace(/^http/, "ws");
-			const socket = new WebSocket(`${ws}/agent?token=t`);
+			const socket = new WebSocket(`${ws}/agent`, { headers: { authorization: "Bearer t" } });
 			await new Promise<void>((resolve, reject) => {
 				socket.addEventListener("open", () => resolve(), { once: true });
 				socket.addEventListener("error", () => reject(new Error("socket error")), { once: true });
