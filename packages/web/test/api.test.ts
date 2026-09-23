@@ -17,6 +17,7 @@ import {
 	postGoal,
 	postHandoff,
 	postLoop,
+	postRename,
 	postRetry,
 	postShake,
 	setModel,
@@ -374,6 +375,32 @@ describe("hub api", () => {
 		expect(err).toBeInstanceOf(HubApiError);
 		expect((err as HubApiError).status).toBe(409);
 		expect((err as HubApiError).message).toBe("Wait for the current response to finish or abort it before retrying.");
+	});
+
+	test("postRename posts the target name and unwraps the applied one", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, name: "better name", session: { id: "s1", name: "better name" } }));
+
+		const applied = await postRename("s1", "  better name  ");
+
+		expect(applied).toBe("better name");
+		expect(calls[0].url).toBe("/api/sessions/s1/rename");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ name: "  better name  " });
+	});
+
+	test("postRename surfaces validation errors as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "name is required" }, 400));
+
+		const err = await postRename("s1", "   ").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(400);
+		expect((err as HubApiError).message).toBe("name is required");
 	});
 
 	test("postLoop posts the action with limit and condition and unwraps the status", async () => {

@@ -36,6 +36,7 @@ interface Trace {
 	handoffs: (string | undefined)[];
 	clears: number;
 	news: number;
+	renames: string[];
 	resumes: string[];
 	retries: number;
 	extendedContext: (boolean | undefined)[];
@@ -54,6 +55,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		handoffs: [],
 		clears: 0,
 		news: 0,
+		renames: [],
 		resumes: [],
 		retries: 0,
 		extendedContext: [],
@@ -79,6 +81,9 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			startNewSession: () => {
 				trace.news += 1;
+			},
+			renameSession: name => {
+				trace.renames.push(name);
 			},
 			resumeSession: query => {
 				trace.resumes.push(query);
@@ -128,6 +133,7 @@ describe("composer routing", () => {
 			handoffs: [],
 			clears: 0,
 			news: 0,
+			renames: [],
 			resumes: [],
 			retries: 0,
 			extendedContext: [],
@@ -158,6 +164,7 @@ describe("composer routing", () => {
 			"handoff",
 			"clear",
 			"new",
+			"rename",
 			"sessions",
 			"resume",
 			"retry",
@@ -187,6 +194,7 @@ describe("composer routing", () => {
 			{ text: "/handoff", check: t => expect(t.handoffs).toEqual([undefined]) },
 			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
 			{ text: "/new", check: t => expect(t.news).toBe(1) },
+			{ text: "/rename Focus work", check: t => expect(t.renames).toEqual(["Focus work"]) },
 			{ text: "/sessions", check: t => expect(t.modals).toEqual(["sessions"]) },
 			{ text: "/resume", check: t => expect(t.resumes).toEqual([""]) },
 			{ text: "/resume 9f2c", check: t => expect(t.resumes).toEqual(["9f2c"]) },
@@ -267,6 +275,23 @@ describe("composer routing", () => {
 		const padded = makeContext();
 		expect(routeComposerText("/handoff   ", padded.ctx)).toBe("ran");
 		expect(padded.trace.handoffs).toEqual([undefined]);
+	});
+
+	test("rename forwards the new name and keeps inner whitespace", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/rename Release 1.0 — hotfix train", ctx)).toBe("ran");
+		expect(trace.renames).toEqual(["Release 1.0 — hotfix train"]);
+		expect(trace.notices).toEqual([]);
+	});
+
+	test("bare rename is a usage notice, never a dispatch", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/rename", ctx)).toBe("ran");
+		expect(routeComposerText("/rename   ", ctx)).toBe("ran");
+		expect(trace.renames).toEqual([]);
+		expect(trace.notices).toEqual([{ level: "warning", message: "usage: /rename <new name>" }, { level: "warning", message: "usage: /rename <new name>" }]);
 	});
 
 	test("extended-context accepts on/off and passes the rest through as a toggle", () => {
