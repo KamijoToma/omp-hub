@@ -20,6 +20,8 @@ export interface SessionRecord {
 	machineName: string;
 	cwd: string;
 	name: string;
+	/** Named omp profile the session runs under; absent means the default profile. */
+	profile?: string;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -45,6 +47,8 @@ export interface StartSessionRequest {
 	cwd: string;
 	name?: string;
 	prompt?: string;
+	/** Named omp profile; omitted means the default profile. */
+	profile?: string;
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -185,6 +189,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	const body: StartSessionRequest = { machineId: input.machineId, cwd: input.cwd };
 	if (input.name) body.name = input.name;
 	if (input.prompt) body.prompt = input.prompt;
+	if (input.profile) body.profile = input.profile;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -326,6 +331,19 @@ export async function listMachineDirectories(machineId: string, dirPath?: string
 		`/api/machines/${encodeURIComponent(machineId)}/fs${query}`,
 	);
 	return reply.listing;
+}
+
+/**
+ * Named omp profiles that exist on a machine, for the start-form picker; the
+ * implicit `"default"` profile is never listed and is the client's own empty
+ * option. The hub answers 404 (unknown machine), 502 (agent offline), 504 (cmd
+ * timed out), 400 (agent-reported error) — all {@link HubApiError}.
+ */
+export async function listMachineProfiles(machineId: string): Promise<string[]> {
+	const reply = await api<{ ok: true; profiles: string[] }>(
+		`/api/machines/${encodeURIComponent(machineId)}/profiles`,
+	);
+	return reply.profiles;
 }
 
 /** Human-readable message for an unknown thrown value. */

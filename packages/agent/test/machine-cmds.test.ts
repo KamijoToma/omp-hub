@@ -89,7 +89,7 @@ test("handleMachineCmd answers list-dir and rejects unknown commands without thr
 	try {
 		const ok = await handleMachineCmd({ cmd: "list-dir", path: root });
 		expect(ok.ok).toBe(true);
-		if (ok.ok) expect(ok.data.entries.length).toBeGreaterThan(0);
+		if (ok.ok && "entries" in ok.data) expect(ok.data.entries.length).toBeGreaterThan(0);
 
 		const badPath = await handleMachineCmd({ cmd: "list-dir", path: path.join(root, "vanished") });
 		expect(badPath).toEqual({ ok: false, error: "no such directory" });
@@ -102,4 +102,13 @@ test("handleMachineCmd answers list-dir and rejects unknown commands without thr
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("handleMachineCmd answers list-profiles with a profile array", async () => {
+	// The machine's real profile root is content this suite cannot pin; the
+	// enumeration rules themselves are covered in profiles.test.ts. Here the
+	// contract is the wire shape: ok, and `profiles` is a list.
+	const result = await handleMachineCmd({ cmd: "list-profiles" });
+	expect(result.ok).toBe(true);
+	expect(result.ok && "profiles" in result.data && Array.isArray(result.data.profiles)).toBe(true);
 });

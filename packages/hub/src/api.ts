@@ -4,6 +4,7 @@
  */
 import { newCmdReqId, type AgentRegistry, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
+import { normalizeProfileName } from "./profiles";
 import type { SessionStore } from "./sessions";
 
 export interface ApiContext {
@@ -26,6 +27,7 @@ const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
 const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
+const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -71,6 +73,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const machineFs = MACHINE_FS_PATH_RE.exec(route);
 	if (machineFs && req.method === "GET") {
 		return listMachineFs(decodeURIComponent(machineFs[1]!), req, ctx);
+	}
+	const machineProfiles = MACHINE_PROFILES_PATH_RE.exec(route);
+	if (machineProfiles && req.method === "GET") {
+		return listMachineProfiles(decodeURIComponent(machineProfiles[1]!), ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -125,6 +131,15 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	const cwd = field(body, "cwd");
 	if (!cwd || cwd.trim() === "") return json({ error: "cwd is required" }, 400);
 
+	// Reject bad names before a record exists; whether the profile exists at all
+	// is machine-local knowledge, checked by the agent at spawn (§2).
+	let profile: string | undefined;
+	try {
+		profile = normalizeProfileName(field(body, "profile"));
+	} catch (err) {
+		return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+	}
+
 	const machine = ctx.agents.getMachine(machineId);
 	if (!machine) return json({ error: "machine not found" }, 404);
 	if (!machine.connected) return json({ error: "machine offline" }, 404);
@@ -134,6 +149,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		machineName: machine.name,
 		cwd,
 		name: field(body, "name"),
+		profile,
 	});
 	const prompt = field(body, "prompt");
 	const base = derivePublicBase(req, ctx.cfg);
@@ -143,6 +159,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		cwd: record.cwd,
 		name: record.name,
 		...(prompt === undefined ? {} : { prompt }),
+		...(profile === undefined ? {} : { profile }),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -183,6 +200,23 @@ async function listMachineFs(machineId: string, req: Request, ctx: ApiContext): 
 	});
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	return json({ ok: true, listing: result.data });
+}
+
+/**
+ * Named omp profiles on a machine for the start-form picker: forwards
+ * `list-profiles` to the connected agent (protocol §2 "Machine commands").
+ * 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for
+ * agent-reported errors.
+ */
+async function listMachineProfiles(machineId: string, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
+
+	const result = await ctx.agents.sendCmd(machineId, { reqId: newCmdReqId(), cmd: "list-profiles" });
+	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
+	const profiles = pick(result.data, "profiles");
+	return json({ ok: true, profiles: Array.isArray(profiles) ? profiles : [] });
 }
 
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {

@@ -179,6 +179,7 @@ async function main(): Promise<void> {
 					cwd: frame.cwd,
 					name: frame.name,
 					prompt: frame.prompt,
+					profile: frame.profile,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})

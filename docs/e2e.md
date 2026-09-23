@@ -26,6 +26,7 @@ provider DeepSeek via the shared `~/.omp` auth store.
 | 10 | Responsive: 390×844 home (single column, ≥40px targets) and session (transcript, badges, tool cards, drawer) render correctly; 1440×900 two-column home + full session chrome | ✅ (screenshots reviewed) |
 | 11 | Docker (podman): image builds (~52 s); container on `127.0.0.1:8480` serves health/API/web; host agent `docker-machine` connects; browser start → prompt `container-ok` streamed; stop → `exited` | ✅ |
 | 12 | Web slash commands: `/` palette (8 commands, filter, keyboard nav, mobile sheet); `/model` picker switched deepseek-flash → v4-flash → v4-pro live (header chip + transcript entries update via state broadcast); `/thinking` xhigh; `/collab` links modal; unknown `/frobnicator` → "host-only or unknown command — not sent", nothing reaches the agent; palette-run commands clear the composer; palette suppressed while a modal is open | ✅ |
+| 13 | **omp profile start**: `mkdir -p ~/.omp/profiles/<name>/agent`; home form shows an "omp profile" dropdown fed by `GET /api/machines/:id/profiles` (`list-profiles`); start with profile `<name>` → `sessionFile` lands under `~/.omp/profiles/<name>/agent/sessions/`, child env carries `OMP_PROFILE`/`PI_PROFILE` (checked via `/proc/<pid>/environ`), record + session list show the profile; unknown profile → record `failed` with `profile "<name>" not found on this machine`; `default` selection starts with no profile env even under an ambient `OMP_PROFILE` daemon | ✅ |
 
 ## Environment quirks observed (not product bugs)
 

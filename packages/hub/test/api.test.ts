@@ -14,6 +14,7 @@ interface SessionJson {
 	machineName: string;
 	cwd: string;
 	name: string;
+	profile?: string;
 	status: string;
 	startedAt: number;
 	exitedAt?: number;
@@ -256,6 +257,42 @@ describe("hub api", () => {
 		agent.ws.send(JSON.stringify({ t: "session-error", id: session.id, error: "spawn failed" }));
 		const failed = await waitForStatus(session.id, "failed");
 		expect(failed.error).toBe("spawn failed");
+	});
+
+	test("start.profile is forwarded to the agent and echoed on the record", async () => {
+		const { agent } = await connectAgent("m-prof", "prof-machine");
+
+		const session = await startSession("m-prof", "/srv/profiled", { profile: "work" });
+		expect(session.profile).toBe("work");
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect(start).toMatchObject({ id: session.id, profile: "work" });
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("profile \"default\" selects the implicit default: no profile on the wire or record", async () => {
+		const { agent } = await connectAgent("m-prof-def", "prof-def-machine");
+
+		const session = await startSession("m-prof-def", "/srv/defaulted", { profile: "default" });
+		expect(session.profile).toBeUndefined();
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect("profile" in start).toBe(false);
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("an invalid profile name is rejected with 400 before any record exists", async () => {
+		await connectAgent("m-prof-bad", "prof-bad-machine");
+
+		const response = await api("/api/sessions", {
+			method: "POST",
+			body: JSON.stringify({ machineId: "m-prof-bad", cwd: "/srv/x", profile: "Work.." }),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			error: expect.stringContaining('Invalid OMP profile "Work.."'),
+		});
+
+		const listed = (await (await api("/api/sessions")).json()) as { sessions: SessionJson[] };
+		expect(listed.sessions.find((record) => record.machineId === "m-prof-bad")).toBeUndefined();
 	});
 
 	test("agent disconnect drops the machine to connected:false and exits its sessions", async () => {

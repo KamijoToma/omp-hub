@@ -46,7 +46,7 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
 
 ```ts
 { t: "welcome", relayUrl: string, webUrl: string }                 // answer to hello
-{ t: "start", id: string, cwd: string, name?: string, prompt?: string,
+{ t: "start", id: string, cwd: string, name?: string, prompt?: string, profile?: string,
   relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
@@ -60,6 +60,10 @@ Semantics:
   closed 4000, its sessions marked `exited` with reason `"agent replaced"`).
 - `start.id` is hub-assigned (`s_<10 base36>`). The agent spawns one child per `start`.
   `relayUrl`/`webUrl` are passed verbatim to `CollabHost.start()`.
+- `start.profile` names an omp profile (omp `--profile`): the daemon validates the name and
+  that the profile exists on the machine, exports `OMP_PROFILE`/`PI_PROFILE` on the session
+  child, and reports any failure as `session-error` before spawning. Omitted (or `"default"`)
+  means the default profile.
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
@@ -144,6 +148,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 
 ```ts
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
+{ t: "cmd", reqId: string, cmd: "list-profiles" }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -155,11 +160,13 @@ interface DirListing {
   truncated: boolean;        // entries hit the 500 cap
 }
 ```
-
   Directories only (symlinked directories included, broken links skipped). The target must exist
   and be a directory. Agent-reported failures use stable strings the hub maps to client errors:
   `no such directory` / `not a directory` / `permission denied` → 400; anything else → 500.
   Unknown machine command → `ok:false, "unknown machine command: <cmd>"`.
+- `list-profiles` → `data: { profiles: string[] }`: named omp profiles that exist on the
+  machine (`~/.omp/profiles/<name>/agent` exists; `PI_CONFIG_DIR` honored), sorted; the
+  implicit `"default"` profile is never listed.
 
 
 
@@ -177,6 +184,7 @@ interface SessionRecord {
   machineName: string;
   cwd: string;
   name: string;               // display name (default: basename(cwd))
+  profile?: string;           // named omp profile; absent ⇒ default profile
   status: SessionStatus;
   startedAt: number;          // ms epoch
   exitedAt?: number;
@@ -202,6 +210,7 @@ interface MachineRecord {
 | `GET /api/health` | → `{ ok: true, version }` (no auth) |
 | `GET /api/machines` | → `{ machines: MachineRecord[] }` |
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
+| `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
@@ -209,7 +218,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields |
+| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields or invalid profile name |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
 - `POST /api/sessions` assigns the id, stores the record, forwards `start` to the agent. If the
@@ -244,7 +253,10 @@ parent → child (stdin):
 (numbers only), computed by the child from the SDK's context breakdown.
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
-`{ id, cwd, name?, prompt?, relayUrl, webUrl, agentDir? }`.
+`{ id, cwd, name?, prompt?, profile?, relayUrl, webUrl, agentDir? }`. A validated `profile`
+rides the config verbatim; the supervisor exports `OMP_PROFILE`/`PI_PROFILE` on the child
+(and clears any ambient daemon-level profile variables for default sessions), so the SDK
+resolves the profile's agent directory from the first module load.
 SIGTERM from the supervisor is equivalent to `{t:"stop"}` with reason `"sigterm"`.
 Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 

@@ -32,6 +32,8 @@ export interface StartFrame {
 	cwd: string;
 	name?: string;
 	prompt?: string;
+	/** Named omp profile for the session; omitted means the default profile. */
+	profile?: string;
 	relayUrl: string;
 	webUrl: string;
 }
