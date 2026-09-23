@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "../components/agents/AgentDrawer";
 import { AgentsPanel } from "../components/agents/AgentsPanel";
 import { Banners } from "../components/shell/Banners";
-import { Composer } from "../components/shell/Composer";
+import { Composer, isImeComposing } from "../components/shell/Composer";
 import { HeaderBar } from "../components/shell/HeaderBar";
 import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
@@ -267,6 +267,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	};
 
 	const onComposerKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+		// IME composition keys (candidate confirm/nav/cancel) must not drive the palette.
+		if (isImeComposing(e)) return;
 		if (!paletteOpen) return;
 		switch (e.key) {
 			case "ArrowDown":

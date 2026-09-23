@@ -21,6 +21,15 @@ function autosize(el: HTMLTextAreaElement | null): void {
 	el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
 }
 
+/**
+ * True while a keydown belongs to IME composition (e.g. confirming pinyin/kana
+ * candidates). Safari fires compositionend before the commit-Enter keydown, so
+ * `isComposing` is already false there — it still marks the event keyCode 229.
+ */
+export function isImeComposing(e: { nativeEvent: { isComposing: boolean; keyCode: number } }): boolean {
+	return e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229;
+}
+
 interface AskEditorProps {
 	prefill: string | undefined;
 	onSubmit(value: string): void;
@@ -40,6 +49,7 @@ function AskEditor({ prefill, onSubmit }: AskEditorProps): ReactNode {
 	}, [draft]);
 
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+		if (isImeComposing(e)) return;
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
 			onSubmit(draft);
@@ -96,6 +106,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 	}, [client, live, readOnly, text]);
 
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+		if (isImeComposing(e)) return;
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
 			send();
