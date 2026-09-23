@@ -543,6 +543,36 @@ describe("session commands", () => {
 		expect(await busy.json()).toEqual({ error: "Wait for the current response to finish or abort it before retrying." });
 	});
 
+	test("clear-context relays droppedCount and surfaces streaming refusals", async () => {
+		const agent = await connectAgent(main, "m-clear", "clear-machine");
+		const session = await liveSession(main, agent, "m-clear", "/srv/clear");
+
+		const response = api(main, `/api/sessions/${session.id}/clear-context`, { method: "POST" });
+		const frame = await answerCmd(agent, "clear-context", { ok: true, data: { droppedCount: 4 } });
+		// No parameters: the frame is exactly the routing envelope.
+		expect(frame).toEqual({
+			t: "cmd",
+			id: session.id,
+			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
+			cmd: "clear-context",
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, droppedCount: 4 });
+
+		const streaming = api(main, `/api/sessions/${session.id}/clear-context`, { method: "POST" });
+		await answerCmd(agent, "clear-context", {
+			ok: false,
+			error: "Wait for the current response to finish or abort it before clearing the context.",
+		});
+		const refused = await streaming;
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({
+			error: "Wait for the current response to finish or abort it before clearing the context.",
+		});
+	});
+
 	test("retry maps the agent's started:false to a 409 conflict", async () => {
 		const agent = await connectAgent(main, "m-retry-false", "retry-false-machine");
 		const session = await liveSession(main, agent, "m-retry-false", "/srv/retry-false");

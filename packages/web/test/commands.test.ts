@@ -30,6 +30,8 @@ interface Trace {
 	dumps: number;
 	notices: { level: Notice["level"]; message: string }[];
 	compacts: unknown[];
+	clears: number;
+	news: number;
 	retries: number;
 	extendedContext: (boolean | undefined)[];
 	todosShown: number;
@@ -43,6 +45,8 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		dumps: 0,
 		notices: [],
 		compacts: [],
+		clears: 0,
+		news: 0,
 		retries: 0,
 		extendedContext: [],
 		todosShown: 0,
@@ -60,6 +64,12 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			notify: (level, message) => trace.notices.push({ level, message }),
 			compactSession: request => trace.compacts.push(request),
+			clearContext: () => {
+				trace.clears += 1;
+			},
+			startNewSession: () => {
+				trace.news += 1;
+			},
 			retrySession: () => {
 				trace.retries += 1;
 			},
@@ -101,6 +111,8 @@ describe("composer routing", () => {
 			dumps: 0,
 			notices: [],
 			compacts: [],
+			clears: 0,
+			news: 0,
 			retries: 0,
 			extendedContext: [],
 			todosShown: 0,
@@ -124,6 +136,8 @@ describe("composer routing", () => {
 			"thinking",
 			"rewind",
 			"compact",
+			"clear",
+			"new",
 			"retry",
 			"todo",
 			"goal",
@@ -145,6 +159,8 @@ describe("composer routing", () => {
 			{ text: "/thinking", check: t => expect(t.modals).toEqual(["thinking"]) },
 			{ text: "/rewind", check: t => expect(t.modals).toEqual(["rewind"]) },
 			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
+			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
+			{ text: "/new", check: t => expect(t.news).toBe(1) },
 			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
 			{ text: "/todo", check: t => expect(t.todosShown).toBe(1) },
 			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
