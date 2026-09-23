@@ -9,7 +9,7 @@
  */
 import type { GuestClient, Notice } from "../lib/client";
 import type { SessionEntry } from "../lib/wire";
-import type { LoopLimit } from "./api";
+import type { LoopLimit, MachineSession } from "./api";
 
 /**
  * Dialog a command opens; `SessionView` maps each kind to a component.
@@ -21,6 +21,7 @@ export type ModalKind =
 	| "thinking"
 	| "rewind"
 	| "tree"
+	| "resume"
 	| "goal"
 	| "loop"
 	| "settings"
@@ -45,6 +46,12 @@ export interface CommandContext {
 	clearContext(): void;
 	/** Start a fresh session on the same machine and navigate to it; warns without a record. */
 	startNewSession(): void;
+	/**
+	 * Resume another machine session (TUI `/resume`): a query resolves against
+	 * the machine's resumable sessions and starts the first match; empty opens
+	 * the picker. `SessionView` reports outcomes as notices.
+	 */
+	resumeSession(query: string): void;
 	/** POST the retry command; `SessionView` reports the outcome as a notice. */
 	retrySession(): void;
 	/** POST the extended-context switch; `SessionView` reports the resulting state. */
@@ -140,6 +147,29 @@ export function parseLoopLimit(text: string): LoopLimit | null {
 	return totalMs > 0 ? { kind: "duration", durationMs: totalMs } : null;
 }
 
+/**
+ * Resolve a `/resume <query>` argument against a machine's resumable sessions,
+ * TUI parity with `resolveResumableSession`/`sessionMatchesResumeArg`
+ * (oh-my-pi `session/session-listing`): case-insensitive prefix match on the
+ * session id or the session file name, optionally just the id segment after
+ * the last `_` of that name. First match in listing order (most recently
+ * modified first) wins; empty queries never match.
+ */
+export function matchResumableSession(
+	entries: readonly MachineSession[],
+	query: string,
+): MachineSession | undefined {
+	const needle = query.trim().toLowerCase();
+	if (!needle) return undefined;
+	return entries.find(entry => {
+		if (entry.id.toLowerCase().startsWith(needle)) return true;
+		const base = (entry.path.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.jsonl$/, "");
+		if (base.startsWith(needle)) return true;
+		const separator = base.lastIndexOf("_");
+		return separator >= 0 && base.slice(separator + 1).startsWith(needle);
+	});
+}
+
 /** §6 command table; also the palette order and the `/help` list. */
 export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "model", description: "switch the session model", run: ctx => ctx.openModal("model") },
@@ -165,6 +195,11 @@ export const COMMANDS: readonly CommandSpec[] = [
 	},
 	{ name: "clear", description: "clear the conversation context, keep the session", run: ctx => ctx.clearContext() },
 	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },
+	{
+		name: "resume",
+		description: "resume another session on this machine — [session id]",
+		run: (ctx, args) => ctx.resumeSession(args),
+	},
 	{ name: "retry", description: "retry the last failed turn", run: ctx => ctx.retrySession() },
 	{ name: "todo", description: "show the agent's todo list", run: ctx => ctx.showTodos() },
 	{ name: "goal", description: "session goal — set, pause, budget", run: ctx => ctx.openModal("goal") },

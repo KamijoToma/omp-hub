@@ -26,14 +26,23 @@ import type { Notice } from "../lib/client";
 import { useThemePreference } from "../lib/theme";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
-import type { SessionRecord } from "./api";
-import { errorText, postClearContext, postCompact, postExtendedContext, postRetry, startSession } from "./api";
+import type { MachineSession, SessionRecord } from "./api";
+import {
+	errorText,
+	getMachineSessions,
+	postClearContext,
+	postCompact,
+	postExtendedContext,
+	postRetry,
+	startSession,
+} from "./api";
 import type { CommandContext, CompactRequest, ModalKind } from "./commands";
 import {
 	commandQuery,
 	createComposerClient,
 	dumpFileName,
 	matchCommands,
+	matchResumableSession,
 	routeComposerText,
 	transcriptJsonl,
 } from "./commands";
@@ -43,6 +52,7 @@ import { HelpModal } from "./HelpModal";
 import { LinksModal } from "./LinksModal";
 import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
+import { ResumePicker } from "./ResumePicker";
 import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
@@ -213,6 +223,63 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		);
 	}, [record, notify]);
 
+	// `/resume` and its picker share one start flow, the hub home's History
+	// resume: a new hub session bound to the machine entry's omp session file,
+	// running under the profile that owns it. Same hub-level orchestration as
+	// `/new` — the current session child stays untouched.
+	const resumeEntry = useCallback(
+		(entry: MachineSession): void => {
+			if (!record) {
+				notify("warning", "no hub record — resume from the hub home");
+				return;
+			}
+			void startSession({
+				machineId: record.machineId,
+				cwd: entry.cwd,
+				name: entry.title || undefined,
+				// The resumed session must run under the profile that owns it.
+				profile: entry.profile,
+				sessionFile: entry.path,
+			}).then(
+				next => {
+					notify("info", `resumed ${entry.title || entry.id}`);
+					navigate(`/s/${next.id}`);
+				},
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[record, notify],
+	);
+
+	// `/resume [id]`: an argument resolves against the machine's resumable
+	// sessions (TUI `resolveResumableSession` semantics) and starts it directly;
+	// no argument opens the picker.
+	const resumeSession = useCallback(
+		(query: string): void => {
+			if (!record) {
+				notify("warning", "no hub record — resume from the hub home");
+				return;
+			}
+			const needle = query.trim();
+			if (!needle) {
+				setModal("resume");
+				return;
+			}
+			void getMachineSessions(record.machineId).then(
+				listing => {
+					const match = matchResumableSession(listing.sessions, needle);
+					if (!match) {
+						notify("error", `Session "${needle}" not found`);
+						return;
+					}
+					resumeEntry(match);
+				},
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[record, resumeEntry, notify],
+	);
+
 	const retrySession = useCallback((): void => {
 		void postRetry(sessionId).then(
 			() => notify("info", "retrying last failed turn"),
@@ -264,6 +331,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		compactSession,
 		clearContext,
 		startNewSession,
+		resumeSession,
 		retrySession,
 		setExtendedContext,
 		showTodos,
@@ -522,6 +590,9 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			)}
 			{modal === "tree" && (
 				<TreePicker sessionId={sessionId} onResync={onRejoin} notify={notify} onClose={closeModal} />
+			)}
+			{modal === "resume" && record && (
+				<ResumePicker machineId={record.machineId} onResume={resumeEntry} onClose={closeModal} />
 			)}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}

@@ -5,6 +5,7 @@
  * stubbed {@link CommandContext}.
  */
 import { describe, expect, test } from "bun:test";
+import type { MachineSession } from "../src/hub/api";
 import type { CommandContext, ModalKind } from "../src/hub/commands";
 import {
 	COMMANDS,
@@ -12,6 +13,7 @@ import {
 	createComposerClient,
 	dumpFileName,
 	matchCommands,
+	matchResumableSession,
 	parseCommand,
 	parseCompactArgs,
 	parseExtendedContextArg,
@@ -32,6 +34,7 @@ interface Trace {
 	compacts: unknown[];
 	clears: number;
 	news: number;
+	resumes: string[];
 	retries: number;
 	extendedContext: (boolean | undefined)[];
 	todosShown: number;
@@ -47,6 +50,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		compacts: [],
 		clears: 0,
 		news: 0,
+		resumes: [],
 		retries: 0,
 		extendedContext: [],
 		todosShown: 0,
@@ -69,6 +73,9 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			startNewSession: () => {
 				trace.news += 1;
+			},
+			resumeSession: query => {
+				trace.resumes.push(query);
 			},
 			retrySession: () => {
 				trace.retries += 1;
@@ -113,6 +120,7 @@ describe("composer routing", () => {
 			compacts: [],
 			clears: 0,
 			news: 0,
+			resumes: [],
 			retries: 0,
 			extendedContext: [],
 			todosShown: 0,
@@ -140,6 +148,7 @@ describe("composer routing", () => {
 			"compact",
 			"clear",
 			"new",
+			"resume",
 			"retry",
 			"todo",
 			"goal",
@@ -165,6 +174,8 @@ describe("composer routing", () => {
 			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
 			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
 			{ text: "/new", check: t => expect(t.news).toBe(1) },
+			{ text: "/resume", check: t => expect(t.resumes).toEqual([""]) },
+			{ text: "/resume 9f2c", check: t => expect(t.resumes).toEqual(["9f2c"]) },
 			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
 			{ text: "/todo", check: t => expect(t.todosShown).toBe(1) },
 			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
@@ -317,6 +328,56 @@ describe("session-op argument parsers", () => {
 		expect(parseLoopLimit("10x")).toBeNull();
 		expect(parseLoopLimit("1.5h")).toBeNull();
 		expect(parseLoopLimit("10m5")).toBeNull();
+	});
+});
+
+describe("resumable session matching", () => {
+	// Mirrors the TUI's `sessionMatchesResumeArg` fixtures: prefix matching on
+	// the session id or file name, never a mid-string substring.
+	const entry = (overrides: Partial<MachineSession>): MachineSession => ({
+		path: "/home/me/.omp/sessions/proj/20260924T101500_9f2cabc123.jsonl",
+		id: "9f2cabc123",
+		cwd: "/home/me/proj",
+		created: "2026-09-24T10:15:00Z",
+		modified: "2026-09-24T11:00:00Z",
+		messageCount: 4,
+		firstMessage: "fix the flaky relay test",
+		...overrides,
+	});
+	const listing = [
+		entry({}),
+		entry({ path: "/home/me/.omp/sessions/proj/20260923T090000_deadbeef.jsonl", id: "deadbeef" }),
+	];
+
+	test("matches a prefix of the session id", () => {
+		expect(matchResumableSession(listing, "9f2c")).toEqual(listing[0]);
+		expect(matchResumableSession(listing, "9F2CABC1")).toEqual(listing[0]);
+		expect(matchResumableSession(listing, "deadbeef")).toEqual(listing[1]);
+	});
+
+	test("matches a prefix of the session file name, with or without the id segment", () => {
+		expect(matchResumableSession(listing, "20260924")).toEqual(listing[0]);
+		// The `.jsonl` suffix is stripped before matching, TUI `basename(file, ".jsonl")` parity.
+		expect(matchResumableSession(listing, ".jsonl")).toBeUndefined();
+		expect(matchResumableSession(listing, "dead")).toEqual(listing[1]);
+	});
+
+	test("does not match mid-string substrings", () => {
+		expect(matchResumableSession(listing, "f2cab")).toBeUndefined();
+		expect(matchResumableSession(listing, "proj")).toBeUndefined();
+		expect(matchResumableSession(listing, "fix the flaky")).toBeUndefined();
+	});
+
+	test("empty queries and empty listings never match", () => {
+		expect(matchResumableSession(listing, "")).toBeUndefined();
+		expect(matchResumableSession(listing, "   ")).toBeUndefined();
+		expect(matchResumableSession([], "9f2c")).toBeUndefined();
+		expect(matchResumableSession(listing, "zzzz")).toBeUndefined();
+	});
+
+	test("first listing match wins (most recently modified first)", () => {
+		const both = [entry({}), entry({ path: "/x/20260924T101500_9f2cabc123.jsonl", id: "zzzz" })];
+		expect(matchResumableSession(both, "9f2c")).toEqual(both[0]);
 	});
 });
 
