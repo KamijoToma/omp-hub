@@ -48,6 +48,20 @@ export interface SupervisorHandlers {
 	onReady(id: string, payload: SessionReadyPayload): void;
 	onError(id: string, error: string): void;
 	onExit(id: string, code: number | null, reason: string): void;
+	/**
+	 * Child `activity` sample (protocol §4): guest-visible working/input state
+	 * changed. Observational only — consumers that never mirror activity (tests,
+	 * tooling) omit it.
+	 */
+	onActivity?(id: string, activity: SessionActivity): void;
+}
+
+/** Guest-visible session state mirrored into the hub registry (protocol §3). */
+export interface SessionActivity {
+	/** The agent turn is streaming (includes tool execution). */
+	working: boolean;
+	/** A host-side dialog waits on a writable guest (`CollabHost.inputRequired`). */
+	inputRequired: boolean;
 }
 
 /** Parent → child `cmd` payload (protocol §4); `reqId` correlates the reply.
@@ -348,6 +362,18 @@ export class Supervisor {
 			case "log": {
 				const level = LOG_LEVELS.find(name => name === frame.level) ?? "info";
 				this.#log[level](`child ${record.id}: ${typeof frame.message === "string" ? frame.message : ""}`);
+				return;
+			}
+			case "activity": {
+				// Boolean coercion: a malformed sample is dropped, never guessed.
+				if (typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") {
+					this.#log.warn(`child ${record.id}: malformed activity frame`);
+					return;
+				}
+				this.#handlers.onActivity?.(record.id, {
+					working: frame.working,
+					inputRequired: frame.inputRequired,
+				});
 				return;
 			}
 			case "cmd-result": {

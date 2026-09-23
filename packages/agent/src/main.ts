@@ -167,6 +167,7 @@ async function main(): Promise<void> {
 				}),
 			onError: (id, error) => client.send({ t: "session-error", id, error }),
 			onExit: (id, code, reason) => client.send({ t: "session-exit", id, code, reason }),
+			onActivity: (id, activity) => client.send({ t: "session-activity", id, ...activity }),
 		},
 		log,
 	);

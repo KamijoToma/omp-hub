@@ -13,6 +13,14 @@ export interface SessionLinks {
 	webView: string;
 }
 
+/** Guest-visible activity mirrored from `session-activity` frames (protocol §3). */
+export interface SessionActivity {
+	working: boolean;
+	inputRequired: boolean;
+	/** Hub clock at the last changed sample; freshness bound for stale mirrors. */
+	updatedAt: number;
+}
+
 export interface SessionRecord {
 	id: string;
 	machineId: string;
@@ -29,6 +37,8 @@ export interface SessionRecord {
 	links?: SessionLinks;
 	sessionFile?: string;
 	pid?: number;
+	/** Last known working/input state; absent until the first sample arrives. */
+	activity?: SessionActivity;
 }
 
 export interface CreateSessionInput {
@@ -123,6 +133,23 @@ export class SessionStore {
 		return record;
 	}
 
+	/** `session-activity`: mirrors the child's last sample; unknown ids are ignored. */
+	setActivity(id: string, activity: Omit<SessionActivity, "updatedAt">): SessionRecord | undefined {
+		const record = this.#sessions.get(id);
+		if (!record || isTerminalStatus(record.status)) return record;
+		record.activity = { ...activity, updatedAt: Date.now() };
+		return record;
+	}
+
+	/** `rename` success: the registry label follows the agent-side session name. */
+	rename(id: string, name: string): SessionRecord | undefined {
+		const record = this.#sessions.get(id);
+		if (!record) return record;
+		const trimmed = name.trim();
+		if (trimmed) record.name = trimmed;
+		return record;
+	}
+
 	/** `session-error`: start failed before ready. */
 	markFailed(id: string, error: string): SessionRecord | undefined {
 		const record = this.#sessions.get(id);
@@ -130,6 +157,7 @@ export class SessionStore {
 		record.status = "failed";
 		record.error = error;
 		record.exitedAt = Date.now();
+		record.activity = undefined;
 		return record;
 	}
 
@@ -139,6 +167,7 @@ export class SessionStore {
 		if (!record || isTerminalStatus(record.status)) return record;
 		record.status = "exited";
 		record.exitedAt = Date.now();
+		record.activity = undefined;
 		if (reason) record.exitReason = reason;
 		return record;
 	}
@@ -151,6 +180,7 @@ export class SessionStore {
 			record.status = "exited";
 			record.exitedAt = Date.now();
 			record.exitReason = reason;
+			record.activity = undefined;
 			ids.push(record.id);
 		}
 		return ids;

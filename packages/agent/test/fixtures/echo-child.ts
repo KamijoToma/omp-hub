@@ -24,6 +24,9 @@ function handleLine(line: string): void {
 		role?: string;
 		persist?: boolean;
 		level?: string;
+		working?: boolean;
+		inputRequired?: boolean;
+		malformed?: boolean;
 	};
 	if (frame.t === "stop") {
 		process.exit(0);
@@ -32,6 +35,17 @@ function handleLine(line: string): void {
 	if (frame.cmd === "die") {
 		// Vanish mid-request: the parent must reject the pending cmd.
 		process.exit(0);
+	}
+	if (frame.cmd === "emit-activity") {
+		// Activity dispatch probe: emit the sample the parent should mirror,
+		// or a deliberately malformed one the parent must drop.
+		write(
+			frame.malformed === true
+				? { t: "activity", working: "yes", inputRequired: frame.inputRequired }
+				: { t: "activity", working: frame.working === true, inputRequired: frame.inputRequired === true },
+		);
+		write({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { emitted: true } });
+		return;
 	}
 	write({
 		t: "cmd-result",

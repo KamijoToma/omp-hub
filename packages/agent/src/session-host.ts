@@ -77,7 +77,7 @@ type CommandFrame = {
 	condition?: LoopConditionConfig;
 	/** `set-extended-context`: target state; omitted toggles. */
 	enabled?: boolean;
-	/** `upload-file` client-supplied file name; sanitized before writing (protocol §2). */
+	/** `upload-file` client-supplied file name (sanitized before writing) or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64. */
 	dataB64?: string;
@@ -87,6 +87,9 @@ type CommandFrame = {
 type CommandResultFrame =
 	| { t: "cmd-result"; reqId: string; ok: true; data: unknown }
 	| { t: "cmd-result"; reqId: string; ok: false; error: string };
+
+/** Child → parent activity sample, emitted only on change (protocol §4). */
+type ActivityFrame = { t: "activity"; working: boolean; inputRequired: boolean };
 
 /** Model identity triple (protocol §2). */
 interface AgentModelId {
@@ -588,6 +591,16 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			}
 			return { droppedCount: result.droppedCount };
 		}
+		case "rename": {
+			// Explicit user rename: the "user" source pins the name against the
+			// auto-title generator, persists a title-change entry, and updates
+			// the header the collab guests snapshot.
+			const name = typeof frame.name === "string" ? frame.name.trim() : "";
+			if (!name) throw new Error("rename requires a non-empty name");
+			const changed = await session.sessionManager.setSessionName(name, "user");
+			if (!changed) throw new Error("rename was not applied (name unchanged)");
+			return { name: session.sessionManager.getSessionName() ?? name };
+		}
 		default:
 			throw new Error(`unknown command: ${String(frame.cmd)}`);
 	}
@@ -826,6 +839,27 @@ async function run(): Promise<void> {
 	log.info(`ready: session ${session.sessionManager.getSessionId()} pid ${process.pid} file ${sessionFile}`);
 	// Commands are served from `ready` on; exactly one `cmd-result` per request (§4).
 	commandRunner = runCommand;
+
+	// Activity reporting (§4): sample the two guest-visible signals once a
+	// second and emit only on change, so the hub registry mirrors what an
+	// attached guest's footer shows without anyone attached. Sampling (not
+	// event hooks) keeps this independent of SDK event shapes; the getters are
+	// plain field reads. `unref` + `process.exit` in shutdown mean the timer
+	// never holds the child open.
+	let lastActivity: ActivityFrame | undefined;
+	const emitActivity = (): void => {
+		const next: ActivityFrame = {
+			t: "activity",
+			working: session.isStreaming,
+			inputRequired: host.inputRequired,
+		};
+		if (lastActivity?.working === next.working && lastActivity?.inputRequired === next.inputRequired) return;
+		lastActivity = next;
+		rawStdoutWrite(`${JSON.stringify(next)}\n`);
+	};
+	emitActivity();
+	const activityTimer = setInterval(emitActivity, 1_000);
+	activityTimer.unref();
 
 	let stopping = false;
 	const shutdown = async (reason: string): Promise<void> => {

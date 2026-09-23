@@ -17,20 +17,61 @@ function fixtureSupervisor(): {
 	supervisor: Supervisor;
 	ready: Promise<SessionReadyPayload>;
 	exitCode: Promise<number | null>;
-} {
+	activity: { id: string; working: boolean; inputRequired: boolean }[];
+	} {
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const exitCode = Promise.withResolvers<number | null>();
+	const activity: { id: string; working: boolean; inputRequired: boolean }[] = [];
 	const supervisor = new Supervisor(
 		{
 			onReady: (_id, payload) => ready.resolve(payload),
 			onError: () => {},
 			onExit: (_id, code) => exitCode.resolve(code),
+			onActivity: (id, sample) => activity.push({ id, ...sample }),
 		},
 		createLogger("cmd-test"),
 		{ hostEntry: FIXTURE },
 	);
-	return { supervisor, ready: ready.promise, exitCode: exitCode.promise };
+	return { supervisor, ready: ready.promise, exitCode: exitCode.promise, activity };
 }
+
+test("supervisor mirrors child activity samples into onActivity", async () => {
+	const { supervisor, ready, activity } = fixtureSupervisor();
+	await supervisor.spawn({ id: "s_cmd_act", cwd: import.meta.dir, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready;
+
+	// The fixture writes the activity frame before its cmd-result on the same
+	// pipe, so the handler has run by the time the ack settles — no polling.
+	const ack = await supervisor.cmd("s_cmd_act", {
+		reqId: "c_act1",
+		cmd: "emit-activity",
+		working: true,
+		inputRequired: false,
+	});
+	expect(ack.ok).toBe(true);
+	expect(activity).toEqual([{ id: "s_cmd_act", working: true, inputRequired: false }]);
+
+	await supervisor.stopAll("activity test done");
+});
+
+test("supervisor drops malformed activity samples instead of guessing", async () => {
+	const { supervisor, ready, activity } = fixtureSupervisor();
+	await supervisor.spawn({ id: "s_cmd_act_bad", cwd: import.meta.dir, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready;
+
+	const ack = await supervisor.cmd("s_cmd_act_bad", {
+		reqId: "c_act2",
+		cmd: "emit-activity",
+		working: true,
+		inputRequired: false,
+		malformed: true,
+	});
+	expect(ack.ok).toBe(true);
+	// The ack settles after the malformed frame was dispatched — and dropped.
+	expect(activity).toEqual([]);
+
+	await supervisor.stopAll("malformed activity test done");
+});
 
 test("supervisor cmd() round-trips cmd-results to the requesting child", async () => {
 	const { supervisor, ready } = fixtureSupervisor();

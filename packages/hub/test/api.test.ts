@@ -23,6 +23,7 @@ interface SessionJson {
 	links?: { full: string; view: string; web: string; webView: string };
 	sessionFile?: string;
 	pid?: number;
+	activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
 }
 
 interface MachineJson {
@@ -260,6 +261,44 @@ describe("hub api", () => {
 
 		const missing = await api("/api/sessions/s_0000000000/stop", { method: "POST" });
 		expect(missing.status).toBe(404);
+	});
+
+	test("session-activity mirrors samples, drops malformed ones, and clears on exit", async () => {
+		const { agent } = await connectAgent("m-act", "act-machine");
+		const session = await startSession("m-act", "/srv/act");
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		agent.ws.send(
+			JSON.stringify({ t: "session-ready", id: session.id, links: { full: "a", view: "b", web: "c", webView: "d" } }),
+		);
+		await waitForStatus(session.id, "live");
+
+		/** Polls the session record until `match` holds (no fixed delay). */
+		const waitFor = async (match: (record: SessionJson) => boolean, what: string): Promise<SessionJson> => {
+			const deadline = Date.now() + 4_000;
+			for (;;) {
+				const response = await api(`/api/sessions/${session.id}`);
+				const record = ((await response.json()) as { session: SessionJson }).session;
+				if (match(record)) return record;
+				if (Date.now() > deadline) throw new Error(`session never ${what}: ${JSON.stringify(record)}`);
+				await yieldLoop();
+			}
+		};
+
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: true, inputRequired: false }));
+		const busy = await waitFor((record) => record.activity?.working === true, "report working");
+		expect(busy.activity?.inputRequired).toBe(false);
+
+		// A malformed sample must not clobber the last good one…
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: "yes", inputRequired: 1 }));
+		// …and an unknown session id must be ignored without disturbing this one.
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: "s_ignoredxxx", working: true, inputRequired: true }));
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: true }));
+		const awaiting = await waitFor((record) => record.activity?.inputRequired === true, "report input required");
+		expect(awaiting.activity?.working).toBe(false);
+
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "done" }));
+		const exited = await waitForStatus(session.id, "exited");
+		expect(exited.activity).toBeUndefined();
 	});
 
 	test("session-error flips the record to failed with the error", async () => {

@@ -32,6 +32,7 @@ const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
 const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
 const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
 const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
+const RENAME_PATH_RE = /^\/api\/sessions\/([^/]+)\/rename$/;
 const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
@@ -168,6 +169,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const clearContext = CLEAR_CONTEXT_PATH_RE.exec(route);
 	if (clearContext && req.method === "POST") {
 		return clearSessionContext(decodeURIComponent(clearContext[1]!), ctx);
+	}
+	const rename = RENAME_PATH_RE.exec(route);
+	if (rename && req.method === "POST") {
+		return renameSession(decodeURIComponent(rename[1]!), req, ctx);
 	}
 	const files = FILES_PATH_RE.exec(route);
 	if (files && req.method === "POST") {
@@ -496,6 +501,27 @@ async function clearSessionContext(id: string, ctx: ApiContext): Promise<Respons
 	const outcome = await dispatchCmd(id, "clear-context", {}, ctx);
 	if (!outcome.ok) return outcome.response;
 	return json({ ok: true, droppedCount: pick(outcome.data, "droppedCount") ?? 0 });
+}
+
+/**
+ * Rename a live session (protocol §2 `rename`): the agent-side session name is
+ * the source of truth — it pins against auto-titles and rides the collab
+ * snapshot — and the registry label follows so `/api/sessions` reflects the
+ * rename on the next poll. Only live sessions rename (dispatchCmd gates on it).
+ */
+async function renameSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (name === undefined || name.trim() === "") return json({ error: "name is required" }, 400);
+	if (name.length > 200) return json({ error: "name is too long (max 200)" }, 400);
+
+	const outcome = await dispatchCmd(id, "rename", { name }, ctx);
+	if (!outcome.ok) return outcome.response;
+	const applied = pick(outcome.data, "name");
+	const appliedName = typeof applied === "string" && applied.trim() !== "" ? applied : name;
+	const record = ctx.sessions.rename(id, appliedName);
+	return json({ ok: true, name: appliedName, session: record });
 }
 
 const LOOP_ACTIONS: Record<string, true> = { enable: true, disable: true, pause: true, resume: true, status: true };

@@ -30,6 +30,8 @@ export interface SessionRecord {
 	links?: SessionLinks;
 	sessionFile?: string;
 	pid?: number;
+	/** Last known working/input state mirrored from the agent; absent on older agents. */
+	activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
 }
 
 export interface MachineRecord {
@@ -571,6 +573,15 @@ export async function postExtendedContext(id: string, opts: { enabled?: boolean 
 		{ method: "POST", body: JSON.stringify(opts) },
 	);
 	return reply.extendedContext;
+}
+
+/** Renames a live session (§2 `rename`); returns the hub's applied name. */
+export async function postRename(id: string, name: string): Promise<string> {
+	const reply = await api<{ ok: true; name: string; session: SessionRecord }>(
+		`/api/sessions/${encodeURIComponent(id)}/rename`,
+		{ method: "POST", body: JSON.stringify({ name }) },
+	);
+	return reply.name;
 }
 
 /** One browsable child directory of a machine listing (protocol §2 `DirListing`). */

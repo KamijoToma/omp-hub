@@ -42,6 +42,8 @@ daemon; use TLS/WSS outside loopback.
   links: { full: string; view: string; web: string; webView: string } }
 { t: "session-error", id: string, error: string }                  // start failed before ready
 { t: "session-exit",  id: string, code: number | null, reason: string }
+{ t: "session-activity", id: string, working: boolean,
+  inputRequired: boolean }                                         // on every change (0.5.0+; optional for consumers)
 { t: "pong", ts: number }
 { t: "usage-res", reqId: string, ok: true, status: number,
   contentType?: string, bodyB64?: string }                         // answer to usage-req
@@ -82,6 +84,12 @@ Semantics:
   `start.profile`, so config and credentials resolve from the profile that owns it.
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
+- `session-activity` mirrors the child's guest-visible state into the record's `activity`
+  (`working` = the agent turn streams, `inputRequired` = a host dialog waits on a writable
+  guest — the same two signals a guest's footer shows). Sent only on change; malformed
+  samples are dropped; unknown ids and terminal records ignore it; `session-exit`/`-error`
+  clears the field. Older agents never send it, so `activity` stays absent — consumers must
+  treat it as optional.
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
   reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
 - `usage-req` → `usage-res` relays one HTTP request to the machine's local omp stats dashboard
@@ -99,7 +107,8 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
-     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file",
+     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
+     | "rename",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -108,6 +117,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // prompt, limit, condition → loop
                                                                 // enabled → set-extended-context
                                                                 // name, dataB64 → upload-file
+                                                                // name → rename
 ```
 
 agent→hub:
@@ -220,6 +230,11 @@ interface LoopStatus {
   bash/eval runs, or the session is mid-transition → `ok:false` (409 via the
   "Wait for the current response…" mapping). Older omp builds without the SDK method answer
   `ok:false, "clear-context is not supported by this omp build"` (500).
+- `rename` → `data: { name: string }`: sets the session display name via the SDK session
+  manager (`source: "user"`, so the auto-title generator can no longer replace it), persists a
+  title-change entry, and updates the collab header guests snapshot. The hub mirrors the
+  applied name into the registry record so `/api/sessions` reflects the rename. Refused for a
+  blank name (`rename requires a non-empty name`, 400 is enforced hub-side before dispatch).
 - `upload-file` → `data: { path: string, bytes: number }`: writes the base64-decoded payload to a
   fresh owner-only file under the machine's temp directory
   (`omp-hub-upload-<rand>-<sanitized name>`) and returns its absolute path, which callers
@@ -313,6 +328,9 @@ interface SessionRecord {
   links?: { full: string; view: string; web: string; webView: string };
   sessionFile?: string;
   pid?: number;
+  activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
+  // ↑ last child `activity` sample (§2 session-activity); absent until the first
+  //   one arrives, cleared on exit; consumers must treat it as optional (≥0.5.0 agents only)
 }
 
 interface MachineRecord {
@@ -347,6 +365,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
 | `POST /api/sessions/:id/clear-context` | → `{ ok: true, droppedCount }` (§2 `clear-context`); 409 streaming guard |
+| `POST /api/sessions/:id/rename` | `{name}` → `{ ok: true, name, session }` (§2 `rename`; the registry record's label follows); 400 missing/blank/oversize (>200) `name`, 404 unknown/offline, 409 not live, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
@@ -366,6 +385,9 @@ child → parent (stdout, one JSON object per line; non-JSON lines are logs):
   links: { full: string; view: string; web: string; webView: string } }
 { t: "error", message: string }        // fatal before ready; child exits non-zero after sending
 { t: "log", level: "debug"|"info"|"warn"|"error", message: string }
+{ t: "activity", working: boolean, inputRequired: boolean }
+                                       // sampled 1/s after ready, emitted only on change;
+                                       // malformed samples are dropped by the supervisor
 { t: "cmd-result", reqId: string, ok: boolean, data?: unknown, error?: string }
 ```
 
@@ -374,7 +396,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file",
+     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,

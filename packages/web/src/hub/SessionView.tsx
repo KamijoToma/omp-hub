@@ -30,6 +30,7 @@ import type { MachineSession, SessionRecord } from "./api";
 import {
 	errorText,
 	getMachineSessions,
+	getSessions,
 	postClearContext,
 	postCompact,
 	postExtendedContext,
@@ -58,6 +59,17 @@ import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
 import { SessionSidebar, SessionSwitcherModal } from "./SessionSidebar";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
+import {
+	alertText,
+	alertsEnabled,
+	deliverSystemAlerts,
+	diffSessionAlerts,
+	requestAlertPermission,
+	setAlertsEnabled,
+	startTitleFlash,
+	stopTitleFlash,
+	ALERT_POLL_MS,
+} from "./session-alerts";
 import { SlashPalette } from "./SlashPalette";
 import { SteeringQueueBar } from "./SteeringQueueBar";
 import { ThinkingPicker } from "./ThinkingPicker";
@@ -223,6 +235,50 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		},
 		[sessionId, notify],
 	);
+
+	// Cross-session alerts (drawer bell): a lightweight side poll of the hub
+	// listing that never touches React state — transitions surface as system
+	// notifications, or as toasts + a flashing title when permission is missing.
+	const [alertsOn, setAlertsOn] = useState(alertsEnabled);
+	const toggleAlerts = useCallback((): void => {
+		const next = !alertsOn;
+		setAlertsEnabled(next);
+		setAlertsOn(next);
+		if (!next) {
+			stopTitleFlash();
+			return;
+		}
+		void requestAlertPermission().then(permission => {
+			if (permission === "granted") notify("info", "session alerts on");
+			else if (permission === "unsupported") notify("warning", "alerts on — no notification support here, using toasts");
+			else notify("warning", "alerts on — notifications blocked, using toasts and the tab title");
+		});
+	}, [alertsOn, notify]);
+
+	useEffect(() => {
+		if (!alertsOn) return;
+		let cancelled = false;
+		let prev: SessionRecord[] | null = null;
+		const tick = (): void => {
+			getSessions().then(
+				next => {
+					if (cancelled) return;
+					const alerts = diffSessionAlerts(prev ?? next, next);
+					prev = next;
+					const remaining = deliverSystemAlerts(alerts, sessionId);
+					for (const alert of remaining) notify(alert.kind === "input" ? "warning" : "info", alertText(alert).title);
+					if (remaining.length > 0 && document.hidden) startTitleFlash(alertText(remaining[0]!).title);
+				},
+				() => {}, // registry errors stay silent; the drawer surfaces them
+			);
+		};
+		void tick();
+		const timer = setInterval(tick, ALERT_POLL_MS);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [alertsOn, sessionId, notify]);
 
 	// `/dump`: the transcript snapshot as JSONL, handed to the browser as a download.
 	const downloadDump = useCallback((): void => {
@@ -570,6 +626,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 						onHome={onLeave}
 						onClose={() => setNavOpen(false)}
 						onSwitch={switchSession}
+						alertsOn={alertsOn}
+						onToggleAlerts={toggleAlerts}
 					/>
 				)}
 				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>

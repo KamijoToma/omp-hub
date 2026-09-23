@@ -152,7 +152,15 @@ export type UsageResultFrame = {
 }
 
 /** Frames the daemon sends outside `hello`/`hb`/`pong`. */
-export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | CmdResultFrame | UsageResultFrame;
+/** agent → hub activity sample for one session (protocol §2), emitted on change only. */
+export interface SessionActivityFrame {
+	t: "session-activity";
+	id: string;
+	working: boolean;
+	inputRequired: boolean;
+}
+
+export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | SessionActivityFrame | CmdResultFrame | UsageResultFrame;
 
 /** Every frame on the agent → hub wire. */
 export type OutboundFrame = HelloFrame | HeartbeatFrame | PongFrame | AgentFrame;

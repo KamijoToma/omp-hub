@@ -73,6 +73,7 @@ export type SessionCmdName =
 	| "goal"
 	| "set-extended-context"
 	| "clear-context"
+	| "rename"
 	| "upload-file";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
@@ -99,7 +100,7 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
-	/** `upload-file` client-supplied file name; the child sanitizes before writing (protocol §2). */
+	/** `upload-file` client-supplied file name, or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
 	dataB64?: string;
@@ -298,6 +299,13 @@ export class AgentRegistry {
 				const id = str(frame.id);
 				if (!id) return;
 				this.#sessions.markExited(id, str(frame.reason) ?? "session exited");
+				return;
+			}
+			case "session-activity": {
+				// Malformed samples are dropped, never guessed (protocol §2).
+				const id = str(frame.id);
+				if (!id || typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") return;
+				this.#sessions.setActivity(id, { working: frame.working, inputRequired: frame.inputRequired });
 				return;
 			}
 			case "cmd-result": {

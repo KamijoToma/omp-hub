@@ -8,6 +8,7 @@ import { startHub, type Hub } from "../src/server";
 
 interface SessionJson {
 	id: string;
+	name: string;
 	status: string;
 	exitReason?: string;
 }
@@ -357,6 +358,51 @@ describe("session commands", () => {
 		const settled = await response;
 		expect(settled.status).toBe(200);
 		expect(await settled.json()).toEqual({ ok: true, thinkingLevel: "medium" });
+	});
+
+	test("rename forwards the name and mirrors it into the registry record", async () => {
+		const agent = await connectAgent(main, "m-rename", "rename-machine");
+		const session = await liveSession(main, agent, "m-rename", "/srv/rename");
+
+		const response = api(main, `/api/sessions/${session.id}/rename`, {
+			method: "POST",
+			body: JSON.stringify({ name: "  better name  " }),
+		});
+		const frame = await answerCmd(agent, "rename", { ok: true, data: { name: "better name" } });
+		expect(frame).toMatchObject({ id: session.id, name: "  better name  " });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		const body = (await settled.json()) as { ok: boolean; name: string; session: SessionJson };
+		expect(body.ok).toBe(true);
+		expect(body.name).toBe("better name");
+		expect(body.session.name).toBe("better name");
+		// The registry label follows the agent's applied name.
+		expect((await sessionJson(main, session.id)).name).toBe("better name");
+	});
+
+	test("rename validates its body with 400 and refuses non-live sessions", async () => {
+		const agent = await connectAgent(main, "m-rename-bad", "rename-bad-machine");
+		const session = await liveSession(main, agent, "m-rename-bad", "/srv/rename-bad");
+
+		const blank = await api(main, `/api/sessions/${session.id}/rename`, {
+			method: "POST",
+			body: JSON.stringify({ name: "   " }),
+		});
+		expect(blank.status).toBe(400);
+		expect(await blank.json()).toEqual({ error: "name is required" });
+
+		const stopping = await api(main, `/api/sessions/${session.id}/stop`, { method: "POST" });
+		expect(stopping.status).toBe(200);
+		// Stop only forwards; the daemon reports the terminal state.
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "user stop" }));
+		await waitForStatus(main, session.id, "exited");
+
+		const exited = await api(main, `/api/sessions/${session.id}/rename`, {
+			method: "POST",
+			body: JSON.stringify({ name: "late name" }),
+		});
+		expect(exited.status).toBe(409);
 	});
 
 	test("agent failures map to statuses: 500 passthrough, 409 unknown session", async () => {

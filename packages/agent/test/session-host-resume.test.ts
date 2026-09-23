@@ -79,6 +79,30 @@ test("session host resumes an existing session file and reports it ready", async
 			throw new Error(`get-state payload has no cwd: ${JSON.stringify(state)}`);
 		}
 		expect(stateData.cwd).toBe(path.resolve(project));
+
+		// `rename` applies through the real SDK session manager: the reply
+		// echoes the applied name and get-state reports it as sessionName.
+		const rename = await supervisor.cmd("s_resume001", {
+			reqId: "c_resume02",
+			cmd: "rename",
+			name: "  Renamed resume  ",
+		});
+		expect(rename.ok).toBe(true);
+		const renameData = rename.ok ? rename.data : undefined;
+		if (typeof renameData !== "object" || renameData === null || !("name" in renameData)) {
+			throw new Error(`rename payload has no name: ${JSON.stringify(rename)}`);
+		}
+		expect(renameData.name).toBe("Renamed resume");
+		const renamedState = await supervisor.cmd("s_resume001", { reqId: "c_resume03", cmd: "get-state" });
+		const renamedData = renamedState.ok ? renamedState.data : undefined;
+		if (typeof renamedData !== "object" || renamedData === null || !("sessionName" in renamedData)) {
+			throw new Error(`get-state payload has no sessionName: ${JSON.stringify(renamedState)}`);
+		}
+		expect(renamedData.sessionName).toBe("Renamed resume");
+
+		// A blank name is a cmd error, not a silent no-op.
+		const blank = await supervisor.cmd("s_resume001", { reqId: "c_resume04", cmd: "rename", name: "   " });
+		expect(blank).toEqual({ ok: false, error: "rename requires a non-empty name" });
 	} finally {
 		await supervisor.stopAll("resume test done");
 		relay.stop(true);
