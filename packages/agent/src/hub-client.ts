@@ -69,7 +69,18 @@ export interface CmdFrame {
 	level?: string;
 }
 
-export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame;
+/** hub → agent machine-level usage request (protocol §2); answered with `usage-res`. */
+export interface UsageReqFrame {
+	t: "usage-req";
+	reqId: string;
+	method: "GET" | "HEAD" | "POST";
+	/** Absolute path on the machine's stats dashboard, e.g. `/api/stats?range=24h`. */
+	path: string;
+	/** Base64 request body; POST only. */
+	bodyB64?: string;
+}
+
+export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame | UsageReqFrame;
 
 export interface HelloFrame {
 	t: "hello";
@@ -121,8 +132,23 @@ export interface CmdResultFrame {
 	error?: string;
 }
 
+/** agent → hub answer to one `usage-req` (protocol §2): one relayed dashboard response. */
+export type UsageResultFrame = {
+	t: "usage-res";
+	reqId: string;
+	ok: true;
+	status: number;
+	contentType?: string;
+	bodyB64?: string;
+} | {
+	t: "usage-res";
+	reqId: string;
+	ok: false;
+	error: string;
+}
+
 /** Frames the daemon sends outside `hello`/`hb`/`pong`. */
-export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | CmdResultFrame;
+export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | CmdResultFrame | UsageResultFrame;
 
 /** Every frame on the agent → hub wire. */
 export type OutboundFrame = HelloFrame | HeartbeatFrame | PongFrame | AgentFrame;
@@ -137,6 +163,8 @@ export interface HubClientOptions {
 	onStart(frame: StartFrame): void;
 	onStop(frame: StopFrame): void;
 	onCmd(frame: CmdFrame): void;
+	/** Machine-level usage proxy request (protocol §2); the handler answers with `usage-res`. */
+	onUsage(frame: UsageReqFrame): void;
 	onWelcome?: (frame: WelcomeFrame) => void;
 	log: Logger;
 	heartbeatMs?: number;
@@ -154,6 +182,12 @@ function backoffDelay(attempt: number): number {
 	const base = MIN_BACKOFF_MS * 2 ** Math.max(0, attempt - 1);
 	const jittered = base * (1 + 0.25 * (Math.random() * 2 - 1));
 	return Math.min(Math.max(Math.round(jittered), MIN_BACKOFF_MS), MAX_BACKOFF_MS);
+}
+
+/** Frames are identified by session `id`, or `reqId` for correlated answers. */
+function frameIdForLog(frame: AgentFrame): string {
+	if (frame.t === "cmd-result" || frame.t === "usage-res") return frame.reqId;
+	return frame.id;
 }
 
 export class HubClient {
@@ -205,17 +239,14 @@ export class HubClient {
 
 	/** Send a frame; queued (bounded) while the socket is down. */
 	send(frame: AgentFrame): void {
-		// `id` names the target session; machine-level frames (e.g. cmd-result
-		// for `list-dir`) carry none.
-		const target = "id" in frame ? frame.id : "machine";
 		if (this.#sendNow(frame)) return;
 		if (this.#closed) {
-			this.#log.warn(`dropping ${frame.t} frame for ${frame.t === "cmd-result" ? frame.reqId : frame.id}: hub connection closed`);
+			this.#log.warn(`dropping ${frame.t} frame for ${frameIdForLog(frame)}: hub connection closed`);
 			return;
 		}
 		if (this.#pending.length >= MAX_QUEUED_FRAMES) {
 			const dropped = this.#pending.shift();
-			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped?.t === "cmd-result" ? dropped.reqId : dropped?.id ?? "?"}`);
+			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped ? frameIdForLog(dropped) : "?"}`);
 		}
 		this.#pending.push(frame);
 	}
@@ -348,6 +379,9 @@ export class HubClient {
 				return;
 			case "cmd":
 				this.#dispatch(() => this.#options.onCmd(frame));
+				return;
+			case "usage-req":
+				this.#dispatch(() => this.#options.onUsage(frame));
 				return;
 			case "ping":
 				this.#sendNow({ t: "pong", ts: frame.ts });

@@ -173,6 +173,69 @@ export async function getMachines(): Promise<MachineRecord[]> {
 	return (await api<{ machines: MachineRecord[] }>("/api/machines")).machines;
 }
 
+/** Time ranges the machine's stats dashboard accepts (protocol §3 usage relay). */
+export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
+
+/** Aggregated usage counters (machine dashboard `AggregatedStats`, subset we render). */
+export interface UsageAggregate {
+	totalRequests: number;
+	failedRequests: number;
+	errorRate: number;
+	totalInputTokens: number;
+	totalOutputTokens: number;
+	totalCacheReadTokens: number;
+	totalCacheWriteTokens: number;
+	cacheRate: number;
+	cacheSavings: number;
+	totalCost: number;
+	unpricedRequests: number;
+	avgDuration: number | null;
+	avgTtft: number | null;
+	avgTokensPerSecond: number | null;
+	lastTimestamp: number;
+}
+
+/** Per-model usage row (machine dashboard `ModelStats`). */
+export interface UsageModelStats extends UsageAggregate {
+	model: string;
+	provider: string;
+}
+
+/** One time-series bucket of the machine's stats dashboard. */
+export interface UsageTimePoint {
+	timestamp: number;
+	requests: number;
+	errors: number;
+	tokens: number;
+	cost: number;
+}
+
+/** `/api/stats` payload of the machine's omp stats dashboard (subset we render). */
+export interface MachineUsageStats {
+	overall: UsageAggregate;
+	byModel: UsageModelStats[];
+	timeSeries: UsageTimePoint[];
+}
+
+/**
+ * Usage dashboard stats for one machine, relayed from its local omp stats
+ * dashboard (protocol §3 usage relay). The hub answers 404 (unknown machine),
+ * 502 (machine offline or dashboard unavailable), 504 (relay timeout) — all
+ * {@link HubApiError}.
+ */
+export async function getMachineUsage(machineId: string, range: UsageRange): Promise<MachineUsageStats> {
+	return api<MachineUsageStats>(
+		`/api/machines/${encodeURIComponent(machineId)}/usage/api/stats?range=${encodeURIComponent(range)}`,
+	);
+}
+
+/** Triggers the machine's incremental session scan and returns its counts. */
+export async function syncMachineUsage(
+	machineId: string,
+): Promise<{ processed: number; files: number; totalMessages: number }> {
+	return api(`/api/machines/${encodeURIComponent(machineId)}/usage/api/sync`, { method: "POST" });
+}
+
 export async function getSessions(): Promise<SessionRecord[]> {
 	return (await api<{ sessions: SessionRecord[] }>("/api/sessions")).sessions;
 }

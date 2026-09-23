@@ -2,11 +2,11 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.2.0** — reported by `hello.version` and `GET /api/health` — is additive: the
-`get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
-
-Revision **0.3.0** — additive: the optional `hello.tmpdir` (§2), surfaced as
-`MachineRecord.tmpdir` (§3).
+Revision **0.3.0** — reported by `hello.version` and `GET /api/health` — is additive: the
+machine-level usage relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`,
+§5 `/usage/<machineId>`) and the optional `hello.tmpdir` (§2), surfaced as `MachineRecord.tmpdir`
+(§3). Revision 0.2.0 added the `get-context` session command (§2) and `GET /api/sessions/:id/context`
+(§3).
 
 ## 1. Relay contract (`/r/<roomId>`) — frozen, upstream-compatible
 
@@ -40,6 +40,9 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
 { t: "session-error", id: string, error: string }                  // start failed before ready
 { t: "session-exit",  id: string, code: number | null, reason: string }
 { t: "pong", ts: number }
+{ t: "usage-res", reqId: string, ok: true, status: number,
+  contentType?: string, bodyB64?: string }                         // answer to usage-req
+{ t: "usage-res", reqId: string, ok: false, error: string }
 ```
 
 ### hub → agent
@@ -50,6 +53,8 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
   relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
+{ t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
+  path: string, bodyB64?: string }                                 // machine-level stats relay
 ```
 
 Semantics:
@@ -64,6 +69,11 @@ Semantics:
   `failed`. `session-exit` flips to `exited` (idempotent).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
   reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
+- `usage-req` → `usage-res` relays one HTTP request to the machine's local omp stats dashboard
+  (`127.0.0.1:3847`; the agent starts it on demand and reuses a live one). `path` must be an
+  absolute path on that dashboard origin; `bodyB64` is POST-only. Machine-level: no session
+  required, answered even with zero sessions. The hub abandons the request after the same
+  15 s timeout as `cmd` (`usage timeout` → 504 to the caller).
 - Agent disconnect: sessions → `exited` reason `"agent disconnected"`; machine stays listed with
   `connected: false` until hub restart.
 
@@ -202,6 +212,7 @@ interface MachineRecord {
 | `GET /api/health` | → `{ ok: true, version }` (no auth) |
 | `GET /api/machines` | → `{ machines: MachineRecord[] }` |
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
+| `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to the machine's local omp stats dashboard; status/content-type/body replayed verbatim. 404 unknown machine, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
@@ -254,6 +265,7 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 |---|---|
 | `/` | token gate (once) → home: machines + start form + sessions |
 | `/s/<id>` | live session (full collab guest powers via `GuestClient`) |
+| `/usage/<machineId>` | machine usage: hub-native view over the machine's omp stats dashboard (§3 usage relay) |
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
 
 localStorage keys: `omp-hub.token`, `omp-hub.name` (display name, default `"guest"`),

@@ -13,6 +13,7 @@ import { clearToken, getToken } from "./hub/api";
 import { HomePage } from "./hub/HomePage";
 import { SessionPage } from "./hub/SessionPage";
 import { TokenGate } from "./hub/TokenGate";
+import { UsagePage } from "./hub/UsagePage";
 import { navigate, useRoute } from "./hub/router";
 import { parseCollabLink } from "./lib/link";
 import "./styles/tokens.css";
@@ -61,6 +62,7 @@ function Shell(): ReactNode {
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
 	if (route.kind === "session") return <SessionPage key={route.id} id={route.id} />;
+	if (route.kind === "usage") return <UsagePage machineId={route.machineId} />;
 	return <HomePage onLogout={logout} />;
 }
 

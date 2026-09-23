@@ -7,11 +7,12 @@
  */
 
 import { hostname } from "node:os";
-import { type CmdFrame, HubClient } from "./hub-client";
+import { type CmdFrame, HubClient, type UsageReqFrame } from "./hub-client";
 import { createLogger, errorMessage } from "./log";
 import { handleMachineCmd } from "./machine-cmds";
 import { resolveMachineId } from "./machine-id";
 import { Supervisor } from "./supervisor";
+import { createUsageProxy, type UsageProxy } from "./usage-proxy";
 
 const DEFAULT_MAX_SESSIONS = 8;
 
@@ -119,6 +120,15 @@ async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: 
 	}
 }
 
+/**
+ * Answer one machine-level `usage-req` with `usage-res` (§2). The 15 s timeout
+ * belongs to the hub; here every path replies exactly once.
+ */
+async function handleUsageFrame(client: HubClient, proxy: UsageProxy, frame: UsageReqFrame): Promise<void> {
+	const result = await proxy(frame);
+	client.send(result);
+}
+
 async function main(): Promise<void> {
 	let options: CliOptions | null;
 	try {
@@ -141,6 +151,8 @@ async function main(): Promise<void> {
 	log.info(`machine id: ${machineId}`);
 	log.info(`max sessions: ${options.maxSessions}`);
 	if (!options.token) log.warn("no --token/HUB_TOKEN set: connecting with an empty token (hub must run open)");
+
+	const usageProxy = createUsageProxy();
 
 	const supervisor = new Supervisor(
 		{
@@ -186,6 +198,11 @@ async function main(): Promise<void> {
 		},
 		onStop: frame => void supervisor.stop(frame.id, frame.reason ?? "hub stop"),
 		onCmd: frame => void handleCmdFrame(supervisor, client, frame),
+		onUsage: frame => {
+			void handleUsageFrame(client, usageProxy, frame).catch(err =>
+				client.send({ t: "usage-res", reqId: frame.reqId, ok: false, error: errorMessage(err) }),
+			);
+		},
 	});
 
 	let shuttingDown = false;

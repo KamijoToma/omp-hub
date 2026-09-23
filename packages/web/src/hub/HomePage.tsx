@@ -5,7 +5,7 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Copy, FolderClock, FolderOpen, LogOut, Play, Square } from "lucide-react";
+import { Activity, Copy, FolderClock, FolderOpen, LogOut, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
@@ -156,6 +156,17 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 										<span className="hb-machine-name">{m.name}</span>
 										<span className="hb-machine-count">{m.sessionCount} running</span>
 										<span className="hb-machine-id">{m.machineId}</span>
+										{m.connected && (
+											<button
+												type="button"
+												className="sh-btn hb-machine-usage"
+												onClick={() => navigate(`/usage/${m.machineId}`)}
+												aria-label={`usage for ${m.name}`}
+											>
+												<Activity size={14} aria-hidden="true" />
+												Usage
+											</button>
+										)}
 									</li>
 								))}
 							</ul>

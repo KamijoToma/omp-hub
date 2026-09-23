@@ -46,7 +46,8 @@ export type AgentCommand =
 	| { t: "start"; id: string; cwd: string; name?: string; prompt?: string; relayUrl: string; webUrl: string }
 	| { t: "stop"; id: string; reason?: string }
 	| { t: "ping"; ts: number }
-	| ({ t: "cmd" } & CmdRequest);
+	| ({ t: "cmd" } & CmdRequest)
+	| { t: "usage-req"; reqId: string; method: "GET" | "HEAD" | "POST"; path: string; bodyB64?: string };
 
 /** Session commands a session child answers (protocol §2 "Session commands"). */
 export type SessionCmdName = "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree";
@@ -259,6 +260,20 @@ export class AgentRegistry {
 				}
 				return;
 			}
+			case "usage-res": {
+				const reqId = str(frame.reqId);
+				if (!reqId) return;
+				const pending = this.#pending.get(reqId);
+				if (!pending || pending.machineId !== machineId) return;
+				this.#pending.delete(reqId);
+				clearTimeout(pending.timer);
+				if (frame.ok === true) {
+					pending.resolve({ ok: true, data: frame });
+				} else {
+					pending.resolve({ ok: false, error: str(frame.error) ?? "usage request failed" });
+				}
+				return;
+			}
 			default:
 				return; // forward-compatible: unknown frames are ignored
 		}
@@ -315,6 +330,44 @@ export class AgentRegistry {
 			this.#pending.delete(frame.reqId);
 			clearTimeout(pending.timer);
 			log.warn(`machine ${machineId}: cmd send failed (${error instanceof Error ? error.message : String(error)})`);
+			resolve({ ok: false, error: "agent offline" });
+		}
+		return promise;
+	}
+
+	/**
+	 * One machine-level `usage-req` round trip (protocol §2). Same settlement
+	 * contract as {@link sendCmd}: settles with `{ok:false, error}` when the
+	 * agent is offline, the write fails, the agent disconnects, or the agent
+	 * stays silent for `cmdTimeoutMs`; never rejects. On success `data` is the
+	 * agent's `usage-res` frame (`status`, optional `contentType`/`bodyB64`).
+	 */
+	sendUsageRequest(machineId: string, method: "GET" | "HEAD" | "POST", path: string, bodyB64?: string): Promise<CmdResult> {
+		const conn = this.#connections.get(machineId);
+		if (!conn) return Promise.resolve({ ok: false, error: "agent offline" });
+		const reqId = newCmdReqId();
+		const { promise, resolve } = Promise.withResolvers<CmdResult>();
+		const pending: PendingCmd = {
+			machineId,
+			resolve,
+			timer: setTimeout(() => {
+				this.#pending.delete(reqId);
+				resolve({ ok: false, error: "usage timeout" });
+			}, this.#cfg.cmdTimeoutMs),
+		};
+		this.#pending.set(reqId, pending);
+		try {
+			conn.ws.send(JSON.stringify({
+				t: "usage-req",
+				reqId,
+				method,
+				path,
+				...(bodyB64 === undefined ? {} : { bodyB64 }),
+			} satisfies AgentCommand));
+		} catch (error) {
+			this.#pending.delete(reqId);
+			clearTimeout(pending.timer);
+			log.warn(`machine ${machineId}: usage send failed (${error instanceof Error ? error.message : String(error)})`);
 			resolve({ ok: false, error: "agent offline" });
 		}
 		return promise;
