@@ -5,7 +5,7 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Copy, FolderOpen, LogOut, Play, Square } from "lucide-react";
+import { Copy, FolderClock, FolderOpen, LogOut, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
@@ -24,6 +24,9 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
 	exited: "exited",
 	failed: "failed",
 };
+
+/** Machine-reported temp directory (`hello.tmpdir`); `/tmp` covers POSIX machines and pre-0.3.0 agents. */
+const tempDirFor = (machine: MachineRecord | undefined): string => machine?.tmpdir ?? "/tmp";
 
 export interface HomePageProps {
 	onLogout(): void;
@@ -205,6 +208,16 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									>
 										<FolderOpen size={14} aria-hidden="true" />
 										<span className="sh-btn-label">Browse</span>
+									</button>
+									<button
+										type="button"
+										className="sh-btn"
+										onClick={() => setCwd(tempDirFor(connected.find(m => m.machineId === machineId)))}
+										disabled={!machineId}
+										title="fill in the selected machine's temp directory"
+									>
+										<FolderClock size={14} aria-hidden="true" />
+										<span className="sh-btn-label">Temp dir</span>
 									</button>
 								</div>
 							</div>

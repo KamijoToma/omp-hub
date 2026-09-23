@@ -7,11 +7,12 @@
  * `hello`, so session reports survive a hub restart.
  */
 
+import { tmpdir } from "node:os";
 import { errorMessage, type Logger } from "./log";
 import type { SessionLinks, SessionStatus } from "./supervisor";
 
 /** Agent release reported in `hello.version`. */
-const AGENT_VERSION = "0.2.0";
+const AGENT_VERSION = "0.3.0";
 const HEARTBEAT_MS = 15_000;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -75,6 +76,8 @@ export interface HelloFrame {
 	name: string;
 	machineId: string;
 	version: string;
+	/** The daemon's temp directory (`os.tmpdir()`), reported since protocol 0.3.0. */
+	tmpdir: string;
 }
 
 export interface HeartbeatFrame {
@@ -252,6 +255,7 @@ export class HubClient {
 				name: this.#options.name,
 				machineId: this.#options.machineId,
 				version: AGENT_VERSION,
+				tmpdir: tmpdir(),
 			});
 			this.#startHeartbeat();
 			const queued = this.#pending;

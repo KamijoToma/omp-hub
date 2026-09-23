@@ -5,6 +5,9 @@ All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a v
 Revision **0.2.0** — reported by `hello.version` and `GET /api/health` — is additive: the
 `get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
 
+Revision **0.3.0** — additive: the optional `hello.tmpdir` (§2), surfaced as
+`MachineRecord.tmpdir` (§3).
+
 ## 1. Relay contract (`/r/<roomId>`) — frozen, upstream-compatible
 
 Byte-identical to `oh-my-pi/packages/collab-web/scripts/local-relay.ts`. Summary:
@@ -30,7 +33,7 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
 ### agent → hub
 
 ```ts
-{ t: "hello", name: string, machineId: string, version: string }   // first frame, required
+{ t: "hello", name: string, machineId: string, version: string, tmpdir?: string }   // first frame, required; tmpdir = the daemon's os.tmpdir() (0.3.0+)
 { t: "hb", ts: number, sessions: { id: string; status: SessionStatus }[] }  // every 15 s
 { t: "session-ready", id: string, sessionFile: string, pid: number,
   links: { full: string; view: string; web: string; webView: string } }
@@ -51,7 +54,7 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
 
 Semantics:
 
-- `hello` → hub registers `{machineId, name, connectedAt}` and replies `welcome`.
+- `hello` → hub registers `{machineId, name, connectedAt, tmpdir?}` and replies `welcome`.
   Re-hello on the same socket after a drop is a protocol violation → close 4000.
 - Two agents with the same `machineId`: the new connection **replaces** the old (old socket
   closed 4000, its sessions marked `exited` with reason `"agent replaced"`).
@@ -190,6 +193,7 @@ interface MachineRecord {
   connected: boolean;
   connectedAt: number;
   sessionCount: number;       // live+starting sessions on this machine
+  tmpdir?: string;            // agent os.tmpdir(); absent until a ≥0.3.0 hello
 }
 ```
 
