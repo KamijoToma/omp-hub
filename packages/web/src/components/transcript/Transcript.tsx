@@ -4,14 +4,13 @@ import type {
 	SessionEntry,
 	TextContent,
 	ToolResultMessage,
-	WireUsage,
 } from "../../lib/wire";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
-import { fmtTokens } from "../../lib/format";
-import { fmtUsageCost, usageDetail } from "../../lib/usage";
+import { fmtDuration, fmtTokens } from "../../lib/format";
+import { fmtUsageCost, outputTokensPerSecond, usageDetail } from "../../lib/usage";
 import type { ToolRenderHost } from "../../tool-render";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCard";
@@ -94,13 +93,15 @@ function MsgContent({ content }: { content: string | readonly (TextContent | Ima
 
 /**
  * Per-message usage for a finished assistant turn: a one-line summary that
- * expands into the five metrics. Costs are estimated (provider price tables
- * applied to the reported tokens), so they carry an `≈`/`est.` marker, and a
- * metric the host never reported stays "—" instead of reading as a real zero.
+ * expands into the metrics plus the host-reported request timing (TTFT and
+ * the whole-request output rate, same figures as the TUI usage row). Costs
+ * are estimated (provider price tables applied to the reported tokens), so
+ * they carry an `≈`/`est.` marker, and a metric the host never reported stays
+ * "—" instead of reading as a real zero.
  */
-function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
+function UsageSummary({ message }: { message: AssistantMessage }): ReactNode {
 	const [open, setOpen] = useState(false);
-	const detail = usageDetail(usage);
+	const detail = usageDetail(message.usage, message);
 	if (detail === null) {
 		return (
 			<div className="tr-usage tr-usage-none" title="the host sent no usage block for this message">
@@ -108,6 +109,7 @@ function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
 			</div>
 		);
 	}
+	const tps = outputTokensPerSecond(detail);
 	const summary: string[] = [];
 	if (detail.totalTokens !== null) summary.push(`${fmtTokens(detail.totalTokens)} tok`);
 	else {
@@ -115,6 +117,7 @@ function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
 		if (detail.output !== null) summary.push(`out ${fmtTokens(detail.output)}`);
 	}
 	if (detail.cost !== null) summary.push(`≈${fmtUsageCost(detail.cost)}`);
+	if (tps !== null) summary.push(`${tps.toFixed(1)} tok/s`);
 	const rows: readonly { key: string; label: string; value: ReactNode }[] = [
 		{ key: "input", label: "input", value: detail.input === null ? "—" : fmtTokens(detail.input) },
 		{ key: "output", label: "output", value: detail.output === null ? "—" : fmtTokens(detail.output) },
@@ -139,6 +142,17 @@ function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
 					</>
 				),
 		},
+		{ key: "ttft", label: "ttft", value: detail.ttftMs === null ? "—" : fmtDuration(detail.ttftMs) },
+		{
+			key: "tokPerSec",
+			label: "output rate",
+			value:
+				tps === null ? (
+					"—"
+				) : (
+					<span title="output tokens over the whole request window">{tps.toFixed(1)}/s</span>
+				),
+		},
 	];
 	return (
 		<div className="tr-usage">
@@ -147,7 +161,7 @@ function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
 				className="tr-usage-head"
 				aria-expanded={open}
 				onClick={() => setOpen(value => !value)}
-				title="usage for this message — tokens as reported, cost estimated from provider price tables"
+				title="usage for this message — tokens as reported, cost estimated from provider price tables, timing from the host's request clock"
 			>
 				<ChevronRight size={11} className={`tr-chev${open ? " tr-chev--open" : ""}`} aria-hidden="true" />
 				<span className="tr-usage-summary">{summary.length > 0 ? summary.join(" · ") : "usage"}</span>
@@ -224,7 +238,7 @@ function AssistantBody({
 				</div>
 			)}
 			{/* Streaming ghosts carry accumulating usage: only a finished turn may show it. */}
-			{!pending && <UsageSummary usage={message.usage} />}
+			{!pending && <UsageSummary message={message} />}
 		</>
 	);
 }

@@ -5,7 +5,8 @@
  * rounded into "$0.000".
  */
 import { describe, expect, test } from "bun:test";
-import { contextPercent, fmtUsageCost, usageDetail } from "../src/lib/usage";
+import { contextPercent, fmtUsageCost, outputTokensPerSecond, usageDetail } from "../src/lib/usage";
+import type { UsageDetail } from "../src/lib/usage";
 import type { WireUsage } from "../src/lib/wire";
 
 describe("usageDetail", () => {
@@ -31,6 +32,8 @@ describe("usageDetail", () => {
 			cacheWrite: 0,
 			totalTokens: 0,
 			cost: 0,
+			ttftMs: null,
+			durationMs: null,
 		});
 	});
 
@@ -44,7 +47,72 @@ describe("usageDetail", () => {
 			cacheWrite: null,
 			totalTokens: 128,
 			cost: null,
+			ttftMs: null,
+			durationMs: null,
 		});
+	});
+});
+
+describe("usageDetail timing", () => {
+	const usage: WireUsage = {
+		input: 120,
+		output: 400,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 520,
+		cost: { total: 0.01 },
+	};
+
+	test("attaches the message's host-reported request timing", () => {
+		const detail = usageDetail(usage, { ttft: 832, duration: 2_140 });
+		expect(detail?.ttftMs).toBe(832);
+		expect(detail?.durationMs).toBe(2_140);
+	});
+
+	test("treats non-finite timing as unreported", () => {
+		const detail = usageDetail(usage, { ttft: Number.NaN, duration: Number.POSITIVE_INFINITY });
+		expect(detail?.ttftMs).toBeNull();
+		expect(detail?.durationMs).toBeNull();
+	});
+
+	test("keeps a timing-only message instead of dropping it", () => {
+		const detail = usageDetail({} as WireUsage, { ttft: 900, duration: 1_500 });
+		expect(detail).toEqual({
+			input: null,
+			output: null,
+			cacheRead: null,
+			cacheWrite: null,
+			totalTokens: null,
+			cost: null,
+			ttftMs: 900,
+			durationMs: 1_500,
+		});
+	});
+});
+
+describe("outputTokensPerSecond", () => {
+	const detail: UsageDetail = {
+		input: 120,
+		output: 400,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 520,
+		cost: 0.01,
+		ttftMs: 830,
+		durationMs: 2_000,
+	};
+
+	test("rates output over the whole request window", () => {
+		expect(outputTokensPerSecond(detail)).toBe(200);
+	});
+
+	test("is null below the 100ms sanity gate", () => {
+		expect(outputTokensPerSecond({ ...detail, output: 5, durationMs: 50 })).toBeNull();
+	});
+
+	test("is null without reported output or duration", () => {
+		expect(outputTokensPerSecond({ ...detail, output: null })).toBeNull();
+		expect(outputTokensPerSecond({ ...detail, durationMs: null })).toBeNull();
 	});
 });
 

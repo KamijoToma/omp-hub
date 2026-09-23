@@ -85,6 +85,14 @@ export interface AssistantMessage {
 	usage: WireUsage;
 	stopReason: StopReason;
 	errorMessage?: string;
+	/**
+	 * Host-reported request timing in ms: start → first streamed token, and the
+	 * total request wall time. Written when the provider stream closes; absent
+	 * mid-stream and on hosts that predate the fields. Not part of the pinned
+	 * upstream skeleton — the host's richer message serializes them through.
+	 */
+	ttft?: number;
+	duration?: number;
 	timestamp: number;
 }
 
