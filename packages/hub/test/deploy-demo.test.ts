@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
 	classifyChangedPaths,
+	coordinatedRestart,
 	findActiveSessions,
 	rollbackWebDist,
 	switchWebDist,
@@ -57,6 +58,28 @@ describe("demo deployment planning", () => {
 		expect(() => findActiveSessions({ sessions: [{ id: "s-bad", status: "live" }] })).toThrow(
 			"/api/sessions returned a malformed session",
 		);
+	});
+
+	test("starts the hub before waiting for agent readiness", async () => {
+		const events: string[] = [];
+		let hubStarted = false;
+		await coordinatedRestart({
+			restartAgent: async () => {
+				events.push("restart-agent");
+			},
+			restartHub: async () => {
+				hubStarted = true;
+				events.push("restart-hub");
+			},
+			waitForHub: async () => {
+				events.push("wait-hub");
+			},
+			waitForAgent: async () => {
+				if (!hubStarted) throw new Error("agent readiness depends on the hub");
+				events.push("wait-agent");
+			},
+		});
+		expect(events).toEqual(["restart-agent", "restart-hub", "wait-hub", "wait-agent"]);
 	});
 });
 

@@ -100,6 +100,13 @@ export interface WebDistSwitch {
 	previous: PreviousWebDist;
 }
 
+export interface CoordinatedRestartOps {
+	restartAgent(): Promise<void>;
+	restartHub(): Promise<void>;
+	waitForHub(): Promise<void>;
+	waitForAgent(): Promise<void>;
+}
+
 function isNeutralPath(file: string): boolean {
 	return (
 		file === "AGENTS.md" ||
@@ -523,6 +530,17 @@ async function serviceAction(action: "stop" | "restart", name: string, serviceDi
 	await runCommand(["omp", "ps", action, name, `--dir=${serviceDir}`], serviceDir);
 }
 
+/**
+ * Starts both new processes before awaiting readiness: the agent's readiness
+ * condition may require a live hub connection.
+ */
+export async function coordinatedRestart(ops: CoordinatedRestartOps): Promise<void> {
+	await ops.restartAgent();
+	await ops.restartHub();
+	await ops.waitForHub();
+	await ops.waitForAgent();
+}
+
 async function buildWebRelease(repoRoot: string, releaseRoot: string, commit: string): Promise<WebBuild> {
 	const releases = path.join(releaseRoot, "web-releases");
 	const releasePath = path.join(releases, commit);
@@ -587,7 +605,10 @@ async function main(): Promise<void> {
 	await assertDeployableWorktree(repoRoot);
 	let state = await readState(stateFile);
 	if (options.recordCurrent) {
-		state = initialState(target);
+		const recorded = initialState(target);
+		if (state?.webRelease) recorded.webRelease = state.webRelease;
+		if (state?.previousWebRelease) recorded.previousWebRelease = state.previousWebRelease;
+		state = recorded;
 		await writeState(stateFile, state);
 		process.stdout.write(`recorded ${target.slice(0, 12)} as deployed; no processes changed\n`);
 		return;
@@ -658,8 +679,8 @@ async function main(): Promise<void> {
 
 	let hubStopped = false;
 	try {
-		const coordinatedRestart = plan.agent && restartHub;
-		if (migrateWebDist || coordinatedRestart) {
+		const needsCoordinatedRestart = plan.agent && restartHub;
+		if (migrateWebDist || needsCoordinatedRestart) {
 			await serviceAction("stop", options.hubService, serviceDir);
 			hubStopped = true;
 		}
@@ -677,20 +698,26 @@ async function main(): Promise<void> {
 			process.stdout.write(`web: switched to ${target.slice(0, 12)}\n`);
 		}
 
-		if (coordinatedRestart) {
-			await serviceAction("restart", options.agentService, serviceDir);
-			await waitForService(options.agentService, serviceDir, options.timeoutMs);
+		if (needsCoordinatedRestart) {
+			await coordinatedRestart({
+				restartAgent: () => serviceAction("restart", options.agentService, serviceDir),
+				restartHub: async () => {
+					await serviceAction("restart", options.hubService, serviceDir);
+					hubStopped = false;
+				},
+				waitForHub: async () => {
+					await waitForService(options.hubService, serviceDir, options.timeoutMs);
+					await waitForHub(access!, options.timeoutMs);
+				},
+				waitForAgent: async () => {
+					await waitForService(options.agentService, serviceDir, options.timeoutMs);
+					await waitForMachines(access!, options.timeoutMs);
+				},
+			});
 			state.components.agent = target;
-			await writeState(stateFile, state);
-			process.stdout.write(`agent: restarted at ${target.slice(0, 12)}\n`);
-
-			await serviceAction("restart", options.hubService, serviceDir);
-			hubStopped = false;
-			await waitForService(options.hubService, serviceDir, options.timeoutMs);
-			await waitForHub(access!, options.timeoutMs);
-			await waitForMachines(access!, options.timeoutMs);
 			state.components.hub = target;
 			await writeState(stateFile, state);
+			process.stdout.write(`agent: restarted at ${target.slice(0, 12)}\n`);
 			process.stdout.write(`hub: restarted at ${target.slice(0, 12)}\n`);
 		} else {
 			if (restartHub) {
