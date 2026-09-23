@@ -50,25 +50,33 @@ type CommandResultFrame =
 	| { t: "cmd-result"; reqId: string; ok: true; data: unknown }
 	| { t: "cmd-result"; reqId: string; ok: false; error: string };
 
-/** One selectable model (protocol §2 AgentState). */
-interface AgentModelRef {
+/** Model identity triple (protocol §2). */
+interface AgentModelId {
 	provider: string;
 	id: string;
 	name: string;
+}
+
+/** One selectable model (protocol §2 AgentState). */
+interface AgentModelRef extends AgentModelId {
+	/** Efforts the model declares; empty for non-reasoning models. */
+	thinkingEfforts: string[];
+	/** Effort applied when the model is selected; null means the SDK default. */
+	defaultThinkingLevel: string | null;
 }
 
 /** One chat-section model role and its current assignment (protocol §2). */
 interface AgentRoleState {
 	role: string;
 	name: string;
-	model: AgentModelRef | null;
+	model: AgentModelId | null;
 }
 
 /** `get-state` payload (protocol §2 AgentState). */
 interface AgentState {
 	sessionName: string;
 	cwd: string;
-	model: AgentModelRef | null;
+	model: AgentModelId | null;
 	thinkingLevel: string | null;
 	thinkingLevels: string[];
 	models: AgentModelRef[];
@@ -110,6 +118,10 @@ function agentState(session: AgentSession, deps: CommandDeps): AgentState {
 			provider: entry.provider,
 			id: entry.id,
 			name: entry.name ?? entry.id,
+			// Static catalog metadata, so the web model picker can offer a thinking
+			// level for any candidate model, not just the active one.
+			thinkingEfforts: entry.reasoning ? [...(entry.thinking?.efforts ?? [])] : [],
+			defaultThinkingLevel: entry.thinking?.defaultLevel ?? null,
 		})),
 		roles: agentRoles(session, available, deps),
 	};
@@ -159,6 +171,12 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
 			const role = parseRole(frame.role);
+			// Validate an optional thinking level before mutating anything so a bad
+			// level cannot leave a half-applied switch behind.
+			const level = frame.level === undefined ? undefined : deps.parseThinkingLevel(frame.level);
+			if (level === undefined && frame.level !== undefined) {
+				throw new Error(`invalid thinking level: ${frame.level}`);
+			}
 			const model = session.modelRegistry.find(provider, modelId);
 			if (!model) throw new Error(`unknown model ${provider}/${modelId}`);
 			// A non-default role is a persistent assignment (omp `/model @role`):
@@ -169,7 +187,10 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 				role,
 				role === "default" || frame.persist === false ? undefined : { persist: true },
 			);
-			return { switched, role };
+			// Deliberately after the switch: setModel re-resolves thinking to the
+			// target model's default, so an explicit level must come second to win.
+			if (level !== undefined) session.setThinkingLevel(level);
+			return { switched, role, thinkingLevel: session.thinkingLevel ?? null };
 		}
 		case "set-thinking": {
 			const level = deps.parseThinkingLevel(frame.level);

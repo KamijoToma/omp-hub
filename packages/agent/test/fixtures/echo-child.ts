@@ -23,6 +23,7 @@ function handleLine(line: string): void {
 		modelId?: string;
 		role?: string;
 		persist?: boolean;
+		level?: string;
 	};
 	if (frame.t === "stop") {
 		process.exit(0);
@@ -40,6 +41,7 @@ function handleLine(line: string): void {
 			echo: frame.cmd,
 			...(frame.role === undefined ? {} : { role: frame.role }),
 			...(frame.persist === undefined ? {} : { persist: frame.persist }),
+			...(frame.cmd === "set-model" && frame.level !== undefined ? { level: frame.level } : {}),
 		},
 	});
 }

@@ -67,6 +67,16 @@ test("supervisor cmd() forwards set-model role and persist fields intact", async
 	});
 	expect(roled).toEqual({ ok: true, data: { echo: "set-model", role: "smol", persist: false } });
 
+	// `level` rides the same frame: the model switch can preset thinking.
+	const leveled = await supervisor.cmd("s_cmd_roles", {
+		reqId: "c_role003",
+		cmd: "set-model",
+		provider: "openai",
+		modelId: "gpt-5",
+		level: "xhigh",
+	});
+	expect(leveled).toEqual({ ok: true, data: { echo: "set-model", level: "xhigh" } });
+
 	// Omitted fields stay absent so children see an unchanged frame.
 	const plain = await supervisor.cmd("s_cmd_roles", { reqId: "c_role002", cmd: "set-model" });
 	expect(plain).toEqual({ ok: true, data: { echo: "set-model" } });

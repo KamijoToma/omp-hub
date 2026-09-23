@@ -91,7 +91,11 @@ interface AgentState {
   model: { provider: string; id: string; name: string } | null;
   thinkingLevel: string | null;             // effective level, never "auto"
   thinkingLevels: string[];                 // levels valid for the current model
-  models: { provider: string; id: string; name: string }[];  // auth-available
+  models: {                                 // auth-available
+    provider: string; id: string; name: string;
+    thinkingEfforts: string[];              // model-declared efforts; [] = non-reasoning
+    defaultThinkingLevel: string | null;    // effort applied on selection; null = SDK default
+  }[];
   roles: {                                  // chat-section model roles
     role: string; name: string;             // e.g. "smol", "Fast"
     model: { provider: string; id: string; name: string } | null;  // resolved assignment
@@ -99,10 +103,12 @@ interface AgentState {
 }
 ```
 
-- `set-model {provider, modelId, role?, persist?}` → `data: { switched: boolean, role: string }`
-  (session.setModel; `role` defaults to `"default"`. A non-default role also persists the
-  assignment to settings unless `persist: false`. Errors when no auth for the provider, or
-  `role` is blank/over 64 chars.)
+- `set-model {provider, modelId, role?, persist?, level?}` → `data: { switched: boolean, role: string,
+  thinkingLevel: string | null }` (session.setModel; `role` defaults to `"default"`. A non-default role
+  also persists the assignment to settings unless `persist: false`. `level` optionally presets the
+  thinking level, applied after the switch so it wins over the target model's default; the agent
+  validates it before switching and returns the effective level. Errors when no auth for the provider,
+  `role` is blank/over 64 chars, or `level` is not a valid thinking selector.)
 - `set-thinking {level}` → `data: { thinkingLevel: string }` (effective level after set).
 - `get-context` (no parameters) → `data: SessionContext`: SDK token estimates for the session's
   current context. The model object never leaves the host — only numbers do:
@@ -165,7 +171,7 @@ interface MachineRecord {
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
 | `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
-| `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?}` → `{ ok: true, switched, role }`; same error set; 400 blank/oversize `role` or non-boolean `persist` |
+| `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |

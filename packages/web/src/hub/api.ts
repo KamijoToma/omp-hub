@@ -50,6 +50,10 @@ export interface AgentModel {
 	provider: string;
 	id: string;
 	name: string;
+	/** Efforts the model declares; empty for non-reasoning models. */
+	thinkingEfforts: string[];
+	/** Effort applied when the model is selected; null means the agent default. */
+	defaultThinkingLevel: string | null;
 }
 
 /** One chat-section model role and its current assignment (docs/protocol.md §2). */
@@ -233,22 +237,24 @@ export async function getSessionContext(id: string): Promise<SessionContext> {
 /**
  * Switch the session model through the agent control channel. `opts.role`
  * targets a non-default model role; the host then persists the assignment
- * unless `persist: false`.
+ * unless `persist: false`. `opts.level` presets the thinking level in the same
+ * command — the agent applies it after the switch, so it wins over the target
+ * model's own default — and the reply carries the effective level.
  */
 export async function setModel(
 	id: string,
 	provider: string,
 	modelId: string,
-	opts: { role?: string; persist?: boolean } = {},
-): Promise<{ switched: boolean; role: string }> {
-	const reply = await api<{ ok: true; switched: boolean; role: string }>(
+	opts: { role?: string; persist?: boolean; level?: string } = {},
+): Promise<{ switched: boolean; role: string; thinkingLevel: string | null }> {
+	const reply = await api<{ ok: true; switched: boolean; role: string; thinkingLevel: string | null }>(
 		`/api/sessions/${encodeURIComponent(id)}/model`,
 		{
 			method: "POST",
 			body: JSON.stringify({ provider, modelId, ...opts }),
 		},
 	);
-	return { switched: reply.switched, role: reply.role };
+	return { switched: reply.switched, role: reply.role, thinkingLevel: reply.thinkingLevel };
 }
 
 /** Set the session thinking level; resolves the effective level after the set. */

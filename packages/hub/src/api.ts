@@ -180,20 +180,27 @@ async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Resp
 	if (persist !== undefined && typeof persist !== "boolean") {
 		return json({ error: "persist must be a boolean" }, 400);
 	}
+	const level = field(body, "level");
+	if (level !== undefined && level.trim() === "") {
+		return json({ error: "invalid level" }, 400);
+	}
 
 	const outcome = await dispatchCmd(id, "set-model", {
 		provider,
 		modelId,
 		...(role === undefined ? {} : { role }),
 		...(typeof persist === "boolean" ? { persist } : {}),
+		...(level === undefined ? {} : { level }),
 	}, ctx);
 	// `role` echoes the agent's answer; the fallbacks cover an older agent that
-	// predates role support.
+	// predates role support (and `thinkingLevel` an older agent without level
+	// support on `set-model`).
 	return outcome.ok
 		? json({
 				ok: true,
 				switched: pick(outcome.data, "switched"),
 				role: pick(outcome.data, "role") ?? role ?? "default",
+				thinkingLevel: pick(outcome.data, "thinkingLevel") ?? null,
 			})
 		: outcome.response;
 }
