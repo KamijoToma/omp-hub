@@ -25,11 +25,24 @@ interface FlatNode {
 	depth: number;
 }
 
-/** DFS pre-order, matching the host's parents-before-children serialization. */
+/**
+ * Displayed indent levels are capped: depth grows per real fork, and a
+ * heavily rewound session can stack many of them (the TUI compresses older
+ * gutter levels the same way).
+ */
+const MAX_TREE_INDENT = 8;
+
+/**
+ * DFS pre-order, matching the host's parents-before-children serialization.
+ * Depth increments only at real forks (a node with multiple children): the
+ * host chains every entry under the previous one, so per-level indentation
+ * would stair-step a linear conversation off-screen (TUI `getChildDepth`
+ * parity).
+ */
 function flattenTree(nodes: readonly TreeWireNode[], depth = 0, out: FlatNode[] = []): FlatNode[] {
 	for (const node of nodes) {
 		out.push({ node, depth });
-		flattenTree(node.children, depth + 1, out);
+		flattenTree(node.children, node.children.length > 1 ? depth + 1 : depth, out);
 	}
 	return out;
 }
@@ -39,7 +52,7 @@ function TreeNodeRow({ flat, disabled, onPick }: { flat: FlatNode; disabled: boo
 	const isPrompt =
 		node.type === "message" ? node.role === "user" : node.type === "custom_message" && node.customType === "collab-prompt";
 	return (
-		<li style={{ paddingLeft: depth * 14 }}>
+		<li style={{ paddingLeft: Math.min(depth, MAX_TREE_INDENT) * 14 }}>
 			<button
 				type="button"
 				className={`hb-pick-row hb-tree-row${node.branch ? " hb-tree-row--branch" : ""}${node.leaf ? " hb-pick-row-current" : ""}`}
