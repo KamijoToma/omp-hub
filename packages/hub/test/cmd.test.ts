@@ -212,6 +212,50 @@ describe("session commands", () => {
 		expect(await badPersist.json()).toEqual({ error: "persist must be a boolean" });
 	});
 
+	test("navigate-tree forwards entryId and returns the move result", async () => {
+		const agent = await connectAgent(main, "m-tree", "tree-machine");
+		const session = await liveSession(main, agent, "m-tree", "/srv/tree");
+
+		const response = api(main, `/api/sessions/${session.id}/tree`, {
+			method: "POST",
+			body: JSON.stringify({ entryId: "e_42", summarize: true }),
+		});
+		const frame = await answerCmd(agent, "navigate-tree", {
+			ok: true,
+			data: { cancelled: false, aborted: false, editorText: "fix it", leafId: "e_9" },
+		});
+		expect(frame).toMatchObject({ id: session.id, cmd: "navigate-tree", entryId: "e_42", summarize: true });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({
+			ok: true,
+			cancelled: false,
+			aborted: false,
+			editorText: "fix it",
+			leafId: "e_9",
+		});
+	});
+
+	test("navigate-tree validates entryId before dispatching", async () => {
+		const agent = await connectAgent(main, "m-tree-bad", "tree-bad-machine");
+		const session = await liveSession(main, agent, "m-tree-bad", "/srv/tree-bad");
+
+		const missing = await api(main, `/api/sessions/${session.id}/tree`, {
+			method: "POST",
+			body: JSON.stringify({}),
+		});
+		expect(missing.status).toBe(400);
+		expect(await missing.json()).toEqual({ error: "entryId is required" });
+
+		const badSummarize = await api(main, `/api/sessions/${session.id}/tree`, {
+			method: "POST",
+			body: JSON.stringify({ entryId: "e_1", summarize: "yes" }),
+		});
+		expect(badSummarize.status).toBe(400);
+		expect(await badSummarize.json()).toEqual({ error: "summarize must be a boolean" });
+	});
+
 	test("set-thinking forwards the level and returns the effective one", async () => {
 		const agent = await connectAgent(main, "m-thinking", "thinking-machine");
 		const session = await liveSession(main, agent, "m-thinking", "/srv/thinking");

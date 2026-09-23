@@ -67,9 +67,10 @@ Generic request/response control channel for web-driven host commands. hub→age
 
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
-  cmd: "get-state" | "set-model" | "set-thinking",
+  cmd: "get-state" | "set-model" | "set-thinking" | "navigate-tree",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
+                                                                // entryId, summarize → navigate-tree
 ```
 
 agent→hub:
@@ -101,6 +102,12 @@ interface AgentState {
   assignment to settings unless `persist: false`. Errors when no auth for the provider, or
   `role` is blank/over 64 chars.)
 - `set-thinking {level}` → `data: { thinkingLevel: string }` (effective level after set).
+- `navigate-tree {entryId, summarize?}` → `data: { cancelled, aborted, editorText, leafId }`
+  (session.navigateTree; moves the tree leaf — the target entry and everything after it leave
+  the active branch; a user-message target rewinds PAST itself and returns its text as
+  `editorText`. `aborted: true` means an in-flight turn was aborted — retry once settled.
+  `summarize: true` records a branch summary; requires a model. The host broadcasts no
+  tree-change frame: callers rebuild their transcript locally, and guests resync on reconnect.)
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -132,6 +139,7 @@ interface SessionRecord {
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?}` → `{ ok: true, switched, role }`; same error set; 400 blank/oversize `role` or non-boolean `persist` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
+| `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
 
 interface MachineRecord {
   machineId: string;
@@ -173,8 +181,10 @@ parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
-{ t: "cmd", reqId: string, cmd: "get-state"|"set-model"|"set-thinking",
-  provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean }
+{ t: "cmd", reqId: string, cmd: "get-state"|"set-model"|"set-thinking"|"navigate-tree",
+  provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
+  entryId?: string, summarize?: boolean }   // parameters pass through unvalidated;
+                                            // executeCommand owns per-command validation
 ```
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
@@ -201,6 +211,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 |---|---|
 | `/model` | model picker modal (drives `GET/POST …/agent-state`, `…/model`) |
 | `/thinking` | thinking-level picker (drives `…/agent-state`, `…/thinking`) |
+| `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
 | `/settings` | settings modal: model + thinking + links + theme + display name |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/theme` | toggle light/dark (vendored theme store) |

@@ -29,7 +29,8 @@ interface HostConfig {
 
 type ReadyFrame = { t: "ready"; sessionFile: string; pid: number; links: SessionLinks };
 
-/** Parent → child `cmd` frame (protocol §4). */
+/** Parent → child `cmd` frame (protocol §4). Known parameters are documented
+ * here; unknown ones pass through untouched (executeCommand validates). */
 type CommandFrame = {
 	t: "cmd";
 	reqId: string;
@@ -40,7 +41,12 @@ type CommandFrame = {
 	role?: string;
 	/** `set-model`: persist a non-default role assignment (default true). */
 	persist?: boolean;
+	/** `set-thinking` level. */
 	level?: string;
+	/** `navigate-tree` target entry. */
+	entryId?: string;
+	/** `navigate-tree`: build a branch summary (default false). */
+	summarize?: boolean;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -169,6 +175,20 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			session.setThinkingLevel(level);
 			return { thinkingLevel: session.thinkingLevel ?? null };
 		}
+		case "navigate-tree": {
+			const entryId = typeof frame.entryId === "string" ? frame.entryId.trim() : "";
+			if (!entryId) throw new Error("navigate-tree requires entryId");
+			// Rewinding onto a user message moves the leaf PAST it (text comes
+			// back via editorText). A mid-run navigation aborts the in-flight
+			// turn and reports `aborted` — the caller may retry once settled.
+			const result = await session.navigateTree(entryId, { summarize: frame.summarize === true });
+			return {
+				cancelled: result.cancelled,
+				aborted: result.aborted ?? false,
+				editorText: result.editorText ?? null,
+				leafId: session.sessionManager.getLeafId() ?? null,
+			};
+		}
 		default:
 			throw new Error(`unknown command: ${String(frame.cmd)}`);
 	}
@@ -270,15 +290,14 @@ async function run(): Promise<void> {
 				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
 				return;
 			case "cmd": {
+				// Pass every parameter through: per-command validation lives in
+				// executeCommand, and a whitelist here silently drops new fields
+				// between supervisor and host.
 				const request: CommandFrame = {
+					...(frame as Partial<CommandFrame>),
 					t: "cmd",
 					reqId: typeof frame.reqId === "string" ? frame.reqId : "",
 					cmd: typeof frame.cmd === "string" ? frame.cmd : "",
-					provider: typeof frame.provider === "string" ? frame.provider : undefined,
-					modelId: typeof frame.modelId === "string" ? frame.modelId : undefined,
-					role: typeof frame.role === "string" ? frame.role : undefined,
-					persist: typeof frame.persist === "boolean" ? frame.persist : undefined,
-					level: typeof frame.level === "string" ? frame.level : undefined,
 				};
 				if (!commandRunner) {
 					respond({ t: "cmd-result", reqId: request.reqId, ok: false, error: "session is not ready" });

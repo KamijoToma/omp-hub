@@ -11,7 +11,7 @@ import type { GuestClient, Notice } from "../lib/client";
 import type { SessionEntry } from "../lib/wire";
 
 /** Dialog a command opens; `SessionView` maps each kind to a component. */
-export type ModalKind = "model" | "thinking" | "settings" | "links" | "help";
+export type ModalKind = "model" | "thinking" | "rewind" | "settings" | "links" | "help";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
@@ -37,6 +37,7 @@ export interface CommandSpec {
 export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "model", description: "switch the session model", run: ctx => ctx.openModal("model") },
 	{ name: "thinking", description: "set the thinking level", run: ctx => ctx.openModal("thinking") },
+	{ name: "rewind", description: "rewind to an earlier message", run: ctx => ctx.openModal("rewind") },
 	{
 		name: "settings",
 		description: "model, thinking, links, theme, display name",

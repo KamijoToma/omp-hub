@@ -39,15 +39,18 @@ test("supervisor cmd() round-trips cmd-results to the requesting child", async (
 	expect(supervisor.status()).toEqual([{ id: "s_cmd_round", status: "live" }]);
 
 	const first = await supervisor.cmd("s_cmd_round", { reqId: "c_round1", cmd: "get-state" });
-	expect(first).toEqual({ ok: true, data: { echo: "get-state" } });
+	expect(first).toEqual({ ok: true, data: { echo: "get-state", got: { t: "cmd", reqId: "c_round1", cmd: "get-state" } } });
 
 	// Concurrent commands keep their own reqId → answer pairing.
 	const [second, third] = await Promise.all([
 		supervisor.cmd("s_cmd_round", { reqId: "c_round2", cmd: "set-thinking", level: "high" }),
 		supervisor.cmd("s_cmd_round", { reqId: "c_round3", cmd: "set-model" }),
 	]);
-	expect(second).toEqual({ ok: true, data: { echo: "set-thinking" } });
-	expect(third).toEqual({ ok: true, data: { echo: "set-model" } });
+	expect(second).toEqual({
+		ok: true,
+		data: { echo: "set-thinking", got: { t: "cmd", reqId: "c_round2", cmd: "set-thinking", level: "high" } },
+	});
+	expect(third).toEqual({ ok: true, data: { echo: "set-model", got: { t: "cmd", reqId: "c_round3", cmd: "set-model" } } });
 
 	await supervisor.stopAll("cmd test done");
 });
@@ -65,13 +68,57 @@ test("supervisor cmd() forwards set-model role and persist fields intact", async
 		role: "smol",
 		persist: false,
 	});
-	expect(roled).toEqual({ ok: true, data: { echo: "set-model", role: "smol", persist: false } });
+	expect(roled).toEqual({
+		ok: true,
+		data: {
+			echo: "set-model",
+			got: {
+				t: "cmd",
+				reqId: "c_role001",
+				cmd: "set-model",
+				provider: "openai",
+				modelId: "gpt-5",
+				role: "smol",
+				persist: false,
+			},
+		},
+	});
 
 	// Omitted fields stay absent so children see an unchanged frame.
 	const plain = await supervisor.cmd("s_cmd_roles", { reqId: "c_role002", cmd: "set-model" });
-	expect(plain).toEqual({ ok: true, data: { echo: "set-model" } });
+	expect(plain).toEqual({ ok: true, data: { echo: "set-model", got: { t: "cmd", reqId: "c_role002", cmd: "set-model" } } });
 
 	await supervisor.stopAll("cmd role test done");
+});
+
+test("supervisor cmd() forwards unknown parameters so new commands need no plumbing", async () => {
+	const { supervisor, ready } = fixtureSupervisor();
+	await supervisor.spawn({ id: "s_cmd_pass", cwd: import.meta.dir, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready;
+
+	const result = await supervisor.cmd("s_cmd_pass", {
+		reqId: "c_pass001",
+		cmd: "navigate-tree",
+		entryId: "e_123",
+		summarize: true,
+		brandNew: { nested: true },
+	});
+	expect(result).toEqual({
+		ok: true,
+		data: {
+			echo: "navigate-tree",
+			got: {
+				t: "cmd",
+				reqId: "c_pass001",
+				cmd: "navigate-tree",
+				entryId: "e_123",
+				summarize: true,
+				brandNew: { nested: true },
+			},
+		},
+	});
+
+	await supervisor.stopAll("cmd pass-through test done");
 });
 
 test("supervisor cmd() fails unknown sessions instead of hanging", async () => {

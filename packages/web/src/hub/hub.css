@@ -532,6 +532,57 @@
 	border-color: var(--accent);
 }
 
+.hb-rewind-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-rewind-icon {
+	flex: none;
+	color: var(--fg-muted);
+}
+
+.hb-rewind-text {
+	overflow: hidden;
+	color: var(--fg);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-rewind-confirm {
+	margin: 0 0 10px;
+	color: var(--fg);
+}
+
+.hb-rewind-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.hb-rewind-go,
+.hb-rewind-back {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-rewind-go {
+	color: var(--accent);
+	background: var(--accent-muted);
+	border-color: var(--accent);
+}
+
+.hb-rewind-back {
+	color: var(--fg);
+	background: none;
+}
+
 .hb-pick-name {
 	flex: 1;
 	min-width: 0;
