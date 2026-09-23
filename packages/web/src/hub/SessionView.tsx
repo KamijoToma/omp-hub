@@ -12,7 +12,7 @@
  * relay, the composer wrapper (a plain `div` around `Composer`) mirrors the
  * textarea's value to float the palette, and the command dialogs render here.
  */
-import type { FocusEvent, FormEvent, KeyboardEvent, ReactNode } from "react";
+import type { FocusEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "../components/agents/AgentDrawer";
 import { AgentsPanel } from "../components/agents/AgentsPanel";
@@ -54,6 +54,7 @@ import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
 import { ResumePicker } from "./ResumePicker";
 import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
+import { SessionSidebar, SessionSwitcherModal } from "./SessionSidebar";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
@@ -144,6 +145,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	const steeringRef = useRef(steering);
 	steeringRef.current = steering;
 	const [railOpen, setRailOpen] = useState(false);
+	// Session switcher drawer (HeaderBar button / Esc / pick-the-current closes).
+	const [navOpen, setNavOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
 	// Composer text mirrored from the vendored textarea (which owns the draft state).
@@ -173,6 +176,52 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	const toggleTheme = useCallback((): void => {
 		setThemePreference(themeResolved === "dark" ? "light" : "dark");
 	}, [themeResolved, setThemePreference]);
+
+	// Ctrl+K (Cmd+K on macOS): the `/sessions` quick switcher, from anywhere on
+	// the page. Capture phase keeps it predictable against the composer palette.
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent): void => {
+			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				e.stopPropagation();
+				setModal("sessions");
+			}
+		};
+		document.addEventListener("keydown", onKeyDown, true);
+		return () => document.removeEventListener("keydown", onKeyDown, true);
+	}, []);
+
+	// Esc closes the switcher drawer — unless a command dialog is open above,
+	// which owns the key through its own handler.
+	useEffect(() => {
+		if (!navOpen) return;
+		const onKeyDown = (e: KeyboardEvent): void => {
+			if (e.key !== "Escape" || modal !== null) return;
+			e.preventDefault();
+			e.stopPropagation();
+			setNavOpen(false);
+		};
+		document.addEventListener("keydown", onKeyDown, true);
+		return () => document.removeEventListener("keydown", onKeyDown, true);
+	}, [navOpen, modal]);
+
+	/**
+	 * Switch sessions in place: plain `navigate`, so the keyed SessionPage
+	 * remounts — the old collab client closes, the agent-side session keeps
+	 * running. Undelivered steering messages are browser-local and would be
+	 * lost, so say so before leaving.
+	 */
+	const switchSession = useCallback(
+		(nextId: string): void => {
+			if (nextId === sessionId) return;
+			if (steeringRef.current.pending.length > 0) {
+				notify("warning", "switching away drops queued steering messages");
+			}
+			setNavOpen(false);
+			navigate(`/s/${nextId}`);
+		},
+		[sessionId, notify],
+	);
 
 	// `/dump`: the transcript snapshot as JSONL, handed to the browser as a download.
 	const downloadDump = useCallback((): void => {
@@ -400,7 +449,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		setPaletteIndex(0);
 	};
 
-	const onComposerKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+	const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
 		// TUI parity: Enter on an empty editor while the agent runs and messages
 		// are queued aborts the turn so the host delivers the queue immediately.
 		// Capture phase keeps the vendored textarea from seeing the key.
@@ -508,11 +557,20 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				railOpen={railOpen}
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
+				onOpenSessions={() => setNavOpen(true)}
 				onOpenModel={() => setModal("model")}
 				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
 			/>
 			<main className="sh-main">
+				{navOpen && (
+					<SessionSidebar
+						currentId={sessionId}
+						onHome={onLeave}
+						onClose={() => setNavOpen(false)}
+						onSwitch={switchSession}
+					/>
+				)}
 				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
 					<div className="sh-transcript">
 						<Transcript
@@ -593,6 +651,9 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			)}
 			{modal === "resume" && record && (
 				<ResumePicker machineId={record.machineId} onResume={resumeEntry} onClose={closeModal} />
+			)}
+			{modal === "sessions" && (
+				<SessionSwitcherModal currentId={sessionId} onSwitch={switchSession} onClose={closeModal} />
 			)}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}

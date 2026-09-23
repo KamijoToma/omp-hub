@@ -22,6 +22,7 @@ export type ModalKind =
 	| "rewind"
 	| "tree"
 	| "resume"
+	| "sessions"
 	| "goal"
 	| "loop"
 	| "settings"
@@ -195,6 +196,11 @@ export const COMMANDS: readonly CommandSpec[] = [
 	},
 	{ name: "clear", description: "clear the conversation context, keep the session", run: ctx => ctx.clearContext() },
 	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },
+	{
+		name: "sessions",
+		description: "switch between hub sessions — quick switcher (Ctrl+K)",
+		run: ctx => ctx.openModal("sessions"),
+	},
 	{
 		name: "resume",
 		description: "resume another session on this machine — [session id]",

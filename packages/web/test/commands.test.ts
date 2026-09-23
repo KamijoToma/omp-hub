@@ -148,6 +148,7 @@ describe("composer routing", () => {
 			"compact",
 			"clear",
 			"new",
+			"sessions",
 			"resume",
 			"retry",
 			"todo",
@@ -174,6 +175,7 @@ describe("composer routing", () => {
 			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
 			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
 			{ text: "/new", check: t => expect(t.news).toBe(1) },
+			{ text: "/sessions", check: t => expect(t.modals).toEqual(["sessions"]) },
 			{ text: "/resume", check: t => expect(t.resumes).toEqual([""]) },
 			{ text: "/resume 9f2c", check: t => expect(t.resumes).toEqual(["9f2c"]) },
 			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
@@ -274,7 +276,7 @@ describe("composer routing", () => {
 		expect(matchCommands(null)).toEqual([]);
 		expect(matchCommands("").map(cmd => cmd.name)).toEqual(COMMANDS.map(cmd => cmd.name));
 		expect(matchCommands("th").map(cmd => cmd.name)).toEqual(["thinking", "theme"]);
-		expect(matchCommands("se").map(cmd => cmd.name)).toEqual(["settings"]);
+		expect(matchCommands("se").map(cmd => cmd.name)).toEqual(["sessions", "settings"]);
 		expect(matchCommands("zz")).toEqual([]);
 	});
 });

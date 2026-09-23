@@ -1,4 +1,4 @@
-import { LogOut, PanelRight } from "lucide-react";
+import { LogOut, PanelLeft, PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import type { GuestSnapshot } from "../../lib/client";
 import { fmtPercent, fmtTokens, shortenPath } from "../../lib/format";
@@ -12,6 +12,11 @@ export interface HeaderBarProps {
 	railOpen: boolean;
 	onToggleRail(): void;
 	onLeave(): void;
+	/**
+	 * Hub-only (`/s/<id>`): open the session switcher drawer. Left unset on
+	 * `/join`, where there is no hub session list.
+	 */
+	onOpenSessions?(): void;
 	/**
 	 * Hub-only (`/s/<id>`): open the model dialog. Left unset on `/join`, where
 	 * the chip stays display-only.
@@ -47,6 +52,7 @@ export function HeaderBar({
 	railOpen,
 	onToggleRail,
 	onLeave,
+	onOpenSessions,
 	onOpenModel,
 	onOpenThinking,
 	onOpenContext,
@@ -153,6 +159,16 @@ export function HeaderBar({
 				)}
 				<span className={`sh-dot sh-dot-${phase}`} title={phase} />
 				<ThemeToggle />
+				{onOpenSessions && (
+					<button
+						type="button"
+						className="sh-btn sh-btn-icon"
+						onClick={onOpenSessions}
+						title="switch session (Ctrl+K)"
+					>
+						<PanelLeft size={14} />
+					</button>
+				)}
 				<button
 					type="button"
 					className={railOpen ? "sh-btn sh-btn-icon sh-btn-on" : "sh-btn sh-btn-icon"}
