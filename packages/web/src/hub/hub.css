@@ -963,3 +963,161 @@
 		animation-duration: 3s;
 	}
 }
+
+/* Machine usage page (UsagePage): hub-native view over a machine's omp
+ * stats dashboard, relayed through /api/machines/:id/usage/*. */
+.hb-usage-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.hb-usage-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-usage-range {
+	width: auto;
+}
+
+.hb-machine-usage {
+	flex: none;
+}
+
+.hb-usage-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 8px;
+}
+
+.hb-usage-card {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 8px 10px;
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-usage-card-label {
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.hb-usage-card-value {
+	font: 600 13px / 1.4 var(--font-mono);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-usage-card-sub {
+	font-size: 11px;
+	color: var(--fg-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-usage-chart {
+	position: relative;
+	display: flex;
+	align-items: flex-end;
+	gap: 2px;
+	height: 112px;
+	padding: 8px 8px 24px;
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-usage-bar {
+	position: relative;
+	flex: 1 1 0;
+	height: 100%;
+	display: flex;
+	align-items: flex-end;
+}
+
+.hb-usage-bar-req {
+	width: 100%;
+	background: var(--accent);
+	border-radius: 1px 1px 0 0;
+}
+
+.hb-usage-bar-err {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	background: var(--err);
+	border-radius: 0 0 1px 1px;
+}
+
+.hb-usage-axis {
+	position: absolute;
+	right: 8px;
+	bottom: 4px;
+	left: 8px;
+	display: flex;
+	justify-content: space-between;
+	font: 400 10px / 1.4 var(--font-mono);
+	color: var(--fg-faint);
+}
+
+.hb-usage-table-wrap {
+	overflow-x: auto;
+}
+
+.hb-usage-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+}
+
+.hb-usage-table th {
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-align: left;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+	white-space: nowrap;
+}
+
+.hb-usage-table td {
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+	white-space: nowrap;
+}
+
+.hb-usage-table tr:last-child td {
+	border-bottom: none;
+}
+
+.hb-usage-table .hb-num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-spin {
+	animation: hb-spin 1s linear infinite;
+}
+
+@keyframes hb-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}

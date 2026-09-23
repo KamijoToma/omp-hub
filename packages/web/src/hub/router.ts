@@ -8,15 +8,23 @@
  */
 import { useSyncExternalStore } from "react";
 
-export type Route = { kind: "home" } | { kind: "session"; id: string } | { kind: "join" } | { kind: "unknown" };
+export type Route =
+	| { kind: "home" }
+	| { kind: "session"; id: string }
+	| { kind: "usage"; machineId: string }
+	| { kind: "join" }
+	| { kind: "unknown" };
 
 const SESSION_PATH = /^\/s\/([^/]+)\/?$/;
+const USAGE_PATH = /^\/usage\/([^/]+)\/?$/;
 
 export function parseRoute(pathname: string): Route {
 	if (pathname === "" || pathname === "/") return { kind: "home" };
 	if (pathname === "/join" || pathname === "/join/") return { kind: "join" };
 	const match = SESSION_PATH.exec(pathname);
 	if (match) return { kind: "session", id: decodeURIComponent(match[1]) };
+	const usage = USAGE_PATH.exec(pathname);
+	if (usage) return { kind: "usage", machineId: decodeURIComponent(usage[1]) };
 	return { kind: "unknown" };
 }
 

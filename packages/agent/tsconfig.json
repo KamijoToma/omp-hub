@@ -11,6 +11,7 @@
     "allowArbitraryExtensions": true,
     "noEmit": true,
     "paths": {
+      "@oh-my-pi/omp-stats": ["../../../oh-my-pi/packages/stats/src/index.ts"],
       "@oh-my-pi/pi-ai": ["../../../oh-my-pi/packages/ai/src/index.ts"],
       "@oh-my-pi/pi-coding-agent": ["../../../oh-my-pi/packages/coding-agent/src/index.ts"],
       "@oh-my-pi/pi-coding-agent/*": ["../../../oh-my-pi/packages/coding-agent/src/*.ts"],

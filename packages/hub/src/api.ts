@@ -26,6 +26,10 @@ const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
 const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
+/** `/api/machines/:id/usage/<dashboard path>`; the rest is relayed verbatim. */
+const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
+/** Cap on the caller's POST body relayed to a machine's stats dashboard. */
+const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -85,6 +89,12 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 		const record = ctx.sessions.get(id);
 		if (!record) return json({ error: "session not found" }, 404);
 		if (req.method === "GET") return json({ session: record });
+	}
+
+	// Matched on the raw pathname: the relayed dashboard path must keep its exact shape.
+	const usage = USAGE_PROXY_PATH_RE.exec(pathname);
+	if (usage) {
+		return usageProxy(decodeURIComponent(usage[1]!), usage[2]!, new URL(req.url).search, req, ctx);
 	}
 
 	const stop = STOP_PATH_RE.exec(route);
@@ -183,6 +193,46 @@ async function listMachineFs(machineId: string, req: Request, ctx: ApiContext): 
 	});
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	return json({ ok: true, listing: result.data });
+}
+
+/**
+ * Machine-level usage relay (protocol §3): forwards `<method> <path><query>`
+ * to the machine's local omp stats dashboard over a `usage-req` frame and
+ * replays the agent's `usage-res` verbatim. Reads like any other `/api/*`
+ * caller — bearer-authenticated, JSON errors on the tunnel's own failures.
+ */
+async function usageProxy(machineId: string, rest: string, search: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "POST") {
+		return json({ error: "method not allowed" }, 405);
+	}
+	if (!machine.connected || !ctx.agents.isOnline(machineId)) return json({ error: "machine offline" }, 502);
+
+	let bodyB64: string | undefined;
+	if (req.method === "POST") {
+		const body = new Uint8Array(await req.arrayBuffer());
+		if (body.byteLength > MAX_USAGE_BODY_BYTES) return json({ error: "request body too large" }, 413);
+		bodyB64 = body.byteLength > 0 ? Buffer.from(body).toString("base64") : undefined;
+	}
+
+	const result = await ctx.agents.sendUsageRequest(machineId, req.method, `${rest}${search}`, bodyB64);
+	// Relay failures are gateway-shaped: agent-reported or transport errors are
+	// 502; only the hub's own timeout is 504.
+	if (!result.ok) return json({ error: result.error }, result.error === "usage timeout" ? 504 : 502);
+
+	const rawStatus = pick(result.data, "status");
+	const status = typeof rawStatus === "number" && Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599
+		? rawStatus
+		: undefined;
+	if (status === undefined) return json({ error: "invalid usage response" }, 502);
+	const contentType = pick(result.data, "contentType");
+	const bodyB64Reply = pick(result.data, "bodyB64");
+	const body = typeof bodyB64Reply === "string" ? Buffer.from(bodyB64Reply, "base64") : undefined;
+	return new Response(body ?? undefined, {
+		status,
+		headers: typeof contentType === "string" ? { "content-type": contentType } : {},
+	});
 }
 
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
