@@ -11,7 +11,7 @@
 FROM docker.io/oven/bun:1.3 AS web
 WORKDIR /build
 COPY packages/web/package.json packages/web/bun.lock* ./
-RUN bun install --frozen-lockfile || bun install
+RUN bun install --frozen-lockfile
 COPY packages/web/ ./
 RUN bun run build
 

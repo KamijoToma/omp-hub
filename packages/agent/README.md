@@ -5,8 +5,10 @@ Headless per-machine daemon: dials out to the hub, spawns one child process per 
 
 ## Resolving oh-my-pi SDK imports
 
-There is **no `node_modules` and no install step** for this package in development.
-`tsconfig.json` maps the imports onto a sibling oh-my-pi checkout:
+The daemon has no runtime dependencies in this package. Run `bun install --frozen-lockfile`
+for the dev-only TypeScript/Bun types used by `bun run typecheck`; the sibling `oh-my-pi`
+checkout must have its own dependencies installed. `tsconfig.json` maps SDK imports onto
+that sibling checkout and uses its asset type declarations:
 
 ```jsonc
 "paths": {
@@ -33,6 +35,9 @@ bun run dev -- --hub ws://127.0.0.1:8080 --token <HUB_TOKEN> --name my-machine
 
 Auth for the agent sessions comes from the default omp store (`~/.omp/agent`) — the daemon
 shares it with any local omp install. Provider env keys work too.
+
+Type-check from this package with `bun run typecheck`; it does not emit files or type-check
+against a mock SDK.
 
 ## Layout
 

@@ -52,13 +52,14 @@ or by attaching a real omp client (`omp join "<link>"`) to a live session.
 
 ## Quick start (local dev, single machine)
 
-Prereqs: Bun ≥ 1.3.14. An omp auth store (`~/.omp`) with at least one working provider
-(the wrapper's sessions share it), or provider API keys in the environment.
+Prereqs: Bun ≥ 1.3.14, a sibling `../oh-my-pi` checkout with dependencies installed
+(`bun install` there; the agent maps SDK imports to its sources), and an omp auth store
+(`~/.omp`) with at least one working provider or provider API keys in the environment.
 
 ```bash
-# 1. hub (relay + API + web on :8080)
+# 1. hub demo (installs locked web deps, builds UI, serves relay + API + web on :8080)
 cd packages/hub
-HUB_TOKEN=dev-token bun run dev            # http://localhost:8080
+HUB_TOKEN=dev-token bun run demo           # http://localhost:8080
 
 # 2. wrapper agent (another shell)
 cd packages/agent
@@ -71,6 +72,11 @@ open http://localhost:8080                 # enter token "dev-token", pick dev-m
 # 4. omp TUI attach (optional)
 omp join "$(cat /tmp/last-link.txt)"       # or copy the link from the session page
 ```
+
+For type checking, run `bun install --frozen-lockfile && bun run typecheck` in each of
+`packages/web`, `packages/hub`, and `packages/agent`. The agent check needs the sibling
+`oh-my-pi` checkout and its installed dependencies. `bun run build` in `packages/web`
+rebuilds the static UI without starting the hub.
 
 ## Docker (hub only)
 

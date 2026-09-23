@@ -23,20 +23,30 @@
 
 ## Development Commands
 
-Run commands in the named package; there is no root package manifest or workspace runner.
+Run commands from the repository root with `bun --cwd`; there is no root package manifest or workspace runner.
 
 ```bash
-cd packages/web && bun install && bun run build   # dist/ for the hub's static UI
-cd packages/hub && HUB_TOKEN=dev-token bun run dev  # http://localhost:8080
-cd packages/agent && bun run dev -- --hub ws://localhost:8080 --token dev-token --name dev-machine
-cd packages/web && bun run dev                    # separate Bun HTML dev server
-cd packages/hub && bun test
-cd packages/agent && bun test
-cd packages/web && bun test
-# From repo root: docker build -f docker/Dockerfile -t omp-hub .
+# Install and check each package (hub/agent dependencies are dev-only)
+bun --cwd=packages/web install --frozen-lockfile
+bun --cwd=packages/web run build
+bun --cwd=packages/web run typecheck
+bun --cwd=packages/hub install --frozen-lockfile
+bun --cwd=packages/hub run typecheck
+bun --cwd=packages/agent install --frozen-lockfile
+bun --cwd=packages/agent run typecheck
+
+# Local demo: run these in separate terminals
+HUB_TOKEN=dev-token bun --cwd=packages/hub run demo  # installs locked web deps, builds UI, serves :8080
+bun --cwd=packages/agent run dev -- --hub ws://localhost:8080 --token dev-token --name dev-machine
+bun --cwd=packages/web run dev                       # optional separate Bun HTML dev server
+
+bun --cwd=packages/hub test
+bun --cwd=packages/agent test
+bun --cwd=packages/web test
+docker build -f docker/Dockerfile -t omp-hub .       # hub + web only
 ```
 
-The hub and agent also expose `bun run start` (same entry points as `dev`). Build the web dist before using the hub-served UI in a fresh checkout; `WEB_DIST` overrides its location. The Docker image builds web + hub only, not the machine agent.
+The hub and agent also expose `bun run start` (same entry points as `dev`). Hub `demo` installs the web's frozen lockfile dependencies and builds `dist/` before serving; hub `dev`/`start` serve an existing dist without building it. `WEB_DIST` overrides the static directory. The Docker image builds the web with `bun install --frozen-lockfile` and packages the hub only, not the machine agent.
 
 ## Code Conventions & Common Patterns
 
@@ -54,7 +64,7 @@ The hub and agent also expose `bun run start` (same entry points as `dev`). Buil
 
 ## Runtime/Tooling Preferences
 
-Use **Bun ≥ 1.3.14**, not Node/npm commands. Only `packages/web` declares third-party packages and owns `bun.lock`. In development, `packages/agent/tsconfig.json` resolves `@oh-my-pi/pi-coding-agent` to the sibling `../oh-my-pi` checkout; the agent and its real-host test require a checkout whose SDK subpaths match the imports in `session-host.ts`. Hub/agent run TypeScript directly without a build step. There is no configured lint, formatter, typecheck script, CI workflow, or coverage gate. Keep `HUB_TOKEN` set outside disposable local development; remote browser/`omp join` access needs HTTPS/WSS (`HUB_TLS_CERT`/`HUB_TLS_KEY` or a proxy plus `HUB_PUBLIC_URL`).
+Use **Bun ≥ 1.3.14**, not Node/npm commands. Each package owns a `bun.lock`: web has third-party runtime dependencies; hub and agent have only dev dependencies for TypeScript and Bun types, keeping their runtimes dependency-free. Run `bun run typecheck` in each package. Agent type checking emits nothing and resolves SDK source imports and asset declarations through a sibling `../oh-my-pi` checkout with its own dependencies installed; its real-host test also needs matching SDK subpaths. Hub/agent run TypeScript directly without a build step. There is no configured lint, formatter, CI workflow, or coverage gate. Keep `HUB_TOKEN` set outside disposable local development; remote browser/`omp join` access needs HTTPS/WSS (`HUB_TLS_CERT`/`HUB_TLS_KEY` or a proxy plus `HUB_PUBLIC_URL`).
 
 ## Testing & QA
 

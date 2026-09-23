@@ -197,12 +197,12 @@ export class HubClient {
 	send(frame: AgentFrame): void {
 		if (this.#sendNow(frame)) return;
 		if (this.#closed) {
-			this.#log.warn(`dropping ${frame.t} frame for ${frame.id}: hub connection closed`);
+			this.#log.warn(`dropping ${frame.t} frame for ${frame.t === "cmd-result" ? frame.reqId : frame.id}: hub connection closed`);
 			return;
 		}
 		if (this.#pending.length >= MAX_QUEUED_FRAMES) {
 			const dropped = this.#pending.shift();
-			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped?.id ?? "?"}`);
+			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped?.t === "cmd-result" ? dropped.reqId : dropped?.id ?? "?"}`);
 		}
 		this.#pending.push(frame);
 	}

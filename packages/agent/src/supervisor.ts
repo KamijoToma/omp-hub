@@ -162,15 +162,9 @@ export class Supervisor {
 		}
 
 		const argv = [process.execPath, this.#hostEntry, "--config", JSON.stringify(config)];
-		const spawnOptions: Bun.SpawnOptions<"pipe", "pipe", "inherit"> = {
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "inherit",
-			cwd: config.cwd,
-		};
 		let child: SessionChild;
 		try {
-			child = Bun.spawn(argv, spawnOptions);
+			child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", cwd: config.cwd });
 		} catch (err) {
 			const message = `failed to spawn session host: ${errorMessage(err)}`;
 			this.#log.error(`session ${config.id}: ${message}`);

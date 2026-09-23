@@ -6,6 +6,12 @@
   "scripts": {
     "dev": "bun src/server.ts",
     "start": "bun src/server.ts",
+    "demo": "bun --cwd=../web install --frozen-lockfile && bun --cwd=../web run build && bun src/server.ts",
+    "typecheck": "tsc --noEmit",
     "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
   }
 }

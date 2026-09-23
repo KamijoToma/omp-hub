@@ -6,6 +6,10 @@
     "target": "ESNext",
     "strict": true,
     "skipLibCheck": true,
+    "types": ["bun", "assets"],
+    "typeRoots": ["./node_modules/@types", "../../../oh-my-pi/types"],
+    "allowArbitraryExtensions": true,
+    "noEmit": true,
     "paths": {
       "@oh-my-pi/pi-ai": ["../../../oh-my-pi/packages/ai/src/index.ts"],
       "@oh-my-pi/pi-coding-agent": ["../../../oh-my-pi/packages/coding-agent/src/index.ts"],
