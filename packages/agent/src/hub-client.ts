@@ -46,7 +46,18 @@ export interface PingFrame {
 	ts: number;
 }
 
-export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame;
+/** hub → agent session command (protocol §2); answered with `cmd-result`. */
+export interface CmdFrame {
+	t: "cmd";
+	id: string;
+	reqId: string;
+	cmd: string;
+	provider?: string;
+	modelId?: string;
+	level?: string;
+}
+
+export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame;
 
 export interface HelloFrame {
 	t: "hello";
@@ -87,8 +98,17 @@ export interface PongFrame {
 	ts: number;
 }
 
+/** agent → hub answer to one `cmd` (protocol §2). */
+export interface CmdResultFrame {
+	t: "cmd-result";
+	reqId: string;
+	ok: boolean;
+	data?: unknown;
+	error?: string;
+}
+
 /** Frames the daemon sends outside `hello`/`hb`/`pong`. */
-export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame;
+export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | CmdResultFrame;
 
 /** Every frame on the agent → hub wire. */
 export type OutboundFrame = HelloFrame | HeartbeatFrame | PongFrame | AgentFrame;
@@ -102,6 +122,7 @@ export interface HubClientOptions {
 	sessions: () => Array<{ id: string; status: SessionStatus }>;
 	onStart(frame: StartFrame): void;
 	onStop(frame: StopFrame): void;
+	onCmd(frame: CmdFrame): void;
 	onWelcome?: (frame: WelcomeFrame) => void;
 	log: Logger;
 	heartbeatMs?: number;
@@ -168,7 +189,7 @@ export class HubClient {
 		this.#log.info("hub connection closed");
 	}
 
-	/** Send a session report; queued (bounded) while the socket is down. */
+	/** Send a frame; queued (bounded) while the socket is down. */
 	send(frame: AgentFrame): void {
 		if (this.#sendNow(frame)) return;
 		if (this.#closed) {
@@ -306,6 +327,9 @@ export class HubClient {
 				return;
 			case "stop":
 				this.#dispatch(() => this.#options.onStop(frame));
+				return;
+			case "cmd":
+				this.#dispatch(() => this.#options.onCmd(frame));
 				return;
 			case "ping":
 				this.#sendNow({ t: "pong", ts: frame.ts });

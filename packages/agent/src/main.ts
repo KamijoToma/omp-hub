@@ -7,7 +7,7 @@
  */
 
 import { hostname } from "node:os";
-import { HubClient } from "./hub-client";
+import { type CmdFrame, HubClient } from "./hub-client";
 import { createLogger, errorMessage } from "./log";
 import { resolveMachineId } from "./machine-id";
 import { Supervisor } from "./supervisor";
@@ -88,6 +88,26 @@ function parseArgs(argv: string[]): CliOptions | null {
 	};
 }
 
+/**
+ * Route one hub `cmd` to its session child and answer with `cmd-result` (§2).
+ * The 15 s timeout belongs to the hub; here every path replies exactly once.
+ */
+async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: CmdFrame): Promise<void> {
+	try {
+		const result = await supervisor.cmd(frame.id, {
+			reqId: frame.reqId,
+			cmd: frame.cmd,
+			provider: frame.provider,
+			modelId: frame.modelId,
+			level: frame.level,
+		});
+		if (result.ok) client.send({ t: "cmd-result", reqId: frame.reqId, ok: true, data: result.data });
+		else client.send({ t: "cmd-result", reqId: frame.reqId, ok: false, error: result.error });
+	} catch (err) {
+		client.send({ t: "cmd-result", reqId: frame.reqId, ok: false, error: errorMessage(err) });
+	}
+}
+
 async function main(): Promise<void> {
 	let options: CliOptions | null;
 	try {
@@ -154,6 +174,7 @@ async function main(): Promise<void> {
 				.catch(err => client.send({ t: "session-error", id: frame.id, error: errorMessage(err) }));
 		},
 		onStop: frame => void supervisor.stop(frame.id, frame.reason ?? "hub stop"),
+		onCmd: frame => void handleCmdFrame(supervisor, client, frame),
 	});
 
 	let shuttingDown = false;

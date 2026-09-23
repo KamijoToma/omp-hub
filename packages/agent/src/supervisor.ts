@@ -44,6 +44,30 @@ export interface SupervisorHandlers {
 	onExit(id: string, code: number | null, reason: string): void;
 }
 
+/** Parent → child `cmd` payload (protocol §4); `reqId` correlates the reply. */
+export interface CommandRequest {
+	reqId: string;
+	cmd: string;
+	provider?: string;
+	modelId?: string;
+	level?: string;
+}
+
+/** Normalized child `cmd-result` (protocol §4): exactly one of data/error. */
+export type CommandResult = { ok: true; data: unknown } | { ok: false; error: string };
+
+/** One in-flight command: which session owes the reply, and how to settle it. */
+interface PendingCommand {
+	sessionId: string;
+	resolve(result: CommandResult): void;
+	reject(error: Error): void;
+}
+
+export interface SupervisorOptions {
+	/** Session host entry point to spawn; defaults to `./session-host.ts`. */
+	hostEntry?: string;
+}
+
 /** Child must exit within 10 s of stop; escalate to SIGKILL after that (protocol §4). */
 const STOP_GRACE_MS = 10_000;
 const LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
@@ -65,10 +89,15 @@ export class Supervisor {
 	#children = new Map<string, ChildRecord>();
 	#handlers: SupervisorHandlers;
 	#log: Logger;
+	/** Session host entry point spawned for every child. */
+	#hostEntry: string;
+	/** In-flight `cmd` requests keyed by reqId (protocol §4). */
+	#pending = new Map<string, PendingCommand>();
 
-	constructor(handlers: SupervisorHandlers, log: Logger) {
+	constructor(handlers: SupervisorHandlers, log: Logger, options: SupervisorOptions = {}) {
 		this.#handlers = handlers;
 		this.#log = log;
+		this.#hostEntry = options.hostEntry ?? new URL("./session-host.ts", import.meta.url).pathname;
 	}
 
 	/** Sessions occupying a slot (starting or live). */
@@ -83,6 +112,33 @@ export class Supervisor {
 	/** Heartbeat payload: every tracked session with its current status. */
 	status(): Array<{ id: string; status: SessionStatus }> {
 		return [...this.#children.values()].map(record => ({ id: record.id, status: record.status }));
+	}
+
+	/**
+	 * Send one `cmd` frame to `id`'s child and resolve with its `cmd-result`
+	 * (protocol §4). Unknown sessions resolve `{ok:false,"unknown session"}`
+	 * (the hub's 404 case); duplicate reqIds, write failures, and child exits
+	 * before an answer reject.
+	 */
+	async cmd(id: string, request: CommandRequest): Promise<CommandResult> {
+		const record = this.#children.get(id);
+		if (!record) return { ok: false, error: "unknown session" };
+		if (this.#pending.has(request.reqId)) throw new Error(`duplicate reqId ${request.reqId}`);
+
+		// The pending entry exists before the write so an instant answer (or an
+		// instant child death) can never race past its own correlation.
+		const { promise, resolve, reject } = Promise.withResolvers<CommandResult>();
+		this.#pending.set(request.reqId, { sessionId: id, resolve, reject });
+		try {
+			record.child.stdin.write(`${JSON.stringify({ t: "cmd", ...request })}\n`);
+			// `flush()` is synchronous for pipes but may hand back a promise.
+			void Promise.resolve(record.child.stdin.flush()).catch(err => {
+				this.#rejectCommand(request.reqId, new Error(`failed to send cmd to session ${id}: ${errorMessage(err)}`));
+			});
+		} catch (err) {
+			this.#rejectCommand(request.reqId, new Error(`failed to send cmd to session ${id}: ${errorMessage(err)}`));
+		}
+		return await promise;
 	}
 
 	/**
@@ -105,12 +161,7 @@ export class Supervisor {
 			return;
 		}
 
-		const argv = [
-			process.execPath,
-			new URL("./session-host.ts", import.meta.url).pathname,
-			"--config",
-			JSON.stringify(config),
-		];
+		const argv = [process.execPath, this.#hostEntry, "--config", JSON.stringify(config)];
 		const spawnOptions: Bun.SpawnOptions<"pipe", "pipe", "inherit"> = {
 			stdin: "pipe",
 			stdout: "pipe",
@@ -247,6 +298,25 @@ export class Supervisor {
 				this.#log[level](`child ${record.id}: ${typeof frame.message === "string" ? frame.message : ""}`);
 				return;
 			}
+			case "cmd-result": {
+				const reqId = typeof frame.reqId === "string" ? frame.reqId : "";
+				const pending = this.#pending.get(reqId);
+				if (!pending) {
+					this.#log.warn(`child ${record.id}: cmd-result for unknown reqId ${reqId}`);
+					return;
+				}
+				if (pending.sessionId !== record.id) {
+					this.#log.warn(`child ${record.id}: cmd-result for ${pending.sessionId}'s reqId ${reqId}`);
+					return;
+				}
+				this.#pending.delete(reqId);
+				if (frame.ok === true) pending.resolve({ ok: true, data: frame.data });
+				else {
+					const error = typeof frame.error === "string" ? frame.error : "session command failed";
+					pending.resolve({ ok: false, error });
+				}
+				return;
+			}
 			default:
 				this.#log.debug(`child ${record.id}: unknown frame type ${String(frame.t)}`);
 		}
@@ -258,7 +328,27 @@ export class Supervisor {
 		this.#children.delete(record.id);
 		const reason =
 			record.stopReason ?? record.error ?? (code === 0 ? "exit" : `exited with code ${String(code)}`);
+		// Callers must not hang on a child that will never answer (§2: the hub has
+		// its own 15 s timeout, but an exited session answers nothing at all).
+		this.#rejectSessionCommands(record.id, new Error(`session ${record.id} exited: ${reason}`));
 		this.#log.info(`session ${record.id} exited (code ${String(code)}): ${reason}`);
 		this.#handlers.onExit(record.id, code, reason);
+	}
+
+	/** Reject and drop one pending command; no-op once the child answered it. */
+	#rejectCommand(reqId: string, error: Error): void {
+		const pending = this.#pending.get(reqId);
+		if (!pending) return;
+		this.#pending.delete(reqId);
+		pending.reject(error);
+	}
+
+	/** Reject every command a dying child still owes its callers. */
+	#rejectSessionCommands(sessionId: string, error: Error): void {
+		for (const [reqId, pending] of this.#pending) {
+			if (pending.sessionId !== sessionId) continue;
+			this.#pending.delete(reqId);
+			pending.reject(error);
+		}
 	}
 }

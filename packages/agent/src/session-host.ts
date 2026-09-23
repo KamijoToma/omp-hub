@@ -12,6 +12,8 @@ import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-codin
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
 import { buildCollabCtx } from "./collab-ctx";
 import { createLogger, errorMessage } from "./log";
 import type { SessionLinks } from "./supervisor";
@@ -28,6 +30,88 @@ interface HostConfig {
 }
 
 type ReadyFrame = { t: "ready"; sessionFile: string; pid: number; links: SessionLinks };
+
+/** Parent → child `cmd` frame (protocol §4). */
+type CommandFrame = {
+	t: "cmd";
+	reqId: string;
+	cmd: string;
+	provider?: string;
+	modelId?: string;
+	level?: string;
+};
+
+/** Child → parent answer; exactly one per `cmd` (protocol §4). */
+type CommandResultFrame =
+	| { t: "cmd-result"; reqId: string; ok: true; data: unknown }
+	| { t: "cmd-result"; reqId: string; ok: false; error: string };
+
+/** One selectable model (protocol §2 AgentState). */
+interface AgentModelRef {
+	provider: string;
+	id: string;
+	name: string;
+}
+
+/** `get-state` payload (protocol §2 AgentState). */
+interface AgentState {
+	sessionName: string;
+	cwd: string;
+	model: AgentModelRef | null;
+	thinkingLevel: string | null;
+	thinkingLevels: string[];
+	models: AgentModelRef[];
+}
+
+/**
+ * Levels offered when the current model declares no controllable effort surface
+ * (`Model.thinking` unset — non-reasoning or router-selected models).
+ */
+const FALLBACK_THINKING_LEVELS: readonly string[] = ["off", "low", "medium", "high"];
+
+/** `get-state`: session identity plus the model/thinking surface for the web UI. */
+function agentState(session: AgentSession): AgentState {
+	const model = session.model;
+	const efforts = session.getAvailableThinkingLevels();
+	return {
+		sessionName: session.sessionName ?? "",
+		cwd: session.sessionManager.getCwd(),
+		model: model ? { provider: model.provider, id: model.id, name: model.name } : null,
+		thinkingLevel: session.thinkingLevel ?? null,
+		// `off` is always selectable; the rest are the model's declared efforts
+		// (`Model.thinking.efforts`, already filtered to the reasoning-capable set).
+		thinkingLevels: efforts.length > 0 ? ["off", ...efforts] : [...FALLBACK_THINKING_LEVELS],
+		models: session.getAvailableModels().map(entry => ({
+			provider: entry.provider,
+			id: entry.id,
+			name: entry.name ?? entry.id,
+		})),
+	};
+}
+
+/** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
+async function executeCommand(session: AgentSession, frame: CommandFrame): Promise<unknown> {
+	switch (frame.cmd) {
+		case "get-state":
+			return agentState(session);
+		case "set-model": {
+			const { provider, modelId } = frame;
+			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
+			const model = session.modelRegistry.find(provider, modelId);
+			if (!model) throw new Error(`unknown model ${provider}/${modelId}`);
+			const { switched } = await session.setModel(model);
+			return { switched };
+		}
+		case "set-thinking": {
+			const level = parseConfiguredThinkingLevel(frame.level);
+			if (level === undefined) throw new Error(`invalid thinking level: ${String(frame.level)}`);
+			session.setThinkingLevel(level);
+			return { thinkingLevel: session.thinkingLevel ?? null };
+		}
+		default:
+			throw new Error(`unknown command: ${String(frame.cmd)}`);
+	}
+}
 
 const rawStdoutWrite = process.stdout.write.bind(process.stdout);
 const stderrWrite = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
@@ -104,20 +188,45 @@ async function run(): Promise<void> {
 
 	const decoder = new TextDecoder();
 	let stdinBuffer = "";
+	// Commands are answered only once the session exists (`ready`); earlier frames
+	// get a plain `{ok:false}` rather than silence — the parent waits on exactly
+	// one `cmd-result` per request.
+	let commandRunner: ((frame: CommandFrame) => Promise<void>) | undefined;
+	const respond = (frame: CommandResultFrame): void => {
+		rawStdoutWrite(`${JSON.stringify(frame)}\n`);
+	};
 	const handleStdinLine = (line: string): void => {
-		let frame: unknown;
+		let parsed: unknown;
 		try {
-			frame = JSON.parse(line);
+			parsed = JSON.parse(line);
 		} catch {
 			log.warn(`ignoring non-JSON stdin line: ${line}`);
 			return;
 		}
-		const stop = (frame as { t?: string } | null)?.t === "stop" ? (frame as { reason?: string }) : undefined;
-		if (!stop) {
-			log.debug(`ignoring unknown stdin frame: ${line}`);
-			return;
+		const frame = (parsed ?? {}) as Partial<CommandFrame> & { reason?: unknown };
+		switch (frame.t) {
+			case "stop":
+				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
+				return;
+			case "cmd": {
+				const request: CommandFrame = {
+					t: "cmd",
+					reqId: typeof frame.reqId === "string" ? frame.reqId : "",
+					cmd: typeof frame.cmd === "string" ? frame.cmd : "",
+					provider: typeof frame.provider === "string" ? frame.provider : undefined,
+					modelId: typeof frame.modelId === "string" ? frame.modelId : undefined,
+					level: typeof frame.level === "string" ? frame.level : undefined,
+				};
+				if (!commandRunner) {
+					respond({ t: "cmd-result", reqId: request.reqId, ok: false, error: "session is not ready" });
+					return;
+				}
+				void commandRunner(request);
+				return;
+			}
+			default:
+				log.debug(`ignoring unknown stdin frame: ${line}`);
 		}
-		requestStop(stop.reason ?? "stop");
 	};
 	process.stdin.on("data", (chunk: Uint8Array | string) => {
 		stdinBuffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
@@ -178,6 +287,8 @@ async function run(): Promise<void> {
 	};
 	rawStdoutWrite(`${JSON.stringify(ready)}\n`);
 	log.info(`ready: session ${session.sessionManager.getSessionId()} pid ${process.pid} file ${sessionFile}`);
+	// Commands are served from `ready` on; exactly one `cmd-result` per request (§4).
+	commandRunner = runCommand;
 
 	let stopping = false;
 	const shutdown = async (reason: string): Promise<void> => {
@@ -210,6 +321,21 @@ async function run(): Promise<void> {
 
 	if (config.prompt) {
 		void session.prompt(config.prompt).catch(err => log.error(`initial prompt failed: ${errorMessage(err)}`));
+	}
+
+	/** Answer one `cmd` frame: success data, or the thrown message as `error` (§4). */
+	async function runCommand(frame: CommandFrame): Promise<void> {
+		if (stopping) {
+			respond({ t: "cmd-result", reqId: frame.reqId, ok: false, error: "session is stopping" });
+			return;
+		}
+		try {
+			const data = await executeCommand(session, frame);
+			respond({ t: "cmd-result", reqId: frame.reqId, ok: true, data });
+		} catch (err) {
+			log.warn(`command ${frame.cmd} failed: ${errorMessage(err)}`);
+			respond({ t: "cmd-result", reqId: frame.reqId, ok: false, error: errorMessage(err) });
+		}
 	}
 }
 
