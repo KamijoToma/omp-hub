@@ -8,16 +8,13 @@
 
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
-import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
-import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
-import { buildCollabCtx } from "./collab-ctx";
+import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createLogger, errorMessage } from "./log";
 import type { SessionLinks } from "./supervisor";
-import { createStubUIContext } from "./ui-stub";
+
+type ComputeSessionContextBreakdown = typeof import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime").computeSessionContextBreakdown;
 
 interface HostConfig {
 	id: string;
@@ -90,10 +87,20 @@ function agentState(session: AgentSession): AgentState {
 }
 
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-async function executeCommand(session: AgentSession, frame: CommandFrame): Promise<unknown> {
+async function executeCommand(
+	session: AgentSession,
+	frame: CommandFrame,
+	parseThinkingLevel: typeof ParseThinkingLevel,
+	computeSessionContextBreakdown: ComputeSessionContextBreakdown,
+): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
 			return agentState(session);
+		case "get-context":
+			// The SDK's own estimated split, without the snapcompact planner: it
+			// renders images for a savings estimate the UI never shows. Numbers and
+			// labels only — no prompt text and no model object cross this boundary.
+			return sessionContextPayload(computeSessionContextBreakdown(session));
 		case "set-model": {
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
@@ -103,7 +110,7 @@ async function executeCommand(session: AgentSession, frame: CommandFrame): Promi
 			return { switched };
 		}
 		case "set-thinking": {
-			const level = parseConfiguredThinkingLevel(frame.level);
+			const level = parseThinkingLevel(frame.level);
 			if (level === undefined) throw new Error(`invalid thinking level: ${String(frame.level)}`);
 			session.setThinkingLevel(level);
 			return { thinkingLevel: session.thinkingLevel ?? null };
@@ -203,7 +210,7 @@ async function run(): Promise<void> {
 			log.warn(`ignoring non-JSON stdin line: ${line}`);
 			return;
 		}
-		const frame = (parsed ?? {}) as Partial<CommandFrame> & { reason?: unknown };
+		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown };
 		switch (frame.t) {
 			case "stop":
 				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
@@ -245,6 +252,15 @@ async function run(): Promise<void> {
 
 	const cwd = await stat(config.cwd).catch(() => null);
 	if (!cwd?.isDirectory()) throw new Error(`cwd is not an existing directory: ${config.cwd}`);
+
+	// Load SDK modules only after stdout is reserved for JSONL so native failures
+	// are reported to the supervisor as structured errors rather than raw output.
+	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
+	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
+	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
+	const { parseConfiguredThinkingLevel } = await import("@oh-my-pi/pi-tui/thinking");
+	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
+	const { createStubUIContext } = await import("./ui-stub");
 
 	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
 	// one session, and the global would freeze the first cwd.
@@ -330,7 +346,7 @@ async function run(): Promise<void> {
 			return;
 		}
 		try {
-			const data = await executeCommand(session, frame);
+			const data = await executeCommand(session, frame, parseConfiguredThinkingLevel, computeSessionContextBreakdown);
 			respond({ t: "cmd-result", reqId: frame.reqId, ok: true, data });
 		} catch (err) {
 			log.warn(`command ${frame.cmd} failed: ${errorMessage(err)}`);

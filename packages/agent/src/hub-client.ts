@@ -11,7 +11,7 @@ import { errorMessage, type Logger } from "./log";
 import type { SessionLinks, SessionStatus } from "./supervisor";
 
 /** Agent release reported in `hello.version`. */
-const AGENT_VERSION = "0.1.0";
+const AGENT_VERSION = "0.2.0";
 const HEARTBEAT_MS = 15_000;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;

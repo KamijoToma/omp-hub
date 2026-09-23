@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "omp-hub-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "omp hub web UI: machines, sessions, and the vendored collab guest client",
   "license": "MIT",

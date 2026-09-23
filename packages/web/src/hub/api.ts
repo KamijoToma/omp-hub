@@ -185,6 +185,39 @@ export async function getAgentState(id: string): Promise<AgentState> {
 	return reply.state;
 }
 
+/** One bucket of the agent's own context estimate (docs/protocol.md §2 `SessionContext`). */
+export interface ContextCategory {
+	id: "systemPrompt" | "systemTools" | "systemContext" | "skills" | "messages";
+	label: string;
+	tokens: number;
+}
+
+/**
+ * What occupies the model's context window right now, as the agent SDK
+ * estimates it. `contextWindow <= 0` means no model is selected; categories are
+ * approximations — message tokens are not split by role.
+ */
+export interface SessionContext {
+	contextWindow: number;
+	usedTokens: number;
+	categories: ContextCategory[];
+	autoCompactBufferTokens: number;
+	freeTokens: number;
+}
+
+/**
+ * Context breakdown for a live session (agent `get-context`, no parameters).
+ * Same dispatch semantics as {@link getAgentState}: the hub answers 404
+ * (unknown session), 409 (not live), 502 (agent offline), 504 (cmd timed out) —
+ * all {@link HubApiError}.
+ */
+export async function getSessionContext(id: string): Promise<SessionContext> {
+	const reply = await api<{ ok: true; context: SessionContext }>(
+		`/api/sessions/${encodeURIComponent(id)}/context`,
+	);
+	return reply.context;
+}
+
 /** Switch the session model through the agent control channel. */
 export async function setModel(id: string, provider: string, modelId: string): Promise<{ switched: boolean }> {
 	const reply = await api<{ ok: true; switched: boolean }>(`/api/sessions/${encodeURIComponent(id)}/model`, {

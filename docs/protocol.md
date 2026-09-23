@@ -2,6 +2,9 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.2.0** — reported by `hello.version` and `GET /api/health` — is additive: the
+`get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
+
 ## 1. Relay contract (`/r/<roomId>`) — frozen, upstream-compatible
 
 Byte-identical to `oh-my-pi/packages/collab-web/scripts/local-relay.ts`. Summary:
@@ -67,7 +70,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
-  cmd: "get-state" | "set-model" | "set-thinking",
+  cmd: "get-state" | "get-context" | "set-model" | "set-thinking",
   provider?: string, modelId?: string, level?: string }
 ```
 
@@ -93,6 +96,20 @@ Semantics:
 - `set-model {provider, modelId}` → `data: { switched: boolean }` (session.setModel; errors when
   no auth for the provider).
 - `set-thinking {level}` → `data: { thinkingLevel: string }` (effective level after set).
+- `get-context` (no parameters) → `data: SessionContext`: SDK token estimates for the session's
+  current context. The model object never leaves the host — only numbers do:
+  ```ts
+  interface SessionContext {
+    contextWindow: number;              // 0 when no model is selected
+    usedTokens: number;
+    categories: { id: "systemPrompt" | "systemTools" | "systemContext" | "skills" | "messages";
+                  label: string; tokens: number }[];
+    autoCompactBufferTokens: number;    // contextWindow - auto-compaction threshold; 0 when off
+    freeTokens: number;
+  }
+  ```
+  All values are estimates: `categories` need not sum to `usedTokens`, and messages stay one
+  bucket — the SDK cannot honestly split them into user/tool/assistant.
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -121,9 +138,6 @@ interface SessionRecord {
   sessionFile?: string;
   pid?: number;
 }
-| `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
-| `POST /api/sessions/:id/model` | `{provider, modelId}` → `{ ok: true, switched }`; same error set |
-| `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 
 interface MachineRecord {
   machineId: string;
@@ -140,6 +154,10 @@ interface MachineRecord {
 | `GET /api/machines` | → `{ machines: MachineRecord[] }` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
+| `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
+| `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
+| `POST /api/sessions/:id/model` | `{provider, modelId}` → `{ ok: true, switched }`; same error set |
+| `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -165,9 +183,12 @@ parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
-{ t: "cmd", reqId: string, cmd: "get-state"|"set-model"|"set-thinking",
+{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking",
   provider?: string, modelId?: string, level?: string }
 ```
+
+`cmd` semantics are §2's; `get-context` is answered with the same `SessionContext` object
+(numbers only), computed by the child from the SDK's context breakdown.
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
 `{ id, cwd, name?, prompt?, relayUrl, webUrl, agentDir? }`.

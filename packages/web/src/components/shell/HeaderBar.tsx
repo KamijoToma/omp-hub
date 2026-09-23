@@ -1,7 +1,8 @@
 import { LogOut, PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import type { GuestSnapshot } from "../../lib/client";
-import { fmtPercent, shortenPath } from "../../lib/format";
+import { fmtPercent, fmtTokens, shortenPath } from "../../lib/format";
+import { contextPercent } from "../../lib/usage";
 import { ThemeToggle } from "./ThemeToggle";
 
 export interface HeaderBarProps {
@@ -10,20 +11,48 @@ export interface HeaderBarProps {
 	railOpen: boolean;
 	onToggleRail(): void;
 	onLeave(): void;
+	/**
+	 * Hub-only (`/s/<id>`): open the model dialog. Left unset on `/join`, where
+	 * the chip stays display-only.
+	 */
+	onOpenModel?(): void;
+	/**
+	 * Hub-only (`/s/<id>`): open the context breakdown. Left unset on `/join`,
+	 * where the gauge stays display-only.
+	 */
+	onOpenContext?(): void;
 }
 
-export function HeaderBar({ snapshot, subCount, railOpen, onToggleRail, onLeave }: HeaderBarProps): ReactNode {
+/** Gauge track + percentage; shared by the read-only span and the hub button. */
+function Gauge({ pct }: { pct: number }): ReactNode {
+	return (
+		<>
+			<span className="sh-gauge-track">
+				<span className="sh-gauge-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+			</span>
+			<span className="sh-gauge-pct">{fmtPercent(pct)}</span>
+		</>
+	);
+}
+
+export function HeaderBar({
+	snapshot,
+	subCount,
+	railOpen,
+	onToggleRail,
+	onLeave,
+	onOpenModel,
+	onOpenContext,
+}: HeaderBarProps): ReactNode {
 	const { header, state, phase, readOnly } = snapshot;
 	const title = header?.title ?? state?.sessionName ?? "session";
 	const usage = state?.contextUsage;
-	let pct: number | null = null;
-	if (usage) {
-		pct =
-			usage.percent ??
-			(usage.tokens != null && usage.contextWindow !== null && usage.contextWindow > 0
-				? (usage.tokens / usage.contextWindow) * 100
-				: null);
-	}
+	const pct = usage ? (usage.percent ?? contextPercent(usage.tokens, usage.contextWindow)) : null;
+	const gaugeClass = pct != null && pct > 80 ? "sh-gauge sh-gauge-warn" : "sh-gauge";
+	const windowText =
+		usage && usage.tokens !== null && usage.contextWindow !== null
+			? `${fmtTokens(usage.tokens)} / ${fmtTokens(usage.contextWindow)} · `
+			: "";
 
 	return (
 		<header className="sh-header">
@@ -43,18 +72,46 @@ export function HeaderBar({ snapshot, subCount, railOpen, onToggleRail, onLeave 
 						read-only
 					</span>
 				)}
-				{state?.model && <span className="sh-chip sh-chip-meta">{state.model.name}</span>}
+				{state?.model &&
+					(onOpenModel ? (
+						<button
+							type="button"
+							className="sh-chip sh-chip-meta sh-chip-btn"
+							onClick={onOpenModel}
+							title={`model · ${state.model.name} — switch model`}
+						>
+							{state.model.name}
+						</button>
+					) : (
+						<span className="sh-chip sh-chip-meta">{state.model.name}</span>
+					))}
 				{state?.thinkingLevel && <span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>}
-				{pct != null && (
-					<span
-						className={pct > 80 ? "sh-gauge sh-gauge-warn" : "sh-gauge"}
-						title={`context · ${fmtPercent(pct)}`}
-					>
-						<span className="sh-gauge-track">
-							<span className="sh-gauge-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+				{onOpenContext ? (
+					pct != null ? (
+						<button
+							type="button"
+							className={`${gaugeClass} sh-gauge-btn`}
+							onClick={onOpenContext}
+							title={`context · ${windowText}${fmtPercent(pct)} — show breakdown`}
+						>
+							<Gauge pct={pct} />
+						</button>
+					) : (
+						<button
+							type="button"
+							className="sh-chip sh-chip-btn"
+							onClick={onOpenContext}
+							title="context usage not reported — show breakdown"
+						>
+							context
+						</button>
+					)
+				) : (
+					pct != null && (
+						<span className={gaugeClass} title={`context · ${windowText}${fmtPercent(pct)}`}>
+							<Gauge pct={pct} />
 						</span>
-						<span className="sh-gauge-pct">{fmtPercent(pct)}</span>
-					</span>
+					)
 				)}
 				{state && state.participants.length > 0 && (
 					<span className="sh-avatars">

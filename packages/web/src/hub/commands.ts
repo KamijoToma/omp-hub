@@ -10,8 +10,11 @@
 import type { GuestClient, Notice } from "../lib/client";
 import type { SessionEntry } from "../lib/wire";
 
-/** Dialog a command opens; `SessionView` maps each kind to a component. */
-export type ModalKind = "model" | "thinking" | "settings" | "links" | "help";
+/**
+ * Dialog a command opens; `SessionView` maps each kind to a component.
+ * `"context"` is the exception: the header gauge opens it, no command does.
+ */
+export type ModalKind = "model" | "thinking" | "settings" | "links" | "help" | "context";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";

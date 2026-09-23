@@ -8,7 +8,8 @@
     "skipLibCheck": true,
     "paths": {
       "@oh-my-pi/pi-coding-agent": ["../../../oh-my-pi/packages/coding-agent/src/index.ts"],
-      "@oh-my-pi/pi-coding-agent/*": ["../../../oh-my-pi/packages/coding-agent/src/*.ts"]
+      "@oh-my-pi/pi-coding-agent/*": ["../../../oh-my-pi/packages/coding-agent/src/*.ts"],
+      "@oh-my-pi/pi-tui/thinking": ["../../../oh-my-pi/packages/tui/src/thinking.ts"]
     }
   }
 }

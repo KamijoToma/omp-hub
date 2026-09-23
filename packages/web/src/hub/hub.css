@@ -539,6 +539,111 @@
 	animation: hb-spin 900ms linear infinite;
 }
 
+/* ---- context dialog ---- */
+.hb-ctx-head {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 4px 8px;
+}
+
+.hb-ctx-pct {
+	font: 600 22px / 1.1 var(--font-mono);
+	color: var(--fg);
+}
+
+.hb-ctx-used {
+	font: 400 11.5px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+}
+
+.hb-ctx-gauge {
+	width: 100%;
+}
+
+/* Compound selector: outranks the shell's `.sh-gauge-track` (which the mobile
+ * breakpoint hides) wherever the two stylesheets load. */
+.hb-ctx-gauge .sh-gauge-track {
+	display: block;
+	flex: 1;
+	width: auto;
+	height: 6px;
+}
+
+.hb-ctx-cats {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-ctx-cat {
+	display: grid;
+	grid-template-columns: minmax(0, 104px) minmax(0, 1fr) max-content;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+}
+
+.hb-ctx-cat-label {
+	min-width: 0;
+	color: var(--fg-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-ctx-cat-track {
+	height: 5px;
+	background: var(--border-strong);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+}
+
+.hb-ctx-cat-fill {
+	display: block;
+	height: 100%;
+	background: var(--accent);
+	border-radius: inherit;
+}
+
+.hb-ctx-cat-tokens {
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+	text-align: right;
+}
+
+.hb-ctx-foot {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 18px;
+	margin: 0;
+}
+
+.hb-ctx-foot-row {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+}
+
+.hb-ctx-foot-label {
+	font-size: 11px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.hb-ctx-foot-value {
+	margin: 0;
+	font: 400 12px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+}
+
+.hb-ctx-retry {
+	align-self: flex-start;
+}
+
 /* ---- slash commands: links + help ---- */
 .hb-links {
 	display: flex;
