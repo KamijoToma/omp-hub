@@ -60,6 +60,59 @@ export const MAX_SESSION_ENTRIES = 200;
 /** First-message preview kept to one short line per row. */
 const FIRST_MESSAGE_CHARS = 240;
 
+/**
+ * Every stored entry serializes with `type` as its first field (one JSON object
+ * per line), so a line starting with this prefix is exactly one message entry.
+ */
+const MESSAGE_LINE_PREFIX = '{"type":"message"';
+/** Full-file re-counts run this many files at a time to stay inside the cmd budget. */
+const COUNT_POOL_WIDTH = 8;
+
+/**
+ * Exact stored message count for one session file: a streaming line scan
+ * instead of the SDK's count. The picker listing
+ * (`SessionManager.listAllForPicker`) reads only each file's first 4 KB for
+ * speed, so its `messageCount` saturates at whatever fits in that window —
+ * 2-3 entries on any real transcript — and the History cards showed those
+ * bounds for every session. Returns `null` when the file cannot be read; the
+ * caller keeps the SDK's (under)count rather than failing the listing.
+ */
+async function countStoredMessages(file: string): Promise<number | null> {
+	try {
+		const decoder = new TextDecoder();
+		let carry = "";
+		let count = 0;
+		for await (const chunk of Bun.file(file).stream()) {
+			const text = carry + decoder.decode(chunk as Uint8Array, { stream: true });
+			const lines = text.split("\n");
+			carry = lines.pop() ?? "";
+			for (const line of lines) if (line.startsWith(MESSAGE_LINE_PREFIX)) count++;
+		}
+		if (carry.startsWith(MESSAGE_LINE_PREFIX)) count++;
+		return count;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Re-count `messageCount` for the rows actually returned. Only the capped,
+ * recency-sorted slice runs through here, so a full history listing pays one
+ * bounded streaming pass per visible row — the wire reports real counts while
+ * the picker's 4 KB scan stays the only cost for the unreturned tail.
+ */
+async function fillMessageCounts(rows: readonly SessionListEntry[]): Promise<void> {
+	let cursor = 0;
+	const worker = async (): Promise<void> => {
+		while (cursor < rows.length) {
+			const row = rows[cursor++]!;
+			const counted = await countStoredMessages(row.path);
+			if (counted !== null) row.messageCount = counted;
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(COUNT_POOL_WIDTH, rows.length) }, worker));
+}
+
 /** One resumable session on this machine (subset of the SDK's SessionInfo). */
 export interface SessionListEntry {
 	/** Absolute session file path; the value for a `start` frame's `sessionFile`. */
@@ -70,6 +123,7 @@ export interface SessionListEntry {
 	title?: string;
 	created: string;
 	modified: string;
+	/** Exact stored message entries (full-file count, not the SDK's 4 KB window). */
 	messageCount: number;
 	/** Persisted assistant turns; zero means the agent never replied. */
 	assistantTurns?: number;
@@ -191,10 +245,9 @@ export async function listSessions(options: ListSessionsOptions = {}): Promise<S
 	// Picker results order pinned-first; a resume picker wants recency.
 	const sorted = [...found].sort((a, b) => b.modified.getTime() - a.modified.getTime());
 	const truncated = sorted.length > maxEntries;
-	return {
-		sessions: sorted.slice(0, maxEntries).map(entry => toEntry(entry)),
-		truncated,
-	};
+	const sessions = sorted.slice(0, maxEntries).map(entry => toEntry(entry));
+	await fillMessageCounts(sessions);
+	return { sessions, truncated };
 }
 
 export interface ListAllProfilesOptions {
@@ -247,7 +300,9 @@ export async function listAllProfileSessions(options: ListAllProfilesOptions = {
 	}
 	merged.sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 	const truncated = merged.length > maxEntries;
-	return { sessions: merged.slice(0, maxEntries), truncated };
+	const sessions = merged.slice(0, maxEntries);
+	await fillMessageCounts(sessions);
+	return { sessions, truncated };
 }
 
 /**
