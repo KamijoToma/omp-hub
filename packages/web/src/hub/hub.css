@@ -506,6 +506,23 @@
 	border-color: var(--accent);
 }
 
+.hb-pick-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.hb-pick-item .hb-pick-row {
+	flex: 1;
+	min-width: 0;
+}
+
+.hb-pick-item .hb-pick-thinking {
+	width: 128px;
+	padding: 5px 4px;
+	font-size: 12px;
+}
+
 .hb-role-tabs {
 	display: flex;
 	flex-wrap: wrap;

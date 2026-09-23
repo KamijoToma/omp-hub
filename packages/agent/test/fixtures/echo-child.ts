@@ -23,6 +23,7 @@ function handleLine(line: string): void {
 		modelId?: string;
 		role?: string;
 		persist?: boolean;
+		level?: string;
 	};
 	if (frame.t === "stop") {
 		process.exit(0);

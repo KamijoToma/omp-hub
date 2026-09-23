@@ -93,18 +93,29 @@ describe("hub api", () => {
 
 	test("setModel posts provider/modelId and unwraps the role reply", async () => {
 		setToken("t0k3n");
-		stubFetch(() => json({ ok: true, switched: true, role: "default" }));
+		stubFetch(() => json({ ok: true, switched: true, role: "default", thinkingLevel: null }));
 
 		const result = await setModel("s1", "openai", "gpt-5");
 
 		expect(calls[0].url).toBe("/api/sessions/s1/model");
 		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ provider: "openai", modelId: "gpt-5" });
-		expect(result).toEqual({ switched: true, role: "default" });
+		expect(result).toEqual({ switched: true, role: "default", thinkingLevel: null });
+	});
+
+	test("setModel forwards the thinking level and unwraps the effective one", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, switched: true, role: "default", thinkingLevel: "high" }));
+
+		const result = await setModel("s1", "openai", "gpt-5", { level: "high" });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/model");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ provider: "openai", modelId: "gpt-5", level: "high" });
+		expect(result).toEqual({ switched: true, role: "default", thinkingLevel: "high" });
 	});
 
 	test("setModel forwards role and persist options", async () => {
 		setToken("t0k3n");
-		stubFetch(() => json({ ok: true, switched: true, role: "smol" }));
+		stubFetch(() => json({ ok: true, switched: true, role: "smol", thinkingLevel: null }));
 
 		const result = await setModel("s1", "openai", "gpt-5", { role: "smol", persist: false });
 
@@ -114,7 +125,7 @@ describe("hub api", () => {
 			role: "smol",
 			persist: false,
 		});
-		expect(result).toEqual({ switched: true, role: "smol" });
+		expect(result).toEqual({ switched: true, role: "smol", thinkingLevel: null });
 	});
 
 	test("navigateTree posts the target entry and unwraps the move result", async () => {

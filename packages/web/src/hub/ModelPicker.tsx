@@ -63,6 +63,8 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 	const [error, setError] = useState<string | null>(null);
 	// Active model-role tab (`"default"` = the plain session switch).
 	const [roleTab, setRoleTab] = useState("default");
+	// Per-row thinking preset, applied with the switch (`""` = the model's own default).
+	const [levels, setLevels] = useState<Record<string, string>>({});
 
 	const groups = useMemo(() => groupModels(load.state, filter), [load.state, filter]);
 	const roles = load.state?.roles ?? [];
@@ -73,9 +75,19 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 	const pick = (model: AgentModel): void => {
 		setPending(`${model.provider}/${model.id}`);
 		setError(null);
-		void setModel(sessionId, model.provider, model.id, activeRole === "default" ? {} : { role: activeRole }).then(
-			() => {
-				notify("info", activeRole === "default" ? `model → ${model.name}` : `model → ${model.name} (${activeRole})`);
+		const level = levels[`${model.provider}/${model.id}`];
+		void setModel(sessionId, model.provider, model.id, {
+			...(activeRole === "default" ? {} : { role: activeRole }),
+			...(level ? { level } : {}),
+		}).then(
+			result => {
+				const role = activeRole === "default" ? "" : ` (${activeRole})`;
+				notify(
+					"info",
+					level
+						? `model → ${model.name}${role} · thinking → ${result.thinkingLevel ?? level}`
+						: `model → ${model.name}${role}`,
+				);
 				onClose();
 			},
 			(err: unknown) => {
@@ -143,7 +155,7 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 							const id = `${model.provider}/${model.id}`;
 							const isCurrent = current?.provider === model.provider && current.id === model.id;
 							return (
-								<li key={id}>
+								<li key={id} className="hb-pick-item">
 									<button
 										type="button"
 										className={`hb-pick-row${isCurrent ? " hb-pick-row-current" : ""}`}
@@ -158,6 +170,25 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 											<span className="hb-pick-id">{model.id}</span>
 										)}
 									</button>
+									{model.thinkingEfforts.length > 0 && (
+										<select
+											className="sh-input hb-pick-thinking"
+											value={levels[id] ?? ""}
+											disabled={pending !== null}
+											aria-label={`thinking level for ${model.name}`}
+											onChange={e => setLevels(prev => ({ ...prev, [id]: e.target.value }))}
+										>
+											<option value="">
+												{model.defaultThinkingLevel ? `default (${model.defaultThinkingLevel})` : "default"}
+											</option>
+											<option value="off">off</option>
+											{model.thinkingEfforts.map(effort => (
+												<option key={effort} value={effort}>
+													{effort}
+												</option>
+											))}
+										</select>
+									)}
 								</li>
 							);
 						})}

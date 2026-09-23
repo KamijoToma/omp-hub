@@ -201,7 +201,26 @@ describe("session commands", () => {
 
 		const settled = await response;
 		expect(settled.status).toBe(200);
-		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "default" });
+		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "default", thinkingLevel: null });
+	});
+
+	test("set-model forwards the thinking level and relays the effective one", async () => {
+		const agent = await connectAgent(main, "m-level", "level-machine");
+		const session = await liveSession(main, agent, "m-level", "/srv/level");
+
+		const response = api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", level: "high" }),
+		});
+		const frame = await answerCmd(agent, "set-model", {
+			ok: true,
+			data: { switched: true, role: "default", thinkingLevel: "high" },
+		});
+		expect(frame).toMatchObject({ id: session.id, provider: "openai", modelId: "gpt-5", level: "high" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "default", thinkingLevel: "high" });
 	});
 
 	test("set-model forwards role and persist for non-default roles", async () => {
@@ -217,7 +236,7 @@ describe("session commands", () => {
 
 		const settled = await response;
 		expect(settled.status).toBe(200);
-		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "smol" });
+		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "smol", thinkingLevel: null });
 	});
 
 	test("set-model validates role and persist before dispatching", async () => {
@@ -243,6 +262,13 @@ describe("session commands", () => {
 		});
 		expect(badPersist.status).toBe(400);
 		expect(await badPersist.json()).toEqual({ error: "persist must be a boolean" });
+
+		const blankLevel = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", level: "  " }),
+		});
+		expect(blankLevel.status).toBe(400);
+		expect(await blankLevel.json()).toEqual({ error: "invalid level" });
 	});
 
 	test("navigate-tree forwards entryId and returns the move result", async () => {
