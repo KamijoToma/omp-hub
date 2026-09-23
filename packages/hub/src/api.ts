@@ -28,7 +28,6 @@ const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
 const COMPACT_PATH_RE = /^\/api\/sessions\/([^/]+)\/compact$/;
 const RETRY_PATH_RE = /^\/api\/sessions\/([^/]+)\/retry$/;
-const TODOS_PATH_RE = /^\/api\/sessions\/([^/]+)\/todos$/;
 const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
 const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
 const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
@@ -48,7 +47,6 @@ function json(body: unknown, status = 200): Response {
 }
 
 function authorized(req: Request, cfg: Config): boolean {
-	if (cfg.token === "") return true; // open mode (dev only; warned at startup)
 	const match = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "");
 	return match !== null && match[1] === cfg.token;
 }
@@ -146,10 +144,6 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const retry = RETRY_PATH_RE.exec(route);
 	if (retry && req.method === "POST") {
 		return retrySession(decodeURIComponent(retry[1]!), ctx);
-	}
-	const todos = TODOS_PATH_RE.exec(route);
-	if (todos && req.method === "GET") {
-		return sessionTodos(decodeURIComponent(todos[1]!), ctx);
 	}
 	const loop = LOOP_PATH_RE.exec(route);
 	if (loop && req.method === "POST") {
@@ -458,12 +452,6 @@ async function retrySession(id: string, ctx: ApiContext): Promise<Response> {
 	if (!outcome.ok) return outcome.response;
 	if (pick(outcome.data, "started") !== true) return json({ error: "Nothing to retry." }, 409);
 	return json({ ok: true, started: true });
-}
-
-/** Read-only todo phases for the session's current branch (contract §1). */
-async function sessionTodos(id: string, ctx: ApiContext): Promise<Response> {
-	const outcome = await dispatchCmd(id, "get-todos", {}, ctx);
-	return outcome.ok ? json({ ok: true, phases: pick(outcome.data, "phases") ?? [] }) : outcome.response;
 }
 
 const LOOP_ACTIONS: Record<string, true> = { enable: true, disable: true, pause: true, resume: true, status: true };

@@ -1,5 +1,11 @@
 **/node_modules
 **/dist
-.git
+**/.git
 *.log
 docker/
+**/.worktrees
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx

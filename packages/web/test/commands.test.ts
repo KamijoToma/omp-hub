@@ -32,6 +32,7 @@ interface Trace {
 	compacts: unknown[];
 	retries: number;
 	extendedContext: (boolean | undefined)[];
+	todosShown: number;
 }
 
 function makeContext(): { ctx: CommandContext; trace: Trace } {
@@ -44,6 +45,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		compacts: [],
 		retries: 0,
 		extendedContext: [],
+		todosShown: 0,
 	};
 	return {
 		trace,
@@ -62,6 +64,9 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 				trace.retries += 1;
 			},
 			setExtendedContext: enabled => trace.extendedContext.push(enabled),
+			showTodos: () => {
+				trace.todosShown += 1;
+			},
 		},
 	};
 }
@@ -98,6 +103,7 @@ describe("composer routing", () => {
 			compacts: [],
 			retries: 0,
 			extendedContext: [],
+			todosShown: 0,
 		});
 	});
 
@@ -140,7 +146,7 @@ describe("composer routing", () => {
 			{ text: "/rewind", check: t => expect(t.modals).toEqual(["rewind"]) },
 			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
 			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
-			{ text: "/todo", check: t => expect(t.modals).toEqual(["todos"]) },
+			{ text: "/todo", check: t => expect(t.todosShown).toBe(1) },
 			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
 			{ text: "/loop", check: t => expect(t.modals).toEqual(["loop"]) },
 			{ text: "/extended-context", check: t => expect(t.extendedContext).toEqual([undefined]) },

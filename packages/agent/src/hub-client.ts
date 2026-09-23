@@ -12,7 +12,7 @@ import { errorMessage, type Logger } from "./log";
 import type { SessionLinks, SessionStatus } from "./supervisor";
 
 /** Agent release reported in `hello.version`. */
-const AGENT_VERSION = "0.3.0";
+const AGENT_VERSION = "0.4.0";
 const HEARTBEAT_MS = 15_000;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -172,11 +172,11 @@ export interface HubClientOptions {
 	heartbeatMs?: number;
 }
 
-function agentSocketUrl(hubUrl: string, token: string): string {
+function agentSocketUrl(hubUrl: string): string {
 	let base = hubUrl.trim().replace(/\/+$/, "");
 	if (base.startsWith("http://")) base = `ws://${base.slice("http://".length)}`;
 	else if (base.startsWith("https://")) base = `wss://${base.slice("https://".length)}`;
-	return `${base}/agent?token=${encodeURIComponent(token)}`;
+	return `${base}/agent`;
 }
 
 /** 1 s, 2 s, 4 s … capped at 30 s, with ±25 % jitter so restarts don't stampede. */
@@ -267,10 +267,10 @@ export class HubClient {
 
 	#connect(): void {
 		if (this.#closed) return;
-		const url = agentSocketUrl(this.#options.url, this.#options.token);
+		const url = agentSocketUrl(this.#options.url);
 		let socket: WebSocket;
 		try {
-			socket = new WebSocket(url);
+			socket = new WebSocket(url, { headers: { Authorization: `Bearer ${this.#options.token}` } });
 		} catch (err) {
 			this.#log.error(`failed to open hub socket: ${errorMessage(err)}`);
 			this.#scheduleReconnect();

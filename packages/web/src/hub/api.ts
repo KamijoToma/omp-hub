@@ -95,23 +95,6 @@ export interface AgentState {
 	loop: LoopStatus | null;
 }
 
-/** Lifecycle state of one todo task (agent `get-todos`, oh-my-pi todo tool). */
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
-
-/** One task of a todo phase. */
-export interface TodoItem {
-	content: string;
-	status: TodoStatus;
-	/** When `status === "blocked"`, what the task is waiting for. */
-	blocker?: string;
-}
-
-/** One named group of tasks in the session's latest todo snapshot. */
-export interface TodoPhase {
-	name: string;
-	tasks: TodoItem[];
-}
-
 /** The session's tracked goal object (agent `get-state.goal.goal`). */
 export interface SessionGoal {
 	id: string;
@@ -463,16 +446,6 @@ export async function postCompact(
  */
 export async function postRetry(id: string): Promise<void> {
 	await api<{ ok: true; started: boolean }>(`/api/sessions/${encodeURIComponent(id)}/retry`, { method: "POST" });
-}
-
-/**
- * The session's latest todo phases (agent `get-todos`), a plain read of the
- * todo snapshots on the active branch. Empty when the session never created a
- * todo list.
- */
-export async function getTodos(id: string): Promise<TodoPhase[]> {
-	const reply = await api<{ ok: true; phases: TodoPhase[] }>(`/api/sessions/${encodeURIComponent(id)}/todos`);
-	return reply.phases;
 }
 
 export type LoopAction = "enable" | "disable" | "pause" | "resume" | "status";

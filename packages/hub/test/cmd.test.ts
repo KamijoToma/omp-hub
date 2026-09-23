@@ -86,7 +86,7 @@ interface FakeAgent {
 }
 
 async function connectAgent(ctx: Ctx, machineId: string, name: string): Promise<FakeAgent> {
-	const ws = new WebSocket(`${ctx.ws}/agent?token=t`);
+	const ws = new WebSocket(`${ctx.ws}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
 	ws.addEventListener("message", (event: MessageEvent) => {
@@ -552,23 +552,6 @@ describe("session commands", () => {
 		const settled = await response;
 		expect(settled.status).toBe(409);
 		expect(await settled.json()).toEqual({ error: "Nothing to retry." });
-	});
-
-	test("get-todos relays the branch phases without parameters", async () => {
-		const agent = await connectAgent(main, "m-todos", "todos-machine");
-		const session = await liveSession(main, agent, "m-todos", "/srv/todos");
-
-		const phases = [
-			{ title: "Setup", tasks: [{ text: "install deps", status: "done" }] },
-			{ title: "Work", tasks: [{ text: "implement routes", status: "in_progress" }] },
-		];
-		const response = api(main, `/api/sessions/${session.id}/todos`);
-		const frame = await answerCmd(agent, "get-todos", { ok: true, data: { phases } });
-		expect(frame).toEqual({ t: "cmd", id: session.id, reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/), cmd: "get-todos" });
-
-		const settled = await response;
-		expect(settled.status).toBe(200);
-		expect(await settled.json()).toEqual({ ok: true, phases });
 	});
 
 	test("loop forwards enable config and echoes the loop status", async () => {

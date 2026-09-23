@@ -16,17 +16,7 @@ import type { LoopLimit } from "./api";
  * `"rewind"` opens from the slash table; `"context"` is the exception: the
  * header gauge opens it, no command does.
  */
-export type ModalKind =
-	| "model"
-	| "thinking"
-	| "rewind"
-	| "todos"
-	| "goal"
-	| "loop"
-	| "settings"
-	| "links"
-	| "help"
-	| "context";
+export type ModalKind = "model" | "thinking" | "rewind" | "goal" | "loop" | "settings" | "links" | "help" | "context";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
@@ -45,6 +35,8 @@ export interface CommandContext {
 	retrySession(): void;
 	/** POST the extended-context switch; `SessionView` reports the resulting state. */
 	setExtendedContext(enabled?: boolean): void;
+	/** Expand the docked todo panel above the composer. */
+	showTodos(): void;
 }
 
 export interface CommandSpec {
@@ -152,7 +144,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 		},
 	},
 	{ name: "retry", description: "retry the last failed turn", run: ctx => ctx.retrySession() },
-	{ name: "todo", description: "show the session todo list", run: ctx => ctx.openModal("todos") },
+	{ name: "todo", description: "show the agent's todo list", run: ctx => ctx.showTodos() },
 	{ name: "goal", description: "session goal — set, pause, budget", run: ctx => ctx.openModal("goal") },
 	{ name: "loop", description: "repeat a prompt on a loop", run: ctx => ctx.openModal("loop") },
 	{

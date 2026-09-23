@@ -39,16 +39,19 @@ file. Single port, `HUB_TOKEN` env.
 containerized hub; session driven end-to-end. (If no container runtime on the dev machine:
 verify by container-layout emulation and document.)
 
-## Post-MVP (not in this delivery)
+## Delivered after MVP
+
+- **M8 — session resume**: hub `start` accepts a saved `sessionFile`; the agent lists recent
+  sessions for a machine and reopens the selected session in a new child. A restarted hub/agent
+  still loses live rooms, but session files remain available for resumption.
+
+## Post-MVP (remaining)
 
 - **M6 — per-user auth & ACL**: user accounts (or OIDC), per-session grants
   (owner/editor/viewer), distribute view links by default, write actions via hub-proxied
   `session.prompt()` with per-user attribution instead of distributing write tokens.
 - **M7 — durable hub state**: SQLite registry; reattach after hub restart (rooms still die —
   document or add host re-registration).
-- **M8 — session resume**: hub `start` with `sessionFile` → child `SessionManager.open(path)`
-  (omit `model` so the persisted model restores); list a machine's recent sessions
-  (`SessionManager.list(cwd)`) in the start form.
 - **M9 — approvals via web**: route `ExtensionUIContext` dialogs to the browser through the
   agent channel (timeout + default-deny), replacing blanket yolo for sensitive tools.
 - **M10 — hardening**: room caps (`4029`), per-IP rate limits, agent allow-lists, audit log,

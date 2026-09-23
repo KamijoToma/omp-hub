@@ -132,7 +132,6 @@ interface CommandDeps {
 	computeSessionContextBreakdown: typeof computeSessionContextBreakdown;
 	/** Valid one-off compact mode names (contract §1). */
 	compactModes: typeof COMPACT_MODES;
-	getLatestTodoPhases: typeof getLatestTodoPhasesFromEntries;
 	evaluateLoopCondition: typeof evaluateLoopCondition;
 	/** Background dispatches (`compact`) can only log their failures. */
 	log: Logger;
@@ -285,9 +284,6 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			if (session.isStreaming) throw new Error("Wait for the current response to finish or abort it before retrying.");
 			return { started: await session.retry() };
 		}
-		case "get-todos":
-			// Plain JSON phases read off the session branch — numbers and strings only.
-			return { phases: deps.getLatestTodoPhases(session.sessionManager.getBranch()) };
 		case "loop": {
 			switch (frame.action) {
 				case "enable":
@@ -497,7 +493,7 @@ async function run(): Promise<void> {
 
 	// Static SDK imports run before stdout sealing and this catch boundary;
 	// load them here so native-binding failures still reach the supervisor as
-	// JSONL. Same for the role-model helpers and the compact/todo/loop-condition
+	// JSONL. Same for the role-model helpers and the compact/loop-condition
 	// modules: they transitively pull the SDK tree, which cannot load before
 	// this boundary in a broken-native install.
 	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
@@ -508,7 +504,6 @@ async function run(): Promise<void> {
 	const roleModels = await import("@oh-my-pi/pi-coding-agent/session/role-models");
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
-	const { getLatestTodoPhasesFromEntries } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
 	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
 	const { createStubUIContext } = await import("./ui-stub");
 	const commandDeps: CommandDeps = {
@@ -517,7 +512,6 @@ async function run(): Promise<void> {
 		roleModels,
 		computeSessionContextBreakdown,
 		compactModes: COMPACT_MODES,
-		getLatestTodoPhases: getLatestTodoPhasesFromEntries,
 		evaluateLoopCondition,
 		log,
 	};

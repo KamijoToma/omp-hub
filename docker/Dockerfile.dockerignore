@@ -3,3 +3,9 @@
 **/.git
 *.log
 docs
+**/.worktrees
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx

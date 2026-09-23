@@ -2,11 +2,12 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.3.0** — reported by `hello.version` and `GET /api/health` — is additive: the
-machine-level usage relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`,
-§5 `/usage/<machineId>`) and the optional `hello.tmpdir` (§2), surfaced as `MachineRecord.tmpdir`
-(§3). Revision 0.2.0 added the `get-context` session command (§2) and `GET /api/sessions/:id/context`
-(§3).
+Revision **0.4.0** — reported by `hello.version` and `GET /api/health` — requires a
+`Bearer` authorization header on the agent WebSocket handshake. The legacy query-string token
+is rejected; upgrade the hub and agent together. Revision 0.3.0 added the machine-level usage
+relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`, §5
+`/usage/<machineId>`) and optional `hello.tmpdir` (§2). Revision 0.2.0 added the
+`get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
 
 ## 1. Relay contract (`/r/<roomId>`) — frozen, upstream-compatible
 
@@ -26,9 +27,11 @@ Byte-identical to `oh-my-pi/packages/collab-web/scripts/local-relay.ts`. Summary
   the host's socket closes.
 - `GET /healthz` → 200 `ok` (liveness, unauthenticated).
 
-## 2. Agent channel (`GET /agent?token=<HUB_TOKEN>`)
+## 2. Agent channel (`GET /agent`)
 
-WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper daemon.
+WS upgrade with `Authorization: Bearer <HUB_TOKEN>`. Missing/wrong bearer token or a
+query-string token without the header → HTTP 401 (no upgrade). One connection per wrapper
+daemon; use TLS/WSS outside loopback.
 
 ### agent → hub
 
@@ -95,7 +98,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree"
-     | "compact" | "retry" | "get-todos" | "loop" | "goal" | "set-extended-context",
+     | "compact" | "retry" | "loop" | "goal" | "set-extended-context",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -188,8 +191,6 @@ interface LoopStatus {
 - `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
   to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
   The retried turn itself streams through the normal session channel.
-- `get-todos` → `data: { phases }`: todo phases rehydrated from the current transcript branch
-  (`TodoPhase[]` — plain JSON `{phase, tasks:[…]}` with per-task `status`), [] when none.
 - `loop {action, prompt?, limit?, condition?}` → `data: { loop: LoopStatus | null }`. Host-side
   loop engine (session-host re-submits `prompt` after every terminal turn end): `enable` sets or
   replaces prompt/limit/condition; `disable` clears; `pause` keeps config and drops the pending
@@ -309,7 +310,6 @@ interface MachineRecord {
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
 | `POST /api/sessions/:id/compact` | `{instructions?, mode?}` → `{ ok: true }` (§2 `compact`); 400 non-string `instructions`/`mode` |
 | `POST /api/sessions/:id/retry` | → `{ ok: true, started }`; 409 on "nothing to retry" / streaming guard |
-| `GET /api/sessions/:id/todos` | → `{ ok: true, phases }` (§2 `get-todos`); same error set as `…/context` |
 | `POST /api/sessions/:id/loop` | `{action, prompt?, limit?, condition?}` → `{ ok: true, loop }` (§2 `loop`); 400 bad action/limit/condition |
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
@@ -339,7 +339,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree"
-     |"compact"|"retry"|"get-todos"|"loop"|"goal"|"set-extended-context",
+     |"compact"|"retry"|"loop"|"goal"|"set-extended-context",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -385,7 +385,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
 | `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
 | `/retry` | retry the last failed agent turn (drives `POST …/retry`) |
-| `/todo` | todo list modal: phases/tasks with status chips (drives `GET …/todos`) |
+| `/todo` | expand the docked todo panel (board derived client-side from the live transcript — no host traffic) |
 | `/goal` | goal mode modal: status card, set/replace objective + token budget, pause/resume/drop (drives `…/agent-state`, `POST …/goal`) |
 | `/loop` | loop mode modal: status card, prompt + iteration/duration limit + `--while`/`--until` gate, enable/disable/pause/resume (drives `…/agent-state`, `POST …/loop`) |
 | `/extended-context` | toggle extended context windows; bare = toggle, `on`/`off` forces (drives `POST …/extended-context`) |

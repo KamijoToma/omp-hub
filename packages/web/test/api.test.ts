@@ -7,7 +7,6 @@ import {
 	clearToken,
 	getMachineSessions,
 	getMachines,
-	getTodos,
 	HubApiError,
 	listMachineDirectories,
 	listMachineProfiles,
@@ -21,7 +20,7 @@ import {
 	setToken,
 	startSession,
 } from "../src/hub/api";
-import type { GoalModeState, SessionRecord, TodoPhase } from "../src/hub/api";
+import type { GoalModeState, SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; init: RequestInit | undefined }[] = [];
@@ -301,25 +300,6 @@ describe("hub api", () => {
 		expect(err).toBeInstanceOf(HubApiError);
 		expect((err as HubApiError).status).toBe(409);
 		expect((err as HubApiError).message).toBe("Wait for the current response to finish or abort it before retrying.");
-	});
-
-	test("getTodos unwraps the phase list", async () => {
-		setToken("t0k3n");
-		const phases: TodoPhase[] = [
-			{
-				name: "setup",
-				tasks: [
-					{ content: "clone the repo", status: "completed" },
-					{ content: "install deps", status: "in_progress" },
-				],
-			},
-		];
-		stubFetch(() => json({ ok: true, phases }));
-
-		const result = await getTodos("s1");
-
-		expect(calls[0].url).toBe("/api/sessions/s1/todos");
-		expect(result).toEqual(phases);
 	});
 
 	test("postLoop posts the action with limit and condition and unwraps the status", async () => {

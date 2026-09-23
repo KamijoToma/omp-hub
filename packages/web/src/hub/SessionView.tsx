@@ -48,7 +48,7 @@ import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
 import { ThinkingPicker } from "./ThinkingPicker";
-import { TodosModal } from "./TodosModal";
+import { TodoPanel, TODO_COLLAPSE_KEY } from "./TodoPanel";
 
 /** Local notices never collide with the client's sequence (which starts at 1). */
 const LOCAL_NOTICE_BASE = 1_000_000;
@@ -192,6 +192,14 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		[sessionId, notify],
 	);
 
+	// `/todo`: the todo board lives in the docked panel (derived from the live
+	// transcript), so the command only guarantees it is expanded.
+	const [todoOpen, setTodoOpen] = useState(() => localStorage.getItem(TODO_COLLAPSE_KEY) !== "1");
+	const showTodos = useCallback((): void => {
+		if (!todoOpen) notify("info", "todo list shown above the composer");
+		setTodoOpen(true);
+	}, [todoOpen, notify]);
+
 	// Latest command context, so the long-lived composer wrapper never sees a stale one.
 	const ctx: CommandContext = {
 		openModal: setModal,
@@ -202,6 +210,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		compactSession,
 		retrySession,
 		setExtendedContext,
+		showTodos,
 	};
 	const ctxRef = useRef(ctx);
 	useEffect(() => {
@@ -377,6 +386,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				onKeyDownCapture={onComposerKeyDown}
 				onBlur={onComposerBlur}
 			>
+				<TodoPanel entries={snap.entries} open={todoOpen} onToggle={() => setTodoOpen(prev => !prev)} />
 				<Composer client={composerClient} snapshot={snap} />
 				{paletteOpen && (
 					<SlashPalette
@@ -415,7 +425,6 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 					onClose={closeModal}
 				/>
 			)}
-			{modal === "todos" && <TodosModal sessionId={sessionId} onClose={closeModal} />}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "settings" && (

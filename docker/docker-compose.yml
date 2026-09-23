@@ -7,7 +7,7 @@ services:
       dockerfile: docker/Dockerfile
     image: omp-hub:latest
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       HUB_TOKEN: ${HUB_TOKEN:?set HUB_TOKEN in the environment}
       # HUB_PUBLIC_URL: https://hub.example.com

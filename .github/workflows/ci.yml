@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web-hub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun --cwd=packages/web install --frozen-lockfile
+      - run: bun --cwd=packages/hub install --frozen-lockfile
+      - run: bun --cwd=packages/web run typecheck
+      - run: bun --cwd=packages/web test
+      - run: bun --cwd=packages/web run build
+      - run: bun --cwd=packages/hub run typecheck
+      - run: bun --cwd=packages/hub test
+      - run: docker build -f docker/Dockerfile -t omp-hub:ci .
+
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: omp-hub
+      - uses: actions/checkout@v4
+        with:
+          repository: KamijoToma/oh-my-pi
+          ref: 7ae76f8e4daca0c8f409f61bcd514260cd522365
+          path: oh-my-pi
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+        working-directory: oh-my-pi
+      - name: Install pinned SDK native addon
+        run: |
+          native_pkg="$(mktemp -d)"
+          printf '{"name":"omp-native-ci","private":true}\n' > "$native_pkg/package.json"
+          bun add --no-save --cwd="$native_pkg" @oh-my-pi/pi-natives-linux-x64@18.2.11
+          cp "$native_pkg/node_modules/@oh-my-pi/pi-natives-linux-x64/pi_natives.linux-x64-baseline.node" oh-my-pi/packages/natives/native/
+      - run: bun install --frozen-lockfile
+        working-directory: omp-hub/packages/agent
+      - run: bun run typecheck
+        working-directory: omp-hub/packages/agent
+      - run: bun test
+        working-directory: omp-hub/packages/agent

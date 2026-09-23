@@ -41,6 +41,17 @@ const yieldLoop = (): Promise<void> => {
 	return promise;
 };
 
+test("hub refuses an empty shared token before listening", () => {
+	let opened: Hub | undefined;
+	try {
+		expect(() => {
+			opened = startHub({ port: 0, hostname: "127.0.0.1", token: "" });
+		}).toThrow(/HUB_TOKEN/);
+	} finally {
+		opened?.stop();
+	}
+});
+
 let hub: Hub;
 let httpBase: string;
 let wsBase: string;
@@ -106,7 +117,7 @@ async function connectAgent(
 	name: string,
 	extra: Record<string, unknown> = {},
 ): Promise<{ agent: FakeAgent; welcome: Record<string, unknown> }> {
-	const ws = new WebSocket(`${wsBase}/agent?token=t`);
+	const ws = new WebSocket(`${wsBase}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
 	ws.addEventListener("message", (event: MessageEvent) => {
@@ -157,7 +168,9 @@ describe("hub api", () => {
 	});
 
 	test("hello registers a machine and answers welcome with the derived links", async () => {
-		const wrongToken = await fetch(`${httpBase}/agent?token=nope`);
+		const queryToken = await fetch(`${httpBase}/agent?token=t`);
+		expect(queryToken.status).toBe(401);
+		const wrongToken = await fetch(`${httpBase}/agent`, { headers: { authorization: "Bearer nope" } });
 		expect(wrongToken.status).toBe(401);
 
 		const { welcome } = await connectAgent("m-hello", "hello-machine");
