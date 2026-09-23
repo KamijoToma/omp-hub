@@ -3,7 +3,18 @@
  * {@link HubApiError}, and the exact `POST /api/sessions` body (docs/protocol.md §3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearToken, getMachines, HubApiError, listMachineDirectories, listMachineProfiles, navigateTree, setModel, setToken, startSession } from "../src/hub/api";
+import {
+	clearToken,
+	getMachineSessions,
+	getMachines,
+	HubApiError,
+	listMachineDirectories,
+	listMachineProfiles,
+	navigateTree,
+	setModel,
+	setToken,
+	startSession,
+} from "../src/hub/api";
 import type { SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
@@ -81,6 +92,52 @@ describe("hub api", () => {
 			name: "app",
 			prompt: "fix it",
 		});
+	});
+
+	test("startSession forwards the resume sessionFile", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", sessionFile: "/home/dev/.omp/sessions/a.jsonl" });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			sessionFile: "/home/dev/.omp/sessions/a.jsonl",
+		});
+	});
+
+	test("getMachineSessions encodes the machine id and cwd scope and unwraps the listing", async () => {
+		setToken("t0k3n");
+		const listing = {
+			sessions: [
+				{
+					path: "/home/dev/.omp/sessions/20260627_a.jsonl",
+					id: "resume01aa",
+					cwd: "/home/dev/project",
+					created: "2026-06-27T00:00:00.000Z",
+					modified: "2026-06-27T12:00:00.000Z",
+					messageCount: 2,
+					firstMessage: "first prompt",
+				},
+			],
+			truncated: false,
+		};
+		stubFetch(() => json({ ok: true, listing }));
+
+		const result = await getMachineSessions("m1", "/home/dev projects");
+
+		expect(calls[0].url).toBe(`/api/machines/m1/sessions?cwd=${encodeURIComponent("/home/dev projects")}`);
+		expect(result).toEqual(listing);
+	});
+
+	test("getMachineSessions omits the query for the all-projects listing", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, listing: { sessions: [], truncated: false } }));
+
+		await getMachineSessions("m1");
+
+		expect(calls[0].url).toBe("/api/machines/m1/sessions");
 	});
 
 	test("startSession omits unset optional fields", async () => {

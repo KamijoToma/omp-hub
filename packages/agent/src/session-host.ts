@@ -24,6 +24,8 @@ interface HostConfig {
 	cwd: string;
 	name?: string;
 	prompt?: string;
+	/** Resume this omp session file instead of minting a new session. */
+	sessionFile?: string;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -275,6 +277,7 @@ function parseConfig(argv: string[]): HostConfig {
 		cwd: config.cwd as string,
 		name: optional("name"),
 		prompt: optional("prompt"),
+		sessionFile: optional("sessionFile"),
 		relayUrl: config.relayUrl as string,
 		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
 		agentDir: optional("agentDir"),
@@ -377,7 +380,15 @@ async function run(): Promise<void> {
 	const displayName = config.name?.trim() || basename(config.cwd);
 	settings.override("collab.displayName", displayName);
 
-	const sessionManager = SessionManager.create(config.cwd);
+	// Resume opens the recorded history (CLI `--resume` semantics: model,
+	// thinking level, and entries come back from the file); `initialCwd` keeps
+	// `config.cwd` meaningful when the recorded project directory is gone.
+	const sessionManager = config.sessionFile
+		? await SessionManager.open(config.sessionFile, undefined, undefined, {
+				initialCwd: config.cwd,
+				throwIfMissing: true,
+			})
+		: SessionManager.create(config.cwd);
 	const { session, eventBus, setToolUIContext } = await createAgentSession({
 		cwd: config.cwd,
 		agentDir: config.agentDir,

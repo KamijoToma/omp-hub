@@ -49,6 +49,8 @@ export interface StartSessionRequest {
 	prompt?: string;
 	/** Named omp profile; omitted means the default profile. */
 	profile?: string;
+	/** Resume an existing omp session file instead of minting a new one. */
+	sessionFile?: string;
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -253,6 +255,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.name) body.name = input.name;
 	if (input.prompt) body.prompt = input.prompt;
 	if (input.profile) body.profile = input.profile;
+	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -407,6 +410,40 @@ export async function listMachineProfiles(machineId: string): Promise<string[]> 
 		`/api/machines/${encodeURIComponent(machineId)}/profiles`,
 	);
 	return reply.profiles;
+}
+
+/** One resumable omp session on a machine (protocol §2 `SessionListEntry`). */
+export interface MachineSession {
+	/** Absolute session file path; the value for {@link StartSessionRequest.sessionFile}. */
+	path: string;
+	id: string;
+	cwd: string;
+	title?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	assistantTurns?: number;
+	status?: string;
+	firstMessage: string;
+}
+
+/** Machine session history behind the resume picker (protocol §2 "Machine commands"). */
+export interface SessionListing {
+	sessions: MachineSession[];
+	truncated: boolean;
+}
+
+/**
+ * Recent omp sessions on an agent machine, most recently modified first;
+ * omit `cwd` to list every project. Status codes mirror
+ * {@link listMachineDirectories}.
+ */
+export async function getMachineSessions(machineId: string, cwd?: string): Promise<SessionListing> {
+	const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+	const reply = await api<{ ok: true; listing: SessionListing }>(
+		`/api/machines/${encodeURIComponent(machineId)}/sessions${query}`,
+	);
+	return reply.listing;
 }
 
 /** Human-readable message for an unknown thrown value. */

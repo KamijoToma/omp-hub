@@ -163,3 +163,56 @@ test("supervisor cmd() rejects pending commands when the child exits", async () 
 	expect(await exitCode).toBe(0);
 	expect(supervisor.status()).toEqual([]);
 });
+
+test("supervisor refuses a second live session on the same session file", async () => {
+	const errors: Array<{ id: string; error: string }> = [];
+	const ready = Promise.withResolvers<SessionReadyPayload>();
+	const supervisor = new Supervisor(
+		{
+			onReady: (_id, payload) => ready.resolve(payload),
+			onError: (id, error) => errors.push({ id, error }),
+			onExit: () => {},
+		},
+		createLogger("guard-test"),
+		{ hostEntry: FIXTURE },
+	);
+
+	const file = "/tmp/omp-hub-guard-test/session.jsonl";
+	await supervisor.spawn({ id: "s_guard_first", cwd: import.meta.dir, sessionFile: file, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready.promise;
+
+	// Same file under an aliased spelling must still be recognized.
+	await supervisor.spawn({
+		id: "s_guard_second",
+		cwd: import.meta.dir,
+		sessionFile: "/tmp/omp-hub-guard-test/../omp-hub-guard-test/session.jsonl",
+		relayUrl: "ws://127.0.0.1:1",
+		webUrl: "",
+	});
+	expect(errors).toEqual([
+		{
+			id: "s_guard_second",
+			error: `session file already in use by session s_guard_first: /tmp/omp-hub-guard-test/session.jsonl`,
+		},
+	]);
+	expect(supervisor.status()).toEqual([{ id: "s_guard_first", status: "live" }]);
+
+	// The guard releases once the holder exits: a fresh supervisor (what a
+	// restarted daemon or a post-exit registry sees) can open the same file.
+	await supervisor.stopAll("guard test done");
+	const errors2: Array<{ id: string; error: string }> = [];
+	const ready2 = Promise.withResolvers<SessionReadyPayload>();
+	const supervisor2 = new Supervisor(
+		{
+			onReady: (_id, payload) => ready2.resolve(payload),
+			onError: (id, error) => errors2.push({ id, error }),
+			onExit: () => {},
+		},
+		createLogger("guard-test-2"),
+		{ hostEntry: FIXTURE },
+	);
+	await supervisor2.spawn({ id: "s_guard_third", cwd: import.meta.dir, sessionFile: file, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready2.promise;
+	expect(errors2).toEqual([]);
+	await supervisor2.stopAll("guard test 2 done");
+});

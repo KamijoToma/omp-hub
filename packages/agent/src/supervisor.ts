@@ -7,6 +7,7 @@
  */
 
 import { stat } from "node:fs/promises";
+import path from "node:path";
 import { errorMessage, type Logger, type LogLevel } from "./log";
 import { defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
 
@@ -29,6 +30,8 @@ export interface SessionConfig {
 	prompt?: string;
 	/** Named omp profile; validated against the machine before the child spawns. */
 	profile?: string;
+	/** Resume an existing omp session file instead of minting a new one. */
+	sessionFile?: string;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -83,6 +86,8 @@ type SessionChild = Bun.Subprocess<"pipe", "pipe", "inherit">;
 interface ChildRecord {
 	id: string;
 	config: SessionConfig;
+	/** Resolved `config.sessionFile` when resuming; guards double-open. */
+	sessionFile?: string;
 	child: SessionChild;
 	status: SessionStatus;
 	error?: string;
@@ -187,6 +192,22 @@ export class Supervisor {
 			return;
 		}
 
+		// Session files carry no cross-process lock (append-only JSONL): two live
+		// children on one file would interleave appends and corrupt history. The
+		// resolved path — not the raw string — keeps aliased spellings from
+		// slipping past the guard.
+		const sessionFile = config.sessionFile ? path.resolve(config.sessionFile) : undefined;
+		if (sessionFile) {
+			for (const record of this.#children.values()) {
+				if (record.sessionFile !== sessionFile) continue;
+				if (record.status !== "starting" && record.status !== "live") continue;
+				const message = `session file already in use by session ${record.id}: ${sessionFile}`;
+				this.#log.error(`session ${config.id}: ${message}`);
+				this.#handlers.onError(config.id, message);
+				return;
+			}
+		}
+
 		const argv = [process.execPath, this.#hostEntry, "--config", JSON.stringify(config)];
 		let child: SessionChild;
 		try {
@@ -209,7 +230,7 @@ export class Supervisor {
 			return;
 		}
 
-		const record: ChildRecord = { id: config.id, config, child, status: "starting" };
+		const record: ChildRecord = { id: config.id, config, sessionFile, child, status: "starting" };
 		this.#children.set(config.id, record);
 		this.#log.info(`spawned session ${config.id} (pid ${child.pid}) in ${config.cwd}`);
 		void this.#readStdout(record);

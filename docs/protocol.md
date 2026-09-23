@@ -50,7 +50,7 @@ WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper da
 ```ts
 { t: "welcome", relayUrl: string, webUrl: string }                 // answer to hello
 { t: "start", id: string, cwd: string, name?: string, prompt?: string, profile?: string,
-  relayUrl: string, webUrl: string }
+  sessionFile?: string, relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
 { t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
@@ -69,6 +69,13 @@ Semantics:
   that the profile exists on the machine, exports `OMP_PROFILE`/`PI_PROFILE` on the session
   child, and reports any failure as `session-error` before spawning. Omitted (or `"default"`)
   means the default profile.
+- `start.sessionFile` resumes an existing omp session file instead of minting a new one
+  (CLI `--resume` semantics: history, model, and thinking level come back from the file).
+  The agent refuses a `start` whose `sessionFile` already belongs to a starting/live child
+  on that machine — session files carry no cross-process lock, so two live writers would
+  corrupt the transcript — and reports `session-error` `"session file already in use by
+  session <id>"`. A session that has exited releases the file for further resumes.
+>>>>>>> feat/resume-history-sessions
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
@@ -159,6 +166,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 ```ts
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
 { t: "cmd", reqId: string, cmd: "list-profiles" }
+{ t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string }  // cwd omitted ⇒ every project
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -177,6 +185,27 @@ interface DirListing {
 - `list-profiles` → `data: { profiles: string[] }`: named omp profiles that exist on the
   machine (`~/.omp/profiles/<name>/agent` exists; `PI_CONFIG_DIR` honored), sorted; the
   implicit `"default"` profile is never listed.
+
+- `list-sessions` → `data: SessionListing`: resumable omp sessions known to the machine, most
+  recently modified first. Reads the machine's omp session store (SDK picker listing), so empty
+  0-turn stubs are excluded. `cwd` scopes the listing to the project that directory belongs to.
+  ```ts
+interface SessionListing {
+  sessions: {
+    path: string;              // absolute session file; the value for start.sessionFile
+    id: string;
+    cwd: string;               // working directory recorded in the session header
+    title?: string;
+    created: string;           // ISO timestamp
+    modified: string;
+    messageCount: number;
+    assistantTurns?: number;   // persisted assistant turns; 0 = agent never replied
+    status?: string;           // complete | interrupted | aborted | error | pending | unknown
+    firstMessage: string;      // single-line preview
+  }[];
+  truncated: boolean;          // sessions hit the 200 cap
+}
+```
 
 
 
@@ -222,6 +251,7 @@ interface MachineRecord {
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
 | `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to the machine's local omp stats dashboard; status/content-type/body replayed verbatim. 404 unknown machine, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
+| `GET /api/machines/:machineId/sessions?cwd=` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `cwd` omitted ⇒ every project); error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
@@ -229,7 +259,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields or invalid profile name |
+| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
 - `POST /api/sessions` assigns the id, stores the record, forwards `start` to the agent. If the
@@ -264,10 +294,12 @@ parent → child (stdin):
 (numbers only), computed by the child from the SDK's context breakdown.
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
-`{ id, cwd, name?, prompt?, profile?, relayUrl, webUrl, agentDir? }`. A validated `profile`
+`{ id, cwd, name?, prompt?, profile?, sessionFile?, relayUrl, webUrl, agentDir? }`. A validated `profile`
 rides the config verbatim; the supervisor exports `OMP_PROFILE`/`PI_PROFILE` on the child
 (and clears any ambient daemon-level profile variables for default sessions), so the SDK
-resolves the profile's agent directory from the first module load.
+resolves the profile's agent directory from the first module load. `sessionFile` resumes
+that omp session file (`SessionManager.open` with `throwIfMissing`) instead of minting a new
+session; the recorded header cwd is adopted when the directory is still enterable.
 SIGTERM from the supervisor is equivalent to `{t:"stop"}` with reason `"sigterm"`.
 Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 

@@ -32,6 +32,7 @@ const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
 /** Cap on the caller's POST body relayed to a machine's stats dashboard. */
 const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
+const MACHINE_SESSIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -81,6 +82,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const machineProfiles = MACHINE_PROFILES_PATH_RE.exec(route);
 	if (machineProfiles && req.method === "GET") {
 		return listMachineProfiles(decodeURIComponent(machineProfiles[1]!), ctx);
+	}
+	const machineSessions = MACHINE_SESSIONS_PATH_RE.exec(route);
+	if (machineSessions && req.method === "GET") {
+		return listMachineSessions(decodeURIComponent(machineSessions[1]!), req, ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -154,6 +159,15 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	if (!machine) return json({ error: "machine not found" }, 404);
 	if (!machine.connected) return json({ error: "machine offline" }, 404);
 
+	// Optional resume target: present-but-empty is a caller bug, not "start
+	// fresh" — silently degrading a resume click into a blank session would
+	// look like lost history.
+	const rawSessionFile = body.sessionFile;
+	if (rawSessionFile !== undefined && (typeof rawSessionFile !== "string" || rawSessionFile.trim() === "")) {
+		return json({ error: "sessionFile must be a non-empty string" }, 400);
+	}
+	const sessionFile = typeof rawSessionFile === "string" ? rawSessionFile.trim() : undefined;
+
 	const record = ctx.sessions.create({
 		machineId,
 		machineName: machine.name,
@@ -170,6 +184,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		name: record.name,
 		...(prompt === undefined ? {} : { prompt }),
 		...(profile === undefined ? {} : { profile }),
+		...(sessionFile === undefined ? {} : { sessionFile }),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -267,6 +282,26 @@ async function listMachineProfiles(machineId: string, ctx: ApiContext): Promise<
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	const profiles = pick(result.data, "profiles");
 	return json({ ok: true, profiles: Array.isArray(profiles) ? profiles : [] });
+}
+
+/**
+ * Machine-level session history for the resume picker: forwards
+ * `list-sessions` to the connected agent (protocol §2 "Machine commands").
+ * Status codes mirror `listMachineFs`.
+ */
+async function listMachineSessions(machineId: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
+
+	const cwd = new URL(req.url).searchParams.get("cwd") ?? undefined;
+	const result = await ctx.agents.sendCmd(machineId, {
+		reqId: newCmdReqId(),
+		cmd: "list-sessions",
+		...(cwd ? { cwd } : {}),
+	});
+	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
+	return json({ ok: true, listing: result.data });
 }
 
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
