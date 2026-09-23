@@ -36,6 +36,7 @@ import {
 	routeComposerText,
 	transcriptJsonl,
 } from "./commands";
+import { ContextModal } from "./ContextModal";
 import { HelpModal } from "./HelpModal";
 import { LinksModal } from "./LinksModal";
 import { ModelPicker } from "./ModelPicker";
@@ -295,6 +296,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				railOpen={railOpen}
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
+				onOpenModel={() => setModal("model")}
+				onOpenContext={() => setModal("context")}
 			/>
 			<main className="sh-main">
 				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
@@ -357,6 +360,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
 			<Toasts notices={toasts} />
 			{modal === "model" && <ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
+			{modal === "context" && <ContextModal sessionId={sessionId} onClose={closeModal} />}
 			{modal === "thinking" && <ThinkingPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "settings" && (
 				<SettingsModal

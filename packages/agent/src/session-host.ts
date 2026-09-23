@@ -13,9 +13,11 @@ import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import { buildCollabCtx } from "./collab-ctx";
+import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createLogger, errorMessage } from "./log";
 import type { SessionLinks } from "./supervisor";
+
+type ComputeSessionContextBreakdown = typeof import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime").computeSessionContextBreakdown;
 
 interface HostConfig {
 	id: string;
@@ -82,6 +84,7 @@ interface CommandDeps {
 	parseThinkingLevel: typeof ParseThinkingLevel;
 	modelRoles: typeof ModelRoles;
 	roleModels: typeof RoleModels;
+	computeSessionContextBreakdown: ComputeSessionContextBreakdown;
 }
 
 /**
@@ -147,6 +150,11 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 	switch (frame.cmd) {
 		case "get-state":
 			return agentState(session, deps);
+		case "get-context":
+			// The SDK's own estimated split, without the snapcompact planner: it
+			// renders images for a savings estimate the UI never shows. Numbers and
+			// labels only — no prompt text and no model object cross this boundary.
+			return sessionContextPayload(deps.computeSessionContextBreakdown(session));
 		case "set-model": {
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
@@ -319,8 +327,9 @@ async function run(): Promise<void> {
 	const { parseConfiguredThinkingLevel } = await import("@oh-my-pi/pi-tui/thinking");
 	const modelRoles = await import("@oh-my-pi/pi-coding-agent/config/model-roles");
 	const roleModels = await import("@oh-my-pi/pi-coding-agent/session/role-models");
+	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { createStubUIContext } = await import("./ui-stub");
-	const commandDeps: CommandDeps = { parseThinkingLevel: parseConfiguredThinkingLevel, modelRoles, roleModels };
+	const commandDeps: CommandDeps = { parseThinkingLevel: parseConfiguredThinkingLevel, modelRoles, roleModels, computeSessionContextBreakdown };
 
 	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
 	// one session, and the global would freeze the first cwd.

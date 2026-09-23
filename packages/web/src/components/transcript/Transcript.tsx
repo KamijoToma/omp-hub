@@ -1,9 +1,17 @@
-import type { AssistantMessage, ImageContent, SessionEntry, TextContent, ToolResultMessage } from "../../lib/wire";
+import type {
+	AssistantMessage,
+	ImageContent,
+	SessionEntry,
+	TextContent,
+	ToolResultMessage,
+	WireUsage,
+} from "../../lib/wire";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtTokens } from "../../lib/format";
+import { fmtUsageCost, usageDetail } from "../../lib/usage";
 import type { ToolRenderHost } from "../../tool-render";
 import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCard";
@@ -84,6 +92,81 @@ function MsgContent({ content }: { content: string | readonly (TextContent | Ima
 	);
 }
 
+/**
+ * Per-message usage for a finished assistant turn: a one-line summary that
+ * expands into the five metrics. Costs are estimated (provider price tables
+ * applied to the reported tokens), so they carry an `≈`/`est.` marker, and a
+ * metric the host never reported stays "—" instead of reading as a real zero.
+ */
+function UsageSummary({ usage }: { usage: WireUsage | undefined }): ReactNode {
+	const [open, setOpen] = useState(false);
+	const detail = usageDetail(usage);
+	if (detail === null) {
+		return (
+			<div className="tr-usage tr-usage-none" title="the host sent no usage block for this message">
+				usage unavailable
+			</div>
+		);
+	}
+	const summary: string[] = [];
+	if (detail.totalTokens !== null) summary.push(`${fmtTokens(detail.totalTokens)} tok`);
+	else {
+		if (detail.input !== null) summary.push(`in ${fmtTokens(detail.input)}`);
+		if (detail.output !== null) summary.push(`out ${fmtTokens(detail.output)}`);
+	}
+	if (detail.cost !== null) summary.push(`≈${fmtUsageCost(detail.cost)}`);
+	const rows: readonly { key: string; label: string; value: ReactNode }[] = [
+		{ key: "input", label: "input", value: detail.input === null ? "—" : fmtTokens(detail.input) },
+		{ key: "output", label: "output", value: detail.output === null ? "—" : fmtTokens(detail.output) },
+		{ key: "cacheRead", label: "cache read", value: detail.cacheRead === null ? "—" : fmtTokens(detail.cacheRead) },
+		{
+			key: "cacheWrite",
+			label: "cache write",
+			value: detail.cacheWrite === null ? "—" : fmtTokens(detail.cacheWrite),
+		},
+		{
+			key: "cost",
+			label: "cost",
+			value:
+				detail.cost === null ? (
+					"—"
+				) : (
+					<>
+						≈{fmtUsageCost(detail.cost)}
+						<span className="tr-usage-est" title="estimate: provider price tables applied to the reported tokens">
+							est.
+						</span>
+					</>
+				),
+		},
+	];
+	return (
+		<div className="tr-usage">
+			<button
+				type="button"
+				className="tr-usage-head"
+				aria-expanded={open}
+				onClick={() => setOpen(value => !value)}
+				title="usage for this message — tokens as reported, cost estimated from provider price tables"
+			>
+				<ChevronRight size={11} className={`tr-chev${open ? " tr-chev--open" : ""}`} aria-hidden="true" />
+				<span className="tr-usage-summary">{summary.length > 0 ? summary.join(" · ") : "usage"}</span>
+				<span className="tr-usage-toggle">{open ? "hide" : "detail"}</span>
+			</button>
+			{open && (
+				<dl className="tr-usage-grid">
+					{rows.map(row => (
+						<div className="tr-usage-row" key={row.key}>
+							<dt className="tr-usage-label">{row.label}</dt>
+							<dd className="tr-usage-value">{row.value}</dd>
+						</div>
+					))}
+				</dl>
+			)}
+		</div>
+	);
+}
+
 function AssistantBody({
 	message,
 	results,
@@ -140,6 +223,8 @@ function AssistantBody({
 					)}
 				</div>
 			)}
+			{/* Streaming ghosts carry accumulating usage: only a finished turn may show it. */}
+			{!pending && <UsageSummary usage={message.usage} />}
 		</>
 	);
 }

@@ -47,7 +47,7 @@ export type AgentCommand =
 	| ({ t: "cmd" } & CmdRequest);
 
 /** Host commands a session answers (protocol §2 "Session commands"). */
-export type CmdName = "get-state" | "set-model" | "set-thinking";
+export type CmdName = "get-state" | "get-context" | "set-model" | "set-thinking";
 
 /** `cmd` payload; `reqId` correlates the agent's `cmd-result`. */
 export interface CmdRequest {

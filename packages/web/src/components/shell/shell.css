@@ -170,6 +170,35 @@
 	white-space: nowrap;
 }
 
+/* Interactive header chips/gauge: the hub's `/s/<id>` surface only — `/join`
+ * keeps the plain spans so the display-only view gains no controls. */
+.sh-chip-btn {
+	cursor: pointer;
+}
+
+.sh-chip-btn:hover {
+	color: var(--fg);
+	background: var(--bg-overlay);
+	border-color: var(--border-strong);
+}
+
+.sh-gauge-btn {
+	padding: 0;
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+.sh-gauge-btn:hover .sh-gauge-pct {
+	color: var(--fg);
+}
+
+.sh-chip-btn:focus-visible,
+.sh-gauge-btn:focus-visible {
+	outline: 2px solid var(--ring);
+	outline-offset: 2px;
+}
+
 /* ---- header ---- */
 .sh-header {
 	display: flex;

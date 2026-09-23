@@ -21,6 +21,7 @@ type CmdOutcome = { readonly ok: true; readonly data: unknown } | { readonly ok:
 const SESSION_PATH_RE = /^\/api\/sessions\/([^/]+)$/;
 const STOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/stop$/;
 const AGENT_STATE_PATH_RE = /^\/api\/sessions\/([^/]+)\/agent-state$/;
+const CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/context$/;
 const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 
@@ -89,6 +90,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	if (state && req.method === "GET") {
 		return agentState(decodeURIComponent(state[1]!), ctx);
 	}
+	const context = CONTEXT_PATH_RE.exec(route);
+	if (context && req.method === "GET") {
+		return sessionContext(decodeURIComponent(context[1]!), ctx);
+	}
 	const model = MODEL_PATH_RE.exec(route);
 	if (model && req.method === "POST") {
 		return setModel(decodeURIComponent(model[1]!), req, ctx);
@@ -152,6 +157,12 @@ function stopSession(id: string, ctx: ApiContext): Response {
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
 	const outcome = await dispatchCmd(id, "get-state", {}, ctx);
 	return outcome.ok ? json({ ok: true, state: outcome.data }) : outcome.response;
+}
+
+/** `get-context` takes no parameters: the agent reports its own token estimates (protocol §2). */
+async function sessionContext(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "get-context", {}, ctx);
+	return outcome.ok ? json({ ok: true, context: outcome.data }) : outcome.response;
 }
 
 async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Response> {

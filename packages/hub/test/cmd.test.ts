@@ -35,6 +35,21 @@ const STATE = {
 	models: [{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
 };
 
+/** `get-context` payload (protocol §2 SessionContext) as the session host reports it. */
+const CONTEXT = {
+	contextWindow: 200_000,
+	usedTokens: 46_500,
+	categories: [
+		{ id: "systemPrompt", label: "System prompt", tokens: 1_200 },
+		{ id: "systemTools", label: "System tools", tokens: 5_400 },
+		{ id: "systemContext", label: "System context", tokens: 900 },
+		{ id: "skills", label: "Skills", tokens: 600 },
+		{ id: "messages", label: "Messages", tokens: 38_400 },
+	],
+	autoCompactBufferTokens: 20_000,
+	freeTokens: 133_500,
+};
+
 /** Yields the event loop so pending socket I/O can be processed (no fixed delay). */
 const yieldLoop = (): Promise<void> => {
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -153,6 +168,24 @@ describe("session commands", () => {
 		expect(await settled.json()).toEqual({ ok: true, state: STATE });
 	});
 
+	test("get-context relays the agent's session context; the route needs the bearer token", async () => {
+		const agent = await connectAgent(main, "m-context", "context-machine");
+		const session = await liveSession(main, agent, "m-context", "/srv/context");
+
+		const anon = await fetch(`${main.http}/api/sessions/${session.id}/context`);
+		expect(anon.status).toBe(401);
+		expect(await anon.json()).toEqual({ error: "unauthorized" });
+
+		const response = api(main, `/api/sessions/${session.id}/context`);
+		const frame = await answerCmd(agent, "get-context", { ok: true, data: CONTEXT });
+		// A pure read: the frame carries no provider/modelId/level parameters.
+		expect(frame).toEqual({ t: "cmd", id: session.id, reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/), cmd: "get-context" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, context: CONTEXT });
+	});
+
 	test("set-model forwards provider/modelId and returns switched", async () => {
 		const agent = await connectAgent(main, "m-model", "model-machine");
 		const session = await liveSession(main, agent, "m-model", "/srv/model");
@@ -262,6 +295,10 @@ describe("session commands", () => {
 		expect(state.status).toBe(409);
 		expect(await state.json()).toEqual({ error: "session is starting" });
 
+		const context = await api(main, `/api/sessions/${session.id}/context`);
+		expect(context.status).toBe(409);
+		expect(await context.json()).toEqual({ error: "session is starting" });
+
 		const model = await api(main, `/api/sessions/${session.id}/model`, {
 			method: "POST",
 			body: JSON.stringify({ provider: "openai", modelId: "gpt-5" }),
@@ -303,6 +340,9 @@ describe("session commands", () => {
 
 		const unknownState = await api(main, "/api/sessions/s_zzzzzzzzzz/agent-state");
 		expect(unknownState.status).toBe(404);
+		const unknownContext = await api(main, "/api/sessions/s_zzzzzzzzzz/context");
+		expect(unknownContext.status).toBe(404);
+		expect(await unknownContext.json()).toEqual({ error: "session not found" });
 		const unknownModel = await api(main, "/api/sessions/s_zzzzzzzzzz/model", {
 			method: "POST",
 			body: JSON.stringify({ provider: "openai", modelId: "gpt-5" }),
