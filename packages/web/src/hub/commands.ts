@@ -12,9 +12,10 @@ import type { SessionEntry } from "../lib/wire";
 
 /**
  * Dialog a command opens; `SessionView` maps each kind to a component.
- * `"context"` is the exception: the header gauge opens it, no command does.
+ * `"rewind"` opens from the slash table; `"context"` is the exception: the
+ * header gauge opens it, no command does.
  */
-export type ModalKind = "model" | "thinking" | "settings" | "links" | "help" | "context";
+export type ModalKind = "model" | "thinking" | "rewind" | "settings" | "links" | "help" | "context";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
@@ -40,6 +41,7 @@ export interface CommandSpec {
 export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "model", description: "switch the session model", run: ctx => ctx.openModal("model") },
 	{ name: "thinking", description: "set the thinking level", run: ctx => ctx.openModal("thinking") },
+	{ name: "rewind", description: "rewind to an earlier message", run: ctx => ctx.openModal("rewind") },
 	{
 		name: "settings",
 		description: "model, thinking, links, theme, display name",

@@ -94,15 +94,11 @@ function parseArgs(argv: string[]): CliOptions | null {
  */
 async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: CmdFrame): Promise<void> {
 	try {
-		const result = await supervisor.cmd(frame.id, {
-			reqId: frame.reqId,
-			cmd: frame.cmd,
-			provider: frame.provider,
-			modelId: frame.modelId,
-			role: frame.role,
-			persist: frame.persist,
-			level: frame.level,
-		});
+		// Forward every cmd parameter as-is: the per-command validation lives in
+		// the session host's executeCommand, and a whitelist here silently drops
+		// new fields end-to-end.
+		const { t: _t, id: _id, reqId, cmd, ...params } = frame;
+		const result = await supervisor.cmd(frame.id, { reqId, cmd, ...params });
 		if (result.ok) client.send({ t: "cmd-result", reqId: frame.reqId, ok: true, data: result.data });
 		else client.send({ t: "cmd-result", reqId: frame.reqId, ok: false, error: result.error });
 	} catch (err) {

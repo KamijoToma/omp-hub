@@ -87,6 +87,7 @@ describe("composer routing", () => {
 		expect(COMMANDS.map(cmd => cmd.name)).toEqual([
 			"model",
 			"thinking",
+			"rewind",
 			"settings",
 			"collab",
 			"theme",
@@ -101,6 +102,7 @@ describe("composer routing", () => {
 			{ text: "/model", check: t => expect(t.modals).toEqual(["model"]) },
 			{ text: "/MODEL", check: t => expect(t.modals).toEqual(["model"]) },
 			{ text: "/thinking", check: t => expect(t.modals).toEqual(["thinking"]) },
+			{ text: "/rewind", check: t => expect(t.modals).toEqual(["rewind"]) },
 			{ text: "/settings", check: t => expect(t.modals).toEqual(["settings"]) },
 			{ text: "/collab", check: t => expect(t.modals).toEqual(["links"]) },
 			{ text: "/theme", check: t => expect(t.themes).toBe(1) },

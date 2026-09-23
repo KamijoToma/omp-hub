@@ -44,17 +44,13 @@ export interface SupervisorHandlers {
 	onExit(id: string, code: number | null, reason: string): void;
 }
 
-/** Parent → child `cmd` payload (protocol §4); `reqId` correlates the reply. */
+/** Parent → child `cmd` payload (protocol §4); `reqId` correlates the reply.
+ * Parameters beyond the routing fields pass through unvalidated — per-command
+ * validation lives in the session host's executeCommand. */
 export interface CommandRequest {
 	reqId: string;
 	cmd: string;
-	provider?: string;
-	modelId?: string;
-	/** `set-model` target role; omitted means `"default"`. */
-	role?: string;
-	/** `set-model`: persist a non-default role assignment (default true). */
-	persist?: boolean;
-	level?: string;
+	[key: string]: unknown;
 }
 
 /** Normalized child `cmd-result` (protocol §4): exactly one of data/error. */

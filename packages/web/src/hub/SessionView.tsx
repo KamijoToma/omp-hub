@@ -40,6 +40,7 @@ import { ContextModal } from "./ContextModal";
 import { HelpModal } from "./HelpModal";
 import { LinksModal } from "./LinksModal";
 import { ModelPicker } from "./ModelPicker";
+import { RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
@@ -362,6 +363,16 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			{modal === "model" && <ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "context" && <ContextModal sessionId={sessionId} onClose={closeModal} />}
 			{modal === "thinking" && <ThinkingPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
+			{modal === "rewind" && (
+				<RewindPicker
+					sessionId={sessionId}
+					client={client}
+					entries={snap.entries}
+					working={snap.working}
+					notify={notify}
+					onClose={closeModal}
+				/>
+			)}
 			{modal === "settings" && (
 				<SettingsModal
 					sessionId={sessionId}

@@ -211,6 +211,24 @@ export class GuestClient {
 		this.#applyFrameSafe(frame);
 	}
 
+	/**
+	 * Locally truncate the replicated transcript: drops `entryId` and every
+	 * entry appended after it. Mirrors a leaf move the caller already performed
+	 * host-side (rewind); the host stays authoritative — a reconnect always
+	 * resyncs from the full snapshot. Also clears transient turn state (stream
+	 * ghost, active tools): the aborted turn's rows belong to the dropped range.
+	 */
+	dropEntriesFrom(entryId: string): void {
+		const index = this.#entries.findIndex(entry => entry.id === entryId);
+		if (index < 0) return;
+		this.#entries = this.#entries.slice(0, index);
+		this.#stream = null;
+		this.#streamDone = false;
+		this.#activeTools = new Map();
+		this.#working = false;
+		this.#commit();
+	}
+
 	#handleOpen(): void {
 		this.#socket.send({ t: "hello", proto: COLLAB_PROTO, name: this.#name, writeToken: this.#writeToken });
 		this.#phase = this.#everConnected ? "reconnecting" : "waiting";

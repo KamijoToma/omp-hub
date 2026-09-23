@@ -36,11 +36,7 @@ function handleLine(line: string): void {
 		t: "cmd-result",
 		reqId: frame.reqId,
 		ok: true,
-		data: {
-			echo: frame.cmd,
-			...(frame.role === undefined ? {} : { role: frame.role }),
-			...(frame.persist === undefined ? {} : { persist: frame.persist }),
-		},
+		data: { echo: frame.cmd, got: frame },
 	});
 }
 

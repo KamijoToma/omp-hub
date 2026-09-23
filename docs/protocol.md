@@ -70,9 +70,10 @@ Generic request/response control channel for web-driven host commands. hub→age
 
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
-  cmd: "get-state" | "get-context" | "set-model" | "set-thinking",
+  cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
+                                                                // entryId, summarize → navigate-tree
 ```
 
 agent→hub:
@@ -118,6 +119,12 @@ interface AgentState {
   ```
   All values are estimates: `categories` need not sum to `usedTokens`, and messages stay one
   bucket — the SDK cannot honestly split them into user/tool/assistant.
+- `navigate-tree {entryId, summarize?}` → `data: { cancelled, aborted, editorText, leafId }`
+  (session.navigateTree; moves the tree leaf — the target entry and everything after it leave
+  the active branch; a user-message target rewinds PAST itself and returns its text as
+  `editorText`. `aborted: true` means an in-flight turn was aborted — retry once settled.
+  `summarize: true` records a branch summary; requires a model. The host broadcasts no
+  tree-change frame: callers rebuild their transcript locally, and guests resync on reconnect.)
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -147,7 +154,6 @@ interface SessionRecord {
   pid?: number;
 }
 
-
 interface MachineRecord {
   machineId: string;
   name: string;
@@ -167,6 +173,7 @@ interface MachineRecord {
 | `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?}` → `{ ok: true, switched, role }`; same error set; 400 blank/oversize `role` or non-boolean `persist` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
+| `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -192,8 +199,10 @@ parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
-{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking",
-  provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean }
+{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree",
+  provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
+  entryId?: string, summarize?: boolean }   // parameters pass through unvalidated;
+                                            // executeCommand owns per-command validation
 ```
 
 `cmd` semantics are §2's; `get-context` is answered with the same `SessionContext` object
@@ -223,6 +232,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 |---|---|
 | `/model` | model picker modal (drives `GET/POST …/agent-state`, `…/model`) |
 | `/thinking` | thinking-level picker (drives `…/agent-state`, `…/thinking`) |
+| `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
 | `/settings` | settings modal: model + thinking + links + theme + display name |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/theme` | toggle light/dark (vendored theme store) |

@@ -24,6 +24,7 @@ const AGENT_STATE_PATH_RE = /^\/api\/sessions\/([^/]+)\/agent-state$/;
 const CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/context$/;
 const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
+const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -101,6 +102,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const thinking = THINKING_PATH_RE.exec(route);
 	if (thinking && req.method === "POST") {
 		return setThinking(decodeURIComponent(thinking[1]!), req, ctx);
+	}
+	const tree = TREE_PATH_RE.exec(route);
+	if (tree && req.method === "POST") {
+		return navigateTree(decodeURIComponent(tree[1]!), req, ctx);
 	}
 
 	return json({ error: "not found" }, 404);
@@ -206,6 +211,37 @@ async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<R
 
 	const outcome = await dispatchCmd(id, "set-thinking", { level }, ctx);
 	return outcome.ok ? json({ ok: true, thinkingLevel: pick(outcome.data, "thinkingLevel") }) : outcome.response;
+}
+
+/**
+ * Move the session's tree leaf (rewind): the target entry and everything after
+ * it leaves the active branch; a user-message target also rewinds past itself
+ * and returns its text as `editorText`. The host broadcasts no tree-change
+ * frame, so the caller rebuilds its transcript locally on success.
+ */
+async function navigateTree(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const entryId = field(body, "entryId");
+	if (!entryId || entryId.trim() === "") return json({ error: "entryId is required" }, 400);
+	const summarize = body["summarize"];
+	if (summarize !== undefined && typeof summarize !== "boolean") {
+		return json({ error: "summarize must be a boolean" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "navigate-tree", {
+		entryId,
+		...(typeof summarize === "boolean" ? { summarize } : {}),
+	}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({
+		ok: true,
+		cancelled: pick(data, "cancelled") ?? false,
+		aborted: pick(data, "aborted") ?? false,
+		editorText: pick(data, "editorText") ?? null,
+		leafId: pick(data, "leafId") ?? null,
+	});
 }
 
 /**

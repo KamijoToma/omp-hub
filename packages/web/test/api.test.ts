@@ -3,7 +3,7 @@
  * {@link HubApiError}, and the exact `POST /api/sessions` body (docs/protocol.md §3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearToken, getMachines, HubApiError, setModel, setToken, startSession } from "../src/hub/api";
+import { clearToken, getMachines, HubApiError, navigateTree, setModel, setToken, startSession } from "../src/hub/api";
 import type { SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
@@ -115,5 +115,25 @@ describe("hub api", () => {
 			persist: false,
 		});
 		expect(result).toEqual({ switched: true, role: "smol" });
+	});
+
+	test("navigateTree posts the target entry and unwraps the move result", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, cancelled: false, aborted: false, editorText: "fix it", leafId: "e_9" }));
+
+		const result = await navigateTree("s1", "e_5");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/tree");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ entryId: "e_5" });
+		expect(result).toEqual({ cancelled: false, aborted: false, editorText: "fix it", leafId: "e_9" });
+	});
+
+	test("navigateTree forwards the summarize option", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, cancelled: false, aborted: false, editorText: null, leafId: "e_2" }));
+
+		await navigateTree("s1", "e_5", { summarize: true });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ entryId: "e_5", summarize: true });
 	});
 });

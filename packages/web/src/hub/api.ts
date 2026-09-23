@@ -251,6 +251,38 @@ export async function setModel(
 	return { switched: reply.switched, role: reply.role };
 }
 
+/** Result of moving the session tree leaf (rewind). */
+export interface NavigateTreeResult {
+	/** A session hook cancelled the navigation; the tree is unchanged. */
+	cancelled: boolean;
+	/** An in-flight agent turn was aborting — retry once it settles. */
+	aborted: boolean;
+	/** The target prompt's text (the TUI puts it back in the composer). */
+	editorText: string | null;
+	leafId: string | null;
+}
+
+/**
+ * Move the session tree leaf (rewind): the target entry and everything after it
+ * leave the active branch; a user-message target rewinds past itself and
+ * returns its text as `editorText`. `aborted` means an in-flight turn was
+ * aborting — retry once settled.
+ */
+export async function navigateTree(
+	id: string,
+	entryId: string,
+	opts: { summarize?: boolean } = {},
+): Promise<NavigateTreeResult> {
+	const { ok: _ok, ...result } = await api<NavigateTreeResult & { ok: true }>(
+		`/api/sessions/${encodeURIComponent(id)}/tree`,
+		{
+			method: "POST",
+			body: JSON.stringify({ entryId, ...opts }),
+		},
+	);
+	return result;
+}
+
 /** Set the session thinking level; resolves the effective level after the set. */
 export async function setThinking(id: string, level: string): Promise<{ thinkingLevel: string }> {
 	const reply = await api<{ ok: true; thinkingLevel: string }>(`/api/sessions/${encodeURIComponent(id)}/thinking`, {
