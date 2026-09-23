@@ -1,0 +1,225 @@
+/**
+ * Session host: one child process per session (docs/architecture.md §2).
+ *
+ * argv: `--config <json>` with { id, cwd, name?, prompt?, relayUrl, webUrl, agentDir? }.
+ * stdout is a JSONL frame channel (docs/protocol.md §4) — `ready` | `error` — and
+ * nothing else; every log line goes to stderr.
+ */
+
+import { stat } from "node:fs/promises";
+import { basename } from "node:path";
+import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
+import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
+import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { buildCollabCtx } from "./collab-ctx";
+import { createLogger, errorMessage } from "./log";
+import type { SessionLinks } from "./supervisor";
+import { createStubUIContext } from "./ui-stub";
+
+interface HostConfig {
+	id: string;
+	cwd: string;
+	name?: string;
+	prompt?: string;
+	relayUrl: string;
+	webUrl: string;
+	agentDir?: string;
+}
+
+type ReadyFrame = { t: "ready"; sessionFile: string; pid: number; links: SessionLinks };
+
+const rawStdoutWrite = process.stdout.write.bind(process.stdout);
+const stderrWrite = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+
+// stdout carries frames and nothing else (§4). Any stray write from the SDK, an
+// extension, or a dependency is rerouted to stderr so the supervisor's JSONL
+// parser never sees foreign bytes.
+process.stdout.write = ((...args: Parameters<typeof rawStdoutWrite>) =>
+	stderrWrite(...args)) as typeof process.stdout.write;
+
+// Bun's console writes to fd 1 without going through process.stdout.write, so the
+// stdout-bound console methods need the same treatment.
+for (const method of ["log", "info", "debug"] as const) {
+	console[method] = (...data: unknown[]) => console.error(...data);
+}
+
+const REQUIRED_CONFIG_KEYS = ["id", "cwd", "relayUrl"] as const;
+
+function parseConfig(argv: string[]): HostConfig {
+	let raw: string | undefined;
+	for (let index = 0; index < argv.length; index++) {
+		const arg = argv[index] ?? "";
+		if (arg === "--config") raw = argv[++index];
+		else if (arg.startsWith("--config=")) raw = arg.slice("--config=".length);
+		else throw new Error(`unexpected argument: ${arg}`);
+	}
+	if (!raw) throw new Error("missing required --config <json>");
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (err) {
+		throw new Error(`invalid --config JSON: ${errorMessage(err)}`);
+	}
+	if (typeof parsed !== "object" || parsed === null) throw new Error("--config must be a JSON object");
+
+	const config = parsed as Record<string, unknown>;
+	for (const key of REQUIRED_CONFIG_KEYS) {
+		const value = config[key];
+		if (typeof value !== "string" || value.length === 0) {
+			throw new Error(`--config.${key} must be a non-empty string`);
+		}
+	}
+	const optional = (key: string): string | undefined => {
+		const value = config[key];
+		return typeof value === "string" && value.trim() ? value : undefined;
+	};
+
+	return {
+		id: config.id as string,
+		cwd: config.cwd as string,
+		name: optional("name"),
+		prompt: optional("prompt"),
+		relayUrl: config.relayUrl as string,
+		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
+		agentDir: optional("agentDir"),
+	};
+}
+
+async function run(): Promise<void> {
+	const config = parseConfig(process.argv.slice(2));
+	const log = createLogger(`session ${config.id}`);
+
+	// Stop intents are recorded from the first moment: a supervisor `stop` (or
+	// stdin EOF) can land while the session is still booting, and the frame must
+	// not be dropped just because CollabHost does not exist yet. `shutdownRequest`
+	// is wired once the session is up; until then the reason is parked.
+	let stopRequested: string | undefined;
+	let shutdownRequest: ((reason: string) => void) | undefined;
+	const requestStop = (reason: string): void => {
+		if (shutdownRequest) shutdownRequest(reason);
+		else stopRequested ??= reason;
+	};
+
+	const decoder = new TextDecoder();
+	let stdinBuffer = "";
+	const handleStdinLine = (line: string): void => {
+		let frame: unknown;
+		try {
+			frame = JSON.parse(line);
+		} catch {
+			log.warn(`ignoring non-JSON stdin line: ${line}`);
+			return;
+		}
+		const stop = (frame as { t?: string } | null)?.t === "stop" ? (frame as { reason?: string }) : undefined;
+		if (!stop) {
+			log.debug(`ignoring unknown stdin frame: ${line}`);
+			return;
+		}
+		requestStop(stop.reason ?? "stop");
+	};
+	process.stdin.on("data", (chunk: Uint8Array | string) => {
+		stdinBuffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+		let newline = stdinBuffer.indexOf("\n");
+		while (newline >= 0) {
+			const line = stdinBuffer.slice(0, newline).trim();
+			stdinBuffer = stdinBuffer.slice(newline + 1);
+			if (line) handleStdinLine(line);
+			newline = stdinBuffer.indexOf("\n");
+		}
+	});
+	// stdin EOF means the supervisor is gone; never linger as an orphan.
+	process.stdin.on("end", () => requestStop("stdin closed"));
+	process.on("SIGTERM", () => requestStop("sigterm"));
+	process.on("SIGINT", () => requestStop("sigint"));
+
+	const cwd = await stat(config.cwd).catch(() => null);
+	if (!cwd?.isDirectory()) throw new Error(`cwd is not an existing directory: ${config.cwd}`);
+
+	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
+	// one session, and the global would freeze the first cwd.
+	const settings = await Settings.loadIsolated({ cwd: config.cwd, agentDir: config.agentDir });
+	const displayName = config.name?.trim() || basename(config.cwd);
+	settings.override("collab.displayName", displayName);
+
+	const sessionManager = SessionManager.create(config.cwd);
+	const { session, eventBus, setToolUIContext } = await createAgentSession({
+		cwd: config.cwd,
+		agentDir: config.agentDir,
+		settings,
+		sessionManager,
+		agentId: `hub-${config.id}`,
+		agentDisplayName: displayName,
+		hasUI: false,
+		autoApprove: true,
+	});
+
+	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));
+	const ui = createStubUIContext();
+	setToolUIContext(ui, false);
+	await initializeExtensions(session, {
+		uiContext: ui,
+		reportSendError: () => {},
+		reportRuntimeError: () => {},
+	});
+
+	const ctx = buildCollabCtx(session, eventBus);
+	const host = new CollabHost(ctx);
+	await host.start(config.relayUrl, config.webUrl);
+	ctx.collabHost = host;
+
+	const sessionFile = session.sessionManager.getSessionFile() ?? "";
+	const ready: ReadyFrame = {
+		t: "ready",
+		sessionFile,
+		pid: process.pid,
+		links: { full: host.link, view: host.viewLink, web: host.webLink, webView: host.webViewLink },
+	};
+	rawStdoutWrite(`${JSON.stringify(ready)}\n`);
+	log.info(`ready: session ${session.sessionManager.getSessionId()} pid ${process.pid} file ${sessionFile}`);
+
+	let stopping = false;
+	const shutdown = async (reason: string): Promise<void> => {
+		if (stopping) return;
+		stopping = true;
+		log.info(`stopping (${reason})`);
+		// The supervisor SIGKILLs 10 s after stop; never leave it to that.
+		const bail = setTimeout(() => {
+			log.warn("dispose did not finish in 9s; forcing exit");
+			process.exit(0);
+		}, 9_000);
+		bail.unref();
+		try {
+			await host.stop(reason);
+		} catch (err) {
+			log.warn(`collab stop failed: ${errorMessage(err)}`);
+		}
+		try {
+			session.beginDispose();
+			await session.dispose();
+		} catch (err) {
+			log.warn(`session dispose failed: ${errorMessage(err)}`);
+		}
+		clearTimeout(bail);
+		process.exit(0);
+	};
+
+	shutdownRequest = reason => void shutdown(reason);
+	if (stopRequested !== undefined) shutdownRequest(stopRequested);
+
+	if (config.prompt) {
+		void session.prompt(config.prompt).catch(err => log.error(`initial prompt failed: ${errorMessage(err)}`));
+	}
+}
+
+run().catch(async err => {
+	const message = errorMessage(err);
+	rawStdoutWrite(`${JSON.stringify({ t: "error", message })}\n`);
+	process.stderr.write(`session-host fatal: ${message}\n`);
+	// Give the pipe reader a beat to see the frame before the hard exit.
+	const grace = Promise.withResolvers<void>();
+	setTimeout(grace.resolve, 20);
+	await grace.promise;
+	process.exit(1);
+});

@@ -1,0 +1,11 @@
+{
+  "name": "omp-hub-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/main.ts",
+    "start": "bun src/main.ts",
+    "test": "bun test"
+  }
+}
