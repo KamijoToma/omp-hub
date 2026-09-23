@@ -28,6 +28,19 @@ const LISTING = {
 			status: "complete",
 			firstMessage: "first prompt",
 		},
+		{
+			path: "/home/dev/.omp/profiles/work/agent/sessions/20260627_b.jsonl",
+			id: "resume02bb",
+			cwd: "/home/dev/project",
+			title: "Profiled session",
+			created: "2026-06-27T13:00:00.000Z",
+			modified: "2026-06-27T14:00:00.000Z",
+			messageCount: 2,
+			assistantTurns: 1,
+			status: "complete",
+			firstMessage: "work prompt",
+			profile: "work",
+		},
 	],
 	truncated: false,
 };
@@ -122,38 +135,22 @@ describe("machine session history", () => {
 		expect(await response.json()).toEqual({ error: "machine not found" });
 	});
 
-	test("forwards list-sessions without a cwd and returns the agent's listing", async () => {
+	test("forwards list-sessions with allProfiles and returns the agent's listing", async () => {
 		const agent = await connectAgent(main, "m-hist", "hist-machine");
 
 		const response = api(main, "/api/machines/m-hist/sessions");
 		const frame = await answerListSessions(agent, { ok: true, data: LISTING });
-		// Machine-level: no session id, and no cwd ⇒ the agent lists every project.
+		// The resume picker spans every omp profile; entries carry `profile`.
 		expect(frame).toEqual({
 			t: "cmd",
 			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
 			cmd: "list-sessions",
+			allProfiles: true,
 		});
 
 		const settled = await response;
 		expect(settled.status).toBe(200);
 		expect(await settled.json()).toEqual({ ok: true, listing: LISTING });
-	});
-
-	test("passes the requested cwd scope through to the agent", async () => {
-		const agent = await connectAgent(main, "m-hist-scope", "hist-scope-machine");
-
-		const response = api(main, `/api/machines/m-hist-scope/sessions?cwd=${encodeURIComponent("/srv/dev projects")}`);
-		const frame = await answerListSessions(agent, { ok: true, data: { ...LISTING, truncated: true } });
-		expect(frame).toEqual({
-			t: "cmd",
-			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
-			cmd: "list-sessions",
-			cwd: "/srv/dev projects",
-		});
-
-		const settled = await response;
-		expect(settled.status).toBe(200);
-		expect(await settled.json()).toEqual({ ok: true, listing: { ...LISTING, truncated: true } });
 	});
 
 	test("agent-reported failures surface with the mapped status", async () => {

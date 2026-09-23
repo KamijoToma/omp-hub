@@ -94,6 +94,8 @@ export interface CmdRequest {
 	path?: string;
 	/** `list-sessions` project filter; omitted lists every project. */
 	cwd?: string;
+	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
+	allProfiles?: boolean;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */

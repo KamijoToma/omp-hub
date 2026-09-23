@@ -8,7 +8,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { handleMachineCmd, listDirectories, listSessions } from "../src/machine-cmds";
+import { handleMachineCmd, listAllProfileSessions, listDirectories, listSessions } from "../src/machine-cmds";
 
 const NAME_ORDER = (a: string, b: string): number =>
 	a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
@@ -226,5 +226,110 @@ test("handleMachineCmd answers list-sessions; scopes without history list empty"
 		expect(listed.sessions.find(s => s.id === "histb00001")?.firstMessage).toBe(`${"x".repeat(240)}...`);
 	} finally {
 		await rm(path.dirname(sessionDir), { recursive: true, force: true });
+	}
+});
+
+/** All-profiles fixtures: a default sessions root plus `work` (with history) and `personal` (without). */
+async function makeProfileFixtures(): Promise<{
+	root: string;
+	project: string;
+	defaultRoot: string;
+	profilesRoot: string;
+}> {
+	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-profile-sessions-"));
+	const project = path.join(root, "project");
+	const defaultRoot = path.join(root, "default-sessions");
+	const profilesRoot = path.join(root, "profiles");
+	await mkdir(project);
+	// listAllSessions globs `<root>/*/*.jsonl`, so each store gets a project bucket.
+	await mkdir(path.join(defaultRoot, "proj"), { recursive: true });
+	await mkdir(path.join(profilesRoot, "work", "agent", "sessions", "proj"), { recursive: true });
+	// A profile whose session store does not exist yet contributes nothing.
+	await mkdir(path.join(profilesRoot, "personal", "agent"), { recursive: true });
+	return { root, project, defaultRoot, profilesRoot };
+}
+
+test("listAllProfileSessions merges every profile's history and stamps named entries", async () => {
+	const { root, project, defaultRoot, profilesRoot } = await makeProfileFixtures();
+	try {
+		const older = await writeSession(path.join(defaultRoot, "proj"), project, {
+			id: "defa00001",
+			firstMessage: "older default",
+		});
+		const newer = await writeSession(path.join(defaultRoot, "proj"), project, {
+			id: "defb00001",
+			title: "default work",
+			firstMessage: "newer default",
+		});
+		const newest = await writeSession(path.join(profilesRoot, "work", "agent", "sessions", "proj"), project, {
+			id: "worka0001",
+			title: "profile session",
+			firstMessage: "work prompt",
+		});
+		const early = new Date("2026-06-27T08:00:00.000Z");
+		const middle = new Date("2026-06-27T10:00:00.000Z");
+		const late = new Date("2026-06-27T12:00:00.000Z");
+		await utimes(older, early, early);
+		await utimes(newer, middle, middle);
+		await utimes(newest, late, late);
+
+		const listing = await listAllProfileSessions({ profilesRoot, defaultSessionsRoot: defaultRoot });
+
+		// One recency-sorted listing; named-profile rows carry `profile`,
+		// default rows leave it absent (absent ⇒ default on the wire).
+		expect(listing.truncated).toBe(false);
+		expect(listing.sessions.map(s => [s.id, s.profile ?? "default"])).toEqual([
+			["worka0001", "work"],
+			["defb00001", "default"],
+			["defa00001", "default"],
+		]);
+		expect(listing.sessions[0]).toMatchObject({ profile: "work", cwd: project, title: "profile session" });
+		expect(listing.sessions[1]?.profile).toBeUndefined();
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("listAllProfileSessions caps the merged listing once", async () => {
+	const { root, project, defaultRoot, profilesRoot } = await makeProfileFixtures();
+	try {
+		await writeSession(path.join(defaultRoot, "proj"), project, { id: "defa00001", firstMessage: "a" });
+		await writeSession(path.join(defaultRoot, "proj"), project, { id: "defb00001", firstMessage: "b" });
+		await writeSession(path.join(profilesRoot, "work", "agent", "sessions", "proj"), project, {
+			id: "worka0001",
+			firstMessage: "c",
+		});
+
+		const listing = await listAllProfileSessions({ profilesRoot, defaultSessionsRoot: defaultRoot, maxEntries: 2 });
+
+		expect(listing.sessions).toHaveLength(2);
+		expect(listing.truncated).toBe(true);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("listAllProfileSessions does not duplicate the daemon's own profile directory", async () => {
+	// A daemon started under a named profile scans that profile's store as its
+	// ambient "default"; the named scan must skip the paths it already returned.
+	const { root, project, profilesRoot } = await makeProfileFixtures();
+	try {
+		await mkdir(path.join(profilesRoot, "self", "agent", "sessions", "proj"), { recursive: true });
+		await writeSession(path.join(profilesRoot, "self", "agent", "sessions", "proj"), project, {
+			id: "selfa0001",
+			title: "own profile session",
+			firstMessage: "x",
+		});
+
+		const listing = await listAllProfileSessions({
+			profilesRoot,
+			defaultSessionsRoot: path.join(profilesRoot, "self", "agent", "sessions"),
+		});
+
+		// The named scan claims the directory first, so the row is stamped
+		// with the profile that owns it and never appears twice.
+		expect(listing.sessions.map(s => [s.id, s.profile ?? "default"])).toEqual([["selfa0001", "self"]]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
 	}
 });

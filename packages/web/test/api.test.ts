@@ -112,7 +112,7 @@ describe("hub api", () => {
 		});
 	});
 
-	test("getMachineSessions encodes the machine id and cwd scope and unwraps the listing", async () => {
+	test("getMachineSessions encodes the machine id and unwraps the all-profiles listing", async () => {
 		setToken("t0k3n");
 		const listing = {
 			sessions: [
@@ -125,24 +125,25 @@ describe("hub api", () => {
 					messageCount: 2,
 					firstMessage: "first prompt",
 				},
+				{
+					path: "/home/dev/.omp/profiles/work/agent/sessions/20260627_b.jsonl",
+					id: "resume02bb",
+					cwd: "/home/dev/project",
+					created: "2026-06-27T13:00:00.000Z",
+					modified: "2026-06-27T14:00:00.000Z",
+					messageCount: 2,
+					firstMessage: "work prompt",
+					profile: "work",
+				},
 			],
 			truncated: false,
 		};
 		stubFetch(() => json({ ok: true, listing }));
 
-		const result = await getMachineSessions("m1", "/home/dev projects");
-
-		expect(calls[0].url).toBe(`/api/machines/m1/sessions?cwd=${encodeURIComponent("/home/dev projects")}`);
-		expect(result).toEqual(listing);
-	});
-
-	test("getMachineSessions omits the query for the all-projects listing", async () => {
-		setToken("t0k3n");
-		stubFetch(() => json({ ok: true, listing: { sessions: [], truncated: false } }));
-
-		await getMachineSessions("m1");
+		const result = await getMachineSessions("m1");
 
 		expect(calls[0].url).toBe("/api/machines/m1/sessions");
+		expect(result).toEqual(listing);
 	});
 
 	test("startSession omits unset optional fields", async () => {

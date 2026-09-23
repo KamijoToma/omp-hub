@@ -89,7 +89,7 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	}
 	const machineSessions = MACHINE_SESSIONS_PATH_RE.exec(route);
 	if (machineSessions && req.method === "GET") {
-		return listMachineSessions(decodeURIComponent(machineSessions[1]!), req, ctx);
+		return listMachineSessions(decodeURIComponent(machineSessions[1]!), ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -310,19 +310,19 @@ async function listMachineProfiles(machineId: string, ctx: ApiContext): Promise<
 
 /**
  * Machine-level session history for the resume picker: forwards
- * `list-sessions` to the connected agent (protocol §2 "Machine commands").
- * Status codes mirror `listMachineFs`.
+ * `list-sessions` with `allProfiles` so the listing merges the default profile
+ * with every named omp profile, each entry stamped with its owning profile
+ * (protocol §2 "Machine commands"). Status codes mirror `listMachineFs`.
  */
-async function listMachineSessions(machineId: string, req: Request, ctx: ApiContext): Promise<Response> {
+async function listMachineSessions(machineId: string, ctx: ApiContext): Promise<Response> {
 	const machine = ctx.agents.getMachine(machineId);
 	if (!machine) return json({ error: "machine not found" }, 404);
 	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
 
-	const cwd = new URL(req.url).searchParams.get("cwd") ?? undefined;
 	const result = await ctx.agents.sendCmd(machineId, {
 		reqId: newCmdReqId(),
 		cmd: "list-sessions",
-		...(cwd ? { cwd } : {}),
+		allProfiles: true,
 	});
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	return json({ ok: true, listing: result.data });
