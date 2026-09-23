@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createLogger } from "../src/log";
 import { type SessionReadyPayload, Supervisor } from "../src/supervisor";
+import { startHub } from "../../hub/src/server";
 
 const HOST_ENTRY = new URL("../src/session-host.ts", import.meta.url).pathname;
 
@@ -84,3 +85,68 @@ test("session host resumes an existing session file and reports it ready", async
 		await rm(root, { recursive: true, force: true });
 	}
 }, 120_000);
+
+test("hub resume reaches the daemon and reopens the saved session", async () => {
+	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-daemon-resume-"));
+	const project = path.join(root, "project");
+	const sessionFile = path.join(root, "saved.jsonl");
+	await mkdir(project);
+	await writeFile(
+		sessionFile,
+		[
+			JSON.stringify({ type: "session", version: 3, id: "savedresume01", timestamp: "2026-06-27T00:00:00.000Z", cwd: project }),
+			JSON.stringify({ type: "message", message: { role: "user", content: "saved prompt" } }),
+			JSON.stringify({ type: "message", message: { role: "assistant", content: "saved response" } }),
+		].join("\n") + "\n",
+	);
+
+	const hub = startHub({ port: 0, hostname: "127.0.0.1", token: "t", publicUrl: "" });
+	const daemon = Bun.spawn(
+		[process.execPath, new URL("../src/main.ts", import.meta.url).pathname, "--hub", hub.url, "--machine-id", "m_daemon_resume"],
+		{
+			cwd: import.meta.dir,
+			env: { ...process.env, HOME: root, HUB_TOKEN: "t", PI_CONFIG_DIR: "", OMP_PROFILE: "", PI_PROFILE: "" },
+			stdout: "ignore",
+			stderr: "ignore",
+		},
+	);
+	const headers = { authorization: "Bearer t" };
+	const waitFor = async <T>(what: string, probe: () => Promise<T | undefined>): Promise<T> => {
+		const deadline = Date.now() + 15_000;
+		for (;;) {
+			const result = await probe();
+			if (result !== undefined) return result;
+			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+			await new Promise<void>(resolve => setImmediate(resolve));
+		}
+	};
+
+	try {
+		await waitFor("machine registration", async () => {
+			const response = await fetch(`${hub.url}/api/machines`, { headers });
+			const body = (await response.json()) as { machines: { machineId: string; connected: boolean }[] };
+			return body.machines.some(machine => machine.machineId === "m_daemon_resume" && machine.connected) ? true : undefined;
+		});
+		const started = await fetch(`${hub.url}/api/sessions`, {
+			method: "POST",
+			headers: { ...headers, "content-type": "application/json" },
+			body: JSON.stringify({ machineId: "m_daemon_resume", cwd: project, sessionFile }),
+		});
+		expect(started.status).toBe(202);
+		const { session: created } = (await started.json()) as { session: { id: string } };
+		const reopened = await waitFor("resumed session", async () => {
+			const response = await fetch(`${hub.url}/api/sessions/${created.id}`, { headers });
+			const body = (await response.json()) as { session: { status: string; sessionFile?: string; error?: string } };
+			if (body.session.status === "failed" || body.session.status === "exited") {
+				throw new Error(body.session.error ?? `session ${body.session.status}`);
+			}
+			return body.session.status === "live" ? body.session : undefined;
+		});
+		expect(reopened.sessionFile).toBe(sessionFile);
+	} finally {
+		daemon.kill("SIGTERM");
+		await daemon.exited;
+		hub.stop();
+		await rm(root, { recursive: true, force: true });
+	}
+}, 30_000);

@@ -38,6 +38,7 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 
 	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-ops-host-"));
 	await mkdir(path.join(root, "project"));
+	await mkdir(path.join(root, "agent"));
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const exits: string[] = [];
 	const supervisor = new Supervisor(
@@ -54,6 +55,7 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 		await supervisor.spawn({
 			id: "s_ops001",
 			cwd: path.join(root, "project"),
+			agentDir: path.join(root, "agent"),
 			relayUrl: `ws://127.0.0.1:${relay.port}`,
 			webUrl: "",
 		});

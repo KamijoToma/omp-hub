@@ -34,6 +34,8 @@ export interface StartFrame {
 	prompt?: string;
 	/** Named omp profile for the session; omitted means the default profile. */
 	profile?: string;
+	/** Existing omp session file to reopen instead of starting a blank session. */
+	sessionFile?: string;
 	relayUrl: string;
 	webUrl: string;
 }
