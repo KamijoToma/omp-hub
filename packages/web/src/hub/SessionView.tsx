@@ -47,7 +47,9 @@ import { RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
+import { SteeringQueueBar } from "./SteeringQueueBar";
 import { ThinkingPicker } from "./ThinkingPicker";
+import { useSteeringQueue } from "./steering-queue";
 import { TodoPanel, TODO_COLLAPSE_KEY } from "./TodoPanel";
 
 /** Local notices never collide with the client's sequence (which starts at 1). */
@@ -119,6 +121,17 @@ interface SessionProps {
 
 function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
+	// Steering messages (TUI input-controller parity): a prompt submitted while
+	// the host agent streams queues host-side and stays visible here until it
+	// is delivered; an empty-editor Enter aborts so the queue delivers now.
+	const steering = useSteeringQueue(snap);
+	const busy = snap.working || (snap.state?.isStreaming ?? false);
+	const hostQueued = snap.state?.queuedMessageCount ?? 0;
+	// Latest busy/steering state for the memoized composer intercept below.
+	const busyRef = useRef(busy);
+	busyRef.current = busy;
+	const steeringRef = useRef(steering);
+	steeringRef.current = steering;
 	const [railOpen, setRailOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
@@ -228,8 +241,18 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		setPaletteText("");
 		setPaletteDismissed(false);
 		setPaletteIndex(0);
+		// A prompt handed to the host while it streams is queued as a steering
+		// message; record it so the queue bar can show the text until delivery.
+		if (route === "passthrough" && busyRef.current) steeringRef.current.recordQueued(text);
 		return route !== "passthrough";
 	}, []);
+
+	/** Empty-editor Enter and the queue bar's button: abort the turn; the host drains the queue into the next one. */
+	const flushSteering = useCallback((): void => {
+		if (!busyRef.current) return;
+		client.sendAbort();
+		notify("info", "interrupting — the queued messages deliver now");
+	}, [client, notify]);
 
 	const composerClient = useMemo(() => createComposerClient(client, interceptComposer), [client, interceptComposer]);
 
@@ -267,6 +290,25 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	};
 
 	const onComposerKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+		// TUI parity: Enter on an empty editor while the agent runs and messages
+		// are queued aborts the turn so the host delivers the queue immediately.
+		// Capture phase keeps the vendored textarea from seeing the key.
+		if (
+			e.key === "Enter" &&
+			!e.shiftKey &&
+			!e.nativeEvent.isComposing &&
+			!snap.uiRequest &&
+			busy &&
+			snap.phase === "live" &&
+			!snap.readOnly &&
+			!paletteText.trim() &&
+			(steering.pending.length > 0 || hostQueued > 0)
+		) {
+			e.preventDefault();
+			e.stopPropagation();
+			flushSteering();
+			return;
+		}
 		// IME composition keys (candidate confirm/nav/cancel) must not drive the palette.
 		if (isImeComposing(e)) return;
 		if (!paletteOpen) return;
@@ -389,6 +431,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				onBlur={onComposerBlur}
 			>
 				<TodoPanel entries={snap.entries} open={todoOpen} onToggle={() => setTodoOpen(prev => !prev)} />
+				<SteeringQueueBar pending={steering.pending} extraQueued={steering.extraQueued} onFlush={flushSteering} />
 				<Composer client={composerClient} snapshot={snap} />
 				{paletteOpen && (
 					<SlashPalette
