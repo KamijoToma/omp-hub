@@ -5,13 +5,13 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Copy, FolderOpen, LogOut, Play, Square } from "lucide-react";
+import { Copy, FolderOpen, History, LogOut, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
-import type { MachineRecord, SessionRecord, SessionStatus } from "./api";
-import { errorText, getMachines, getSessions, startSession, stopSession } from "./api";
+import type { MachineRecord, MachineSession, SessionRecord, SessionStatus } from "./api";
+import { errorText, getMachines, getMachineSessions, getSessions, startSession, stopSession } from "./api";
 import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { navigate } from "./router";
@@ -41,6 +41,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [flash, setFlash] = useState<{ key: string; ok: boolean } | null>(null);
+	const [history, setHistory] = useState<MachineSession[] | null>(null);
+	const [historyTruncated, setHistoryTruncated] = useState(false);
+	const [historyError, setHistoryError] = useState<string | null>(null);
+	const [historyBusy, setHistoryBusy] = useState(false);
+	const [historyFilter, setHistoryFilter] = useState("");
 
 	useEffect(() => {
 		let cancelled = false;
@@ -75,6 +80,64 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	useEffect(() => {
 		if (!connected.some(m => m.machineId === machineId)) setMachineId(connected[0]?.machineId ?? "");
 	}, [connected, machineId]);
+
+	// History changes only when someone uses omp on the machine, so it loads on
+	// machine switch and manual refresh instead of joining the 2 s poll.
+	const loadHistory = useCallback(async (id: string): Promise<void> => {
+		if (!id) {
+			setHistory(null);
+			setHistoryTruncated(false);
+			setHistoryError(null);
+			return;
+		}
+		setHistoryBusy(true);
+		try {
+			const listing = await getMachineSessions(id);
+			setHistory(listing.sessions);
+			setHistoryTruncated(listing.truncated);
+			setHistoryError(null);
+		} catch (err) {
+			setHistoryError(errorText(err));
+		} finally {
+			setHistoryBusy(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void loadHistory(machineId);
+	}, [machineId, loadHistory]);
+
+	const filteredHistory = useMemo(() => {
+		const needle = historyFilter.trim().toLowerCase();
+		const all = history ?? [];
+		if (!needle) return all;
+		return all.filter(
+			entry =>
+				(entry.title ?? "").toLowerCase().includes(needle) ||
+				entry.cwd.toLowerCase().includes(needle) ||
+				entry.firstMessage.toLowerCase().includes(needle),
+		);
+	}, [history, historyFilter]);
+
+	/** Start a new hub session that resumes `entry`'s omp history. */
+	const resume = async (entry: MachineSession): Promise<void> => {
+		if (!machineId || busy) return;
+		setBusy(true);
+		setFormError(null);
+		try {
+			const session = await startSession({
+				machineId,
+				cwd: entry.cwd,
+				name: entry.title || undefined,
+				sessionFile: entry.path,
+			});
+			setBusy(false);
+			navigate(`/s/${session.id}`);
+		} catch (err) {
+			setBusy(false);
+			setFormError(errorText(err));
+		}
+	};
 
 	const submit = async (): Promise<void> => {
 		if (!machineId) {
@@ -316,6 +379,68 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									</li>
 								))}
 							</ul>
+						)}
+					</section>
+
+					<section className="hb-card">
+						<div className="hb-history-head">
+							<h2 className="hb-card-title">History</h2>
+							<button
+								type="button"
+								className="sh-btn"
+								onClick={() => void loadHistory(machineId)}
+								disabled={!machineId || historyBusy}
+								title="reload this machine's omp session history"
+							>
+								<History size={14} aria-hidden="true" />
+								<span className="sh-btn-label">{historyBusy ? "loading…" : "Refresh"}</span>
+							</button>
+						</div>
+						{machineId && (
+							<input
+								className="sh-input hb-history-filter"
+								type="text"
+								value={historyFilter}
+								onChange={e => setHistoryFilter(e.target.value)}
+								placeholder="filter by title, directory, or first message"
+								spellCheck={false}
+								autoComplete="off"
+							/>
+						)}
+						{!machineId ? (
+							<p className="hb-empty">no connected machine</p>
+						) : historyError ? (
+							<p className="hb-empty">{historyError}</p>
+						) : filteredHistory.length === 0 ? (
+							<p className="hb-empty">no omp sessions on this machine yet</p>
+						) : (
+							<ul className="hb-history">
+								{filteredHistory.map(entry => (
+									<li key={entry.path} className="hb-history-item">
+										<button
+											type="button"
+											className="hb-history-open"
+											disabled={busy}
+											onClick={() => void resume(entry)}
+											title={`resume ${entry.path}`}
+										>
+											<span className="hb-history-title">
+												{entry.title || entry.firstMessage || entry.id}
+											</span>
+											<span className="hb-history-meta">
+												<span className="hb-mono" title={entry.cwd}>
+													{entry.cwd}
+												</span>
+												<span className="hb-mono">{relTime(Date.parse(entry.modified))}</span>
+												<span className="hb-mono">{entry.messageCount} msgs</span>
+											</span>
+										</button>
+									</li>
+								))}
+							</ul>
+						)}
+						{historyTruncated && history !== null && history.length > 0 && (
+							<p className="hb-session-note">showing the {history.length} most recent sessions</p>
 						)}
 					</section>
 				</div>

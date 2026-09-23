@@ -234,6 +234,70 @@
 	margin-top: 2px;
 }
 
+/* ---- history (machine omp sessions) ---- */
+.hb-history-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.hb-history-filter {
+	margin: 8px 0;
+}
+
+.hb-history {
+	list-style: none;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.hb-history-item {
+	min-width: 0;
+}
+
+.hb-history-open {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 4px;
+	width: 100%;
+	min-width: 0;
+	padding: 8px 10px;
+	text-align: left;
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	cursor: pointer;
+}
+
+.hb-history-open:hover:not(:disabled) {
+	border-color: var(--accent, var(--fg-muted));
+}
+
+.hb-history-open:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.hb-history-title {
+	font-size: 13px;
+	font-weight: 500;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-history-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 10px;
+	min-width: 0;
+}
+
 /* ---- status dots ---- */
 .hb-dot {
 	flex: none;

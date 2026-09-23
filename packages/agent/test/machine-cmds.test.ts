@@ -5,10 +5,10 @@
  */
 
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { handleMachineCmd, listDirectories } from "../src/machine-cmds";
+import { handleMachineCmd, listDirectories, listSessions } from "../src/machine-cmds";
 
 const NAME_ORDER = (a: string, b: string): number =>
 	a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
@@ -89,7 +89,7 @@ test("handleMachineCmd answers list-dir and rejects unknown commands without thr
 	try {
 		const ok = await handleMachineCmd({ cmd: "list-dir", path: root });
 		expect(ok.ok).toBe(true);
-		if (ok.ok) expect(ok.data.entries.length).toBeGreaterThan(0);
+		if (ok.ok && "entries" in ok.data) expect(ok.data.entries.length).toBeGreaterThan(0);
 
 		const badPath = await handleMachineCmd({ cmd: "list-dir", path: path.join(root, "vanished") });
 		expect(badPath).toEqual({ ok: false, error: "no such directory" });
@@ -101,5 +101,121 @@ test("handleMachineCmd answers list-dir and rejects unknown commands without thr
 		expect(unknown).toEqual({ ok: false, error: expect.stringContaining("unknown machine command: reboot") });
 	} finally {
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+/** One project dir + a session dir holding handcrafted omp session files. */
+async function makeSessionFixtures(): Promise<{ project: string; sessionDir: string }> {
+	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-list-sessions-"));
+	const project = path.join(root, "project");
+	const sessionDir = path.join(root, "sessions");
+	await mkdir(project);
+	await mkdir(sessionDir);
+	return { project, sessionDir };
+}
+
+interface FixtureOptions {
+	id: string;
+	title?: string;
+	firstMessage?: string;
+	/** Trailing newline-free second line to prove previews stay single-line. */
+	multiline?: boolean;
+}
+
+/** Writes a minimal resumable session file (session header + one user/assistant turn). */
+async function writeSession(sessionDir: string, project: string, options: FixtureOptions): Promise<string> {
+	const lines = [
+		...(options.title
+			? [JSON.stringify({ type: "title", v: 1, title: options.title, updatedAt: "2026-06-27T00:00:00.000Z" })]
+			: []),
+		JSON.stringify({ type: "session", version: 3, id: options.id, timestamp: "2026-06-27T00:00:00.000Z", cwd: project }),
+		...(options.firstMessage
+			? [
+					JSON.stringify({
+						type: "message",
+						message: { role: "user", content: options.multiline ? `${options.firstMessage}\nsecond line` : options.firstMessage },
+					}),
+					JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
+				]
+			: []),
+	];
+	const file = path.join(sessionDir, `20260627_${options.id}.jsonl`);
+	await writeFile(file, `${lines.join("\n")}\n`);
+	return file;
+}
+
+test("listSessions returns scoped history most-recent-first with single-line previews", async () => {
+	const { project, sessionDir } = await makeSessionFixtures();
+	try {
+		const older = await writeSession(sessionDir, project, { id: "hista00001", firstMessage: "older prompt" });
+		const newer = await writeSession(sessionDir, project, {
+			id: "histb00001",
+			title: "Fix the login bug",
+			firstMessage: "first prompt",
+			multiline: true,
+		});
+		// Distinct mtimes make the recency order deterministic.
+		const early = new Date("2026-06-27T10:00:00.000Z");
+		const late = new Date("2026-06-27T12:00:00.000Z");
+		await utimes(older, early, early);
+		await utimes(newer, late, late);
+
+		const listing = await listSessions({ cwd: project, sessionDir });
+
+		expect(listing.truncated).toBe(false);
+		expect(listing.sessions.map(s => s.id)).toEqual(["histb00001", "hista00001"]);
+
+		const [top, second] = listing.sessions;
+		expect(top).toMatchObject({
+			path: newer,
+			id: "histb00001",
+			cwd: project,
+			title: "Fix the login bug",
+			messageCount: 2,
+		});
+		expect(top.modified).toBe(late.toISOString());
+		// The newline is flattened away so a row preview stays one line.
+		expect(top.firstMessage).toBe("first prompt");
+		expect(top.assistantTurns).toBeGreaterThan(0);
+		expect(typeof top.status).toBe("string");
+		expect(second).toMatchObject({ id: "hista00001", firstMessage: "older prompt" });
+		expect(second.title).toBeUndefined();
+	} finally {
+		await rm(path.dirname(sessionDir), { recursive: true, force: true });
+	}
+});
+
+test("listSessions truncates at the entry cap and flags it", async () => {
+	const { project, sessionDir } = await makeSessionFixtures();
+	try {
+		await writeSession(sessionDir, project, { id: "hista00001", firstMessage: "a" });
+		await writeSession(sessionDir, project, { id: "histb00001", firstMessage: "b" });
+
+		const listing = await listSessions({ cwd: project, sessionDir, maxEntries: 1 });
+
+		expect(listing.sessions).toHaveLength(1);
+		expect(listing.truncated).toBe(true);
+	} finally {
+		await rm(path.dirname(sessionDir), { recursive: true, force: true });
+	}
+});
+
+test("handleMachineCmd answers list-sessions; scopes without history list empty", async () => {
+	const { project, sessionDir } = await makeSessionFixtures();
+	try {
+		await writeSession(sessionDir, project, { id: "hista00001", title: "titled session" });
+
+		// Scoped dispatch without a sessionDir override derives the default
+		// session dir from cwd — empty here, proving the scoping path answers.
+		const scoped = await handleMachineCmd({ cmd: "list-sessions", cwd: project });
+		expect(scoped).toEqual({ ok: true, data: { sessions: [], truncated: false } });
+
+		// Preview long first messages are capped for the wire payload.
+		const long = "x".repeat(400);
+		await writeSession(sessionDir, project, { id: "histb00001", firstMessage: long });
+		const listed = await listSessions({ cwd: project, sessionDir });
+		expect(listed.sessions.find(s => s.id === "histb00001")?.firstMessage).toBe(`${"x".repeat(240)}...`);
+	} finally {
+		await rm(path.dirname(sessionDir), { recursive: true, force: true });
 	}
 });

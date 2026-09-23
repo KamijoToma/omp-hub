@@ -41,7 +41,17 @@ export interface AgentUpgradeServer {
 /** hub → agent frames (protocol §2). */
 export type AgentCommand =
 	| { t: "welcome"; relayUrl: string; webUrl: string }
-	| { t: "start"; id: string; cwd: string; name?: string; prompt?: string; relayUrl: string; webUrl: string }
+	| {
+			t: "start";
+			id: string;
+			cwd: string;
+			name?: string;
+			prompt?: string;
+			/** Resume an existing omp session file instead of minting a new one. */
+			sessionFile?: string;
+			relayUrl: string;
+			webUrl: string;
+	  }
 	| { t: "stop"; id: string; reason?: string }
 	| { t: "ping"; ts: number }
 	| ({ t: "cmd" } & CmdRequest);
@@ -50,7 +60,7 @@ export type AgentCommand =
 export type SessionCmdName = "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir";
+export type MachineCmdName = "list-dir" | "list-sessions";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -63,6 +73,8 @@ export interface CmdRequest {
 	cmd: CmdName;
 	/** `list-dir` target directory; omitted lists the agent user's home. */
 	path?: string;
+	/** `list-sessions` project filter; omitted lists every project. */
+	cwd?: string;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */

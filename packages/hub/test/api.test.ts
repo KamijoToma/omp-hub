@@ -279,6 +279,31 @@ describe("hub api", () => {
 		second.agent.ws.close();
 	});
 
+	test("POST /api/sessions forwards sessionFile and rejects empty resume targets", async () => {
+		const { agent } = await connectAgent("m-resume", "resume-machine");
+		const sessionFile = "/home/dev/project/.omp/sessions/20260627_resume01.jsonl";
+
+		const session = await startSession("m-resume", "/home/dev/project", { sessionFile });
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		// The resume target rides the start frame untouched; without it the
+		// field stays absent so ordinary starts see an unchanged frame.
+		expect(start).toMatchObject({ id: session.id, cwd: "/home/dev/project", sessionFile });
+		agent.ws.close(1000, "test done");
+
+		const other = await connectAgent("m-resume-plain", "resume-plain-machine");
+		const plain = await startSession("m-resume-plain", "/srv/app");
+		const plainStart = await other.agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect("sessionFile" in plainStart).toBe(false);
+		expect(plain.cwd).toBe("/srv/app");
+
+		const empty = await api("/api/sessions", {
+			method: "POST",
+			body: JSON.stringify({ machineId: "m-resume-plain", cwd: "/srv/app", sessionFile: "  " }),
+		});
+		expect(empty.status).toBe(400);
+		expect(await empty.json()).toEqual({ error: "sessionFile must be a non-empty string" });
+	});
+
 	test("validation: unknown machine and missing fields", async () => {
 		const unknown = await api("/api/sessions", { method: "POST", body: JSON.stringify({ machineId: "ghost", cwd: "/tmp/x" }) });
 		expect(unknown.status).toBe(404);

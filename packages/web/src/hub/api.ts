@@ -43,6 +43,8 @@ export interface StartSessionRequest {
 	cwd: string;
 	name?: string;
 	prompt?: string;
+	/** Resume an existing omp session file instead of minting a new one. */
+	sessionFile?: string;
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -183,6 +185,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	const body: StartSessionRequest = { machineId: input.machineId, cwd: input.cwd };
 	if (input.name) body.name = input.name;
 	if (input.prompt) body.prompt = input.prompt;
+	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -322,6 +325,40 @@ export async function listMachineDirectories(machineId: string, dirPath?: string
 	const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : "";
 	const reply = await api<{ ok: true; listing: DirListing }>(
 		`/api/machines/${encodeURIComponent(machineId)}/fs${query}`,
+	);
+	return reply.listing;
+}
+
+/** One resumable omp session on a machine (protocol §2 `SessionListEntry`). */
+export interface MachineSession {
+	/** Absolute session file path; the value for {@link StartSessionRequest.sessionFile}. */
+	path: string;
+	id: string;
+	cwd: string;
+	title?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	assistantTurns?: number;
+	status?: string;
+	firstMessage: string;
+}
+
+/** Machine session history behind the resume picker (protocol §2 "Machine commands"). */
+export interface SessionListing {
+	sessions: MachineSession[];
+	truncated: boolean;
+}
+
+/**
+ * Recent omp sessions on an agent machine, most recently modified first;
+ * omit `cwd` to list every project. Status codes mirror
+ * {@link listMachineDirectories}.
+ */
+export async function getMachineSessions(machineId: string, cwd?: string): Promise<SessionListing> {
+	const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+	const reply = await api<{ ok: true; listing: SessionListing }>(
+		`/api/machines/${encodeURIComponent(machineId)}/sessions${query}`,
 	);
 	return reply.listing;
 }

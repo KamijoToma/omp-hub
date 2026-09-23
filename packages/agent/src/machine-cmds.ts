@@ -33,14 +33,51 @@ export interface DirListing {
  */
 export const MAX_DIR_ENTRIES = 500;
 
+/**
+ * Upper bound on `list-sessions` rows: the resume picker only needs recent
+ * history, and `listAllForPicker` scans every project's session directory.
+ */
+export const MAX_SESSION_ENTRIES = 200;
+
+/** First-message preview kept to one short line per row. */
+const FIRST_MESSAGE_CHARS = 240;
+
+/** One resumable session on this machine (subset of the SDK's SessionInfo). */
+export interface SessionListEntry {
+	/** Absolute session file path; the value for a `start` frame's `sessionFile`. */
+	path: string;
+	id: string;
+	/** Working directory recorded in the session header. */
+	cwd: string;
+	title?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	/** Persisted assistant turns; zero means the agent never replied. */
+	assistantTurns?: number;
+	/** Coarse lifecycle status derived from the last persisted message. */
+	status?: string;
+	/** First user message, single line, truncated. */
+	firstMessage: string;
+}
+
+/** `list-sessions` payload: most recently modified first. */
+export interface SessionListing {
+	sessions: SessionListEntry[];
+	/** True when `sessions` hit the cap and older history exists. */
+	truncated: boolean;
+}
+
 /** Shape of the machine-level `cmd` frame the daemon accepts. */
 export interface MachineCmdFrame {
 	cmd: string;
 	/** Directory to list; empty or missing lists the agent user's home. */
 	path?: string;
+	/** `list-sessions` project filter; empty or missing lists every project. */
+	cwd?: string;
 }
 
-export type MachineCmdResult = { ok: true; data: DirListing } | { ok: false; error: string };
+export type MachineCmdResult = { ok: true; data: DirListing | SessionListing } | { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
 async function listDirs(dir: string): Promise<DirEntry[]> {
@@ -82,6 +119,52 @@ export async function listDirectories(rawPath: string | undefined, maxEntries = 
 	};
 }
 
+/** Flatten text to one truncated line for single-row previews. */
+function firstLine(text: string, maxChars: number): string {
+	const line = text.split(/\r?\n/, 1)[0] ?? "";
+	return line.length > maxChars ? `${line.slice(0, maxChars)}...` : line;
+}
+
+export interface ListSessionsOptions {
+	/** Restrict the listing to the project `cwd` belongs to; omitted lists every project. */
+	cwd?: string;
+	/** Session directory override (tests); only meaningful with `cwd`. */
+	sessionDir?: string;
+	maxEntries?: number;
+}
+
+/**
+ * `list-sessions`: recent sessions known to this machine's omp install, most
+ * recently modified first. The SDK import is lazy — the daemon never touches it
+ * otherwise, so native-binding or install failures surface as a normal
+ * `cmd-result` error instead of a dead daemon.
+ */
+export async function listSessions(options: ListSessionsOptions = {}): Promise<SessionListing> {
+	const maxEntries = options.maxEntries ?? MAX_SESSION_ENTRIES;
+	const { SessionManager } = await import("@oh-my-pi/pi-coding-agent");
+	const found = options.cwd
+		? await SessionManager.listForPicker(options.cwd, options.sessionDir)
+		: await SessionManager.listAllForPicker();
+	// Picker results order pinned-first; a resume picker wants recency.
+	const sorted = [...found].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+	const truncated = sorted.length > maxEntries;
+	return {
+		sessions: sorted.slice(0, maxEntries).map(entry => ({
+			path: entry.path,
+			id: entry.id,
+			cwd: entry.cwd,
+			...(entry.title ? { title: entry.title } : {}),
+			created: entry.created.toISOString(),
+			modified: entry.modified.toISOString(),
+			messageCount: entry.messageCount,
+			...(entry.assistantTurns === undefined ? {} : { assistantTurns: entry.assistantTurns }),
+			...(entry.status === undefined ? {} : { status: entry.status }),
+			firstMessage: firstLine(entry.firstMessage, FIRST_MESSAGE_CHARS),
+		})),
+		truncated,
+	};
+}
+
 /**
  * Stable failure strings for common `list-dir` filesystem errors (protocol §2):
  * the hub maps these to client-error HTTP statuses, so they must stay
@@ -97,10 +180,19 @@ function fsError(err: unknown): string {
 
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
 export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineCmdResult> {
-	if (frame.cmd !== "list-dir") return { ok: false, error: `unknown machine command: ${frame.cmd}` };
-	try {
-		return { ok: true, data: await listDirectories(frame.path) };
-	} catch (err) {
-		return { ok: false, error: fsError(err) };
+	if (frame.cmd === "list-dir") {
+		try {
+			return { ok: true, data: await listDirectories(frame.path) };
+		} catch (err) {
+			return { ok: false, error: fsError(err) };
+		}
 	}
+	if (frame.cmd === "list-sessions") {
+		try {
+			return { ok: true, data: await listSessions({ cwd: frame.cwd }) };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	return { ok: false, error: `unknown machine command: ${frame.cmd}` };
 }
