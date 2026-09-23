@@ -298,6 +298,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
 				onOpenModel={() => setModal("model")}
+				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
 			/>
 			<main className="sh-main">
