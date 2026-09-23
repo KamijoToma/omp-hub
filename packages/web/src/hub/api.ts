@@ -501,6 +501,78 @@ export async function postCompact(
 	});
 }
 
+/** Outcome of a shake run (agent `shake`): what was dropped and the estimate freed. */
+export interface ShakeResult {
+	/** Selected diet: `elide`, `images`, or `thinking`. */
+	mode: "elide" | "images" | "thinking";
+	/** Whole tool-call results dropped (elide). */
+	toolResultsDropped: number;
+	/** Large fenced/XML blocks dropped (elide). */
+	blocksDropped: number;
+	/** Image blocks removed (images mode, incl. old snapcompact archive frames). */
+	imagesDropped?: number;
+	/** Thinking blocks dropped (thinking mode). */
+	thinkingBlocksDropped?: number;
+	/** Estimated context tokens reclaimed. */
+	tokensFreed: number;
+}
+
+/**
+ * One-line operator summary of a {@link ShakeResult} (TUI `formatShakeSummary`
+ * parity — the web package does not import the agent SDK).
+ */
+export function formatShakeSummary(result: ShakeResult): string {
+	if (result.mode === "images") {
+		const n = result.imagesDropped ?? 0;
+		return n === 0
+			? "No images found in this session."
+			: `Dropped ${n} image${n === 1 ? "" : "s"} from this session.`;
+	}
+	if (result.mode === "thinking") {
+		const n = result.thinkingBlocksDropped ?? 0;
+		return n === 0
+			? "No thinking blocks found in this session."
+			: `Dropped ${n} thinking block${n === 1 ? "" : "s"} from this session${result.tokensFreed > 0 ? ` (~${result.tokensFreed} tokens freed)` : ""}.`;
+	}
+	const parts: string[] = [];
+	if (result.toolResultsDropped > 0) {
+		parts.push(`${result.toolResultsDropped} tool result${result.toolResultsDropped === 1 ? "" : "s"}`);
+	}
+	if (result.blocksDropped > 0) {
+		parts.push(`${result.blocksDropped} block${result.blocksDropped === 1 ? "" : "s"}`);
+	}
+	if (parts.length === 0) return "Nothing to shake.";
+	return `Shook ${parts.join(" + ")} (~${result.tokensFreed} tokens freed).`;
+}
+
+/**
+ * Shake heavy content out of the context (agent `shake`, TUI `/shake` parity):
+ * a local transform, so the reply carries the actual counts. `mode` defaults
+ * to `"elide"` on the agent; a bad mode surfaces as a 500 with the agent's
+ * known-modes message.
+ */
+export async function postShake(id: string, mode?: string): Promise<ShakeResult> {
+	const reply = await api<{ ok: true; result: ShakeResult }>(`/api/sessions/${encodeURIComponent(id)}/shake`, {
+		method: "POST",
+		body: JSON.stringify(mode === undefined ? {} : { mode }),
+	});
+	return reply.result;
+}
+
+/**
+ * Summarize the session into a handoff document and compact in place (agent
+ * `handoff`, TUI `/handoff` parity). Background dispatch like
+ * {@link postCompact} — the reply only confirms the start; the document and
+ * any failure stream through the transcript. The hub answers 409 while a
+ * response is streaming or a handoff is already running.
+ */
+export async function postHandoff(id: string, instructions?: string): Promise<void> {
+	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/handoff`, {
+		method: "POST",
+		body: JSON.stringify(instructions === undefined ? {} : { instructions }),
+	});
+}
+
 /**
  * Retry the session's last failed turn (agent `retry`). The hub answers 409
  * with the agent's message when there is nothing to retry or a response is

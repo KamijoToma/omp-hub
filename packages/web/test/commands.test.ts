@@ -32,6 +32,8 @@ interface Trace {
 	dumps: number;
 	notices: { level: Notice["level"]; message: string }[];
 	compacts: unknown[];
+	shakes: string[];
+	handoffs: (string | undefined)[];
 	clears: number;
 	news: number;
 	resumes: string[];
@@ -48,6 +50,8 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		dumps: 0,
 		notices: [],
 		compacts: [],
+		shakes: [],
+		handoffs: [],
 		clears: 0,
 		news: 0,
 		resumes: [],
@@ -68,6 +72,8 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			notify: (level, message) => trace.notices.push({ level, message }),
 			compactSession: request => trace.compacts.push(request),
+			shakeSession: mode => trace.shakes.push(mode),
+			handoffSession: instructions => trace.handoffs.push(instructions),
 			clearContext: () => {
 				trace.clears += 1;
 			},
@@ -118,6 +124,8 @@ describe("composer routing", () => {
 			dumps: 0,
 			notices: [],
 			compacts: [],
+			shakes: [],
+			handoffs: [],
 			clears: 0,
 			news: 0,
 			resumes: [],
@@ -146,6 +154,8 @@ describe("composer routing", () => {
 			"branch",
 			"tree",
 			"compact",
+			"shake",
+			"handoff",
 			"clear",
 			"new",
 			"sessions",
@@ -173,6 +183,8 @@ describe("composer routing", () => {
 			{ text: "/branch", check: t => expect(t.modals).toEqual(["rewind"]) },
 			{ text: "/tree", check: t => expect(t.modals).toEqual(["tree"]) },
 			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
+			{ text: "/shake", check: t => expect(t.shakes).toEqual(["elide"]) },
+			{ text: "/handoff", check: t => expect(t.handoffs).toEqual([undefined]) },
 			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
 			{ text: "/new", check: t => expect(t.news).toBe(1) },
 			{ text: "/sessions", check: t => expect(t.modals).toEqual(["sessions"]) },
@@ -221,6 +233,40 @@ describe("composer routing", () => {
 
 		expect(trace.compacts).toEqual([]);
 		expect(trace.notices).toEqual([{ level: "warning", message: "snapcompact takes no instructions" }]);
+	});
+
+	test("shake picks a mode word and defaults bare calls to elide", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/shake", ctx)).toBe("ran");
+		expect(trace.shakes).toEqual(["elide"]);
+
+		const images = makeContext();
+		expect(routeComposerText("/shake images", images.ctx)).toBe("ran");
+		expect(images.trace.shakes).toEqual(["images"]);
+
+		const thinking = makeContext();
+		expect(routeComposerText("/shake THINKING", thinking.ctx)).toBe("ran");
+		expect(thinking.trace.shakes).toEqual(["thinking"]);
+
+		// Multi-word args are not instructions here: only one mode word exists.
+		const extra = makeContext();
+		expect(routeComposerText("/shake images now", extra.ctx)).toBe("ran");
+		expect(extra.trace.shakes).toEqual([]);
+		expect(extra.trace.notices).toEqual([
+			{ level: "warning", message: 'Unknown /shake mode "images now". Use elide, images, or thinking.' },
+		]);
+	});
+
+	test("handoff forwards focus instructions and dispatches bare calls", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/handoff capture the auth refactor state", ctx)).toBe("ran");
+		expect(trace.handoffs).toEqual(["capture the auth refactor state"]);
+
+		const padded = makeContext();
+		expect(routeComposerText("/handoff   ", padded.ctx)).toBe("ran");
+		expect(padded.trace.handoffs).toEqual([undefined]);
 	});
 
 	test("extended-context accepts on/off and passes the rest through as a toggle", () => {

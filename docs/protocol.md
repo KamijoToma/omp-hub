@@ -107,7 +107,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
-     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
+     | "compact" | "shake" | "handoff" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
      | "rename",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
@@ -208,6 +208,17 @@ interface LoopStatus {
   immediately — compaction is a model call and outlives the 15 s hub timeout. Progress and the
   outcome arrive through the normal transcript/notice stream, not this channel. Errors after the
   reply are logged host-side only.
+- `shake {mode?}` → `data: ShakeResult` (`{ mode, toolResultsDropped, blocksDropped, imagesDropped?,
+  thinkingBlocksDropped?, tokensFreed, artifactId? }`). TUI `/shake` parity: a local, model-free
+  context diet — `elide` (default) strips tool results and large blocks, `images` drops image
+  blocks (including old snapcompact archive frames), `thinking` drops thinking blocks. The run
+  settles inside the cmd budget, so the counts reply verbatim and the caller formats the summary.
+  Unknown mode → `ok:false`.
+- `handoff {instructions?}` → `data: { started: true }`. TUI `/handoff` parity: summarizes the
+  session into a handoff document and compacts in place. Refuses while a turn streams (409 via the
+  "Wait for the current response…" mapping) or a handoff is already generating ("Handoff
+  generation is already in progress." → 409); otherwise background-dispatches `session.handoff`
+  like `compact` — the document and any failure arrive through the transcript, not this channel.
 - `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
   to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
   The retried turn itself streams through the normal session channel.
@@ -360,6 +371,8 @@ interface MachineRecord {
 | `GET /api/sessions/:id/tree` | → `{ ok: true, leafId, truncated, nodes }` (§2 `get-tree`: preview-only session tree for the web `/tree` picker); same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
 | `POST /api/sessions/:id/compact` | `{instructions?, mode?}` → `{ ok: true }` (§2 `compact`); 400 non-string `instructions`/`mode` |
+| `POST /api/sessions/:id/shake` | `{mode?}` → `{ ok: true, result: ShakeResult }` (§2 `shake`); 400 non-string `mode`, 500 agent-reported unknown mode |
+| `POST /api/sessions/:id/handoff` | `{instructions?}` → `{ ok: true }` (§2 `handoff`); 400 non-string `instructions`, 409 streaming/handoff-in-progress guard |
 | `POST /api/sessions/:id/retry` | → `{ ok: true, started }`; 409 on "nothing to retry" / streaming guard |
 | `POST /api/sessions/:id/loop` | `{action, prompt?, limit?, condition?}` → `{ ok: true, loop }` (§2 `loop`); 400 bad action/limit/condition |
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
@@ -396,7 +409,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename",
+     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -444,6 +457,8 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/branch` | same picker as `/rewind` (TUI parity: `/branch` is the omp `/rewind` alias — the old path stays as an abandoned branch) |
 | `/tree` | session-tree picker: browse the host's full entry tree (previews only, `GET …/tree`) and move the leaf to any node (`POST …/tree`); success resyncs the transcript via reconnect. Every message row also carries a hover/tap "rewind here" button targeting its turn prompt |
 | `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
+| `/shake` | shake heavy content out of the context — bare or `elide` strips tool results + large blocks, `images` drops image blocks, `thinking` drops thinking blocks (drives `POST …/shake`; local notice reports the counts) |
+| `/handoff` | summarize the session into a handoff document and compact in place — `[instructions]` focuses the summary (drives `POST …/handoff`; the document lands via transcript) |
 | `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
 | `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |
 | `/resume` | resume another omp session on this machine and navigate to it: `[session id]` arg resolves against the machine's resumable sessions (§2 machine sessions; TUI `/resume` prefix match on session id/file name) and starts it via `POST /api/sessions` with `sessionFile` (plus the entry's cwd/title/profile); bare opens the machine session picker modal |

@@ -27,6 +27,8 @@ const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
 const COMPACT_PATH_RE = /^\/api\/sessions\/([^/]+)\/compact$/;
+const SHAKE_PATH_RE = /^\/api\/sessions\/([^/]+)\/shake$/;
+const HANDOFF_PATH_RE = /^\/api\/sessions\/([^/]+)\/handoff$/;
 const RETRY_PATH_RE = /^\/api\/sessions\/([^/]+)\/retry$/;
 const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
 const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
@@ -149,6 +151,14 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const compact = COMPACT_PATH_RE.exec(route);
 	if (compact && req.method === "POST") {
 		return compactSession(decodeURIComponent(compact[1]!), req, ctx);
+	}
+	const shake = SHAKE_PATH_RE.exec(route);
+	if (shake && req.method === "POST") {
+		return shakeSession(decodeURIComponent(shake[1]!), req, ctx);
+	}
+	const handoff = HANDOFF_PATH_RE.exec(route);
+	if (handoff && req.method === "POST") {
+		return handoffSession(decodeURIComponent(handoff[1]!), req, ctx);
 	}
 	const retry = RETRY_PATH_RE.exec(route);
 	if (retry && req.method === "POST") {
@@ -481,6 +491,42 @@ async function compactSession(id: string, req: Request, ctx: ApiContext): Promis
 }
 
 /**
+ * Shake heavy content out of the context (TUI `/shake`): a local, model-free
+ * transform, so the counts-based result settles inside the cmd budget and
+ * replies verbatim — the caller owns the formatting.
+ */
+async function shakeSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const mode = body["mode"];
+	if (mode !== undefined && typeof mode !== "string") return json({ error: "mode must be a string" }, 400);
+
+	const outcome = await dispatchCmd(id, "shake", { ...(typeof mode === "string" ? { mode } : {}) }, ctx);
+	if (!outcome.ok) return outcome.response;
+	if (outcome.data === null || typeof outcome.data !== "object") return json({ error: "malformed shake result" }, 500);
+	return json({ ok: true, result: outcome.data });
+}
+
+/**
+ * Hand the session off to a handoff document and compact in place (TUI
+ * `/handoff`): a model call, so this only confirms the background dispatch —
+ * the document lands through the transcript (contract §1).
+ */
+async function handoffSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const instructions = body["instructions"];
+	if (instructions !== undefined && typeof instructions !== "string") {
+		return json({ error: "instructions must be a string" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "handoff", {
+		...(typeof instructions === "string" ? { instructions } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true }) : outcome.response;
+}
+
+/**
  * Retry the last failed turn. `session.retry()` reports `started: false` when
  * there is nothing to retry (contract §1) — the same 409 the agent's explicit
  * errors map to below.
@@ -665,7 +711,10 @@ async function uploadSessionFile(id: string, req: Request, ctx: ApiContext): Pro
 function cmdErrorStatus(error: string): number {
 	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
 	// still streaming — the agent's own message tells the caller which.
-	if (error === "Nothing to retry." || error.startsWith("Wait for the current response")) return 409;
+	// `handoff` shares the streaming refusal and adds its own in-progress guard.
+	if (error === "Nothing to retry." || error.startsWith("Wait for the current response") || error === "Handoff generation is already in progress.") {
+		return 409;
+	}
 	switch (error) {
 		case "unknown session":
 			return 409;

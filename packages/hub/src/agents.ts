@@ -68,6 +68,8 @@ export type SessionCmdName =
 	| "get-tree"
 	| "navigate-tree"
 	| "compact"
+	| "shake"
+	| "handoff"
 	| "retry"
 	| "loop"
 	| "goal"
