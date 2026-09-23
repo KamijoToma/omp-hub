@@ -52,6 +52,16 @@ export interface AgentModel {
 	name: string;
 }
 
+/** One chat-section model role and its current assignment (docs/protocol.md §2). */
+export interface AgentRole {
+	/** Role id (`"default"`, `"smol"`, `"slow"`, …). */
+	role: string;
+	/** Display name (`"Default"`, `"Fast"`, `"Thinking"`, …). */
+	name: string;
+	/** Currently assigned model; `null` when the role is unconfigured. */
+	model: AgentModel | null;
+}
+
 /** Agent-side session state behind the slash-command pickers (docs/protocol.md §2). */
 export interface AgentState {
 	sessionName: string;
@@ -63,6 +73,8 @@ export interface AgentState {
 	thinkingLevels: string[];
 	/** Auth-available models. */
 	models: AgentModel[];
+	/** Chat-section roles with their resolved assignments. */
+	roles: AgentRole[];
 }
 
 export const TOKEN_KEY = "omp-hub.token";
@@ -185,13 +197,25 @@ export async function getAgentState(id: string): Promise<AgentState> {
 	return reply.state;
 }
 
-/** Switch the session model through the agent control channel. */
-export async function setModel(id: string, provider: string, modelId: string): Promise<{ switched: boolean }> {
-	const reply = await api<{ ok: true; switched: boolean }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
-		method: "POST",
-		body: JSON.stringify({ provider, modelId }),
-	});
-	return { switched: reply.switched };
+/**
+ * Switch the session model through the agent control channel. `opts.role`
+ * targets a non-default model role; the host then persists the assignment
+ * unless `persist: false`.
+ */
+export async function setModel(
+	id: string,
+	provider: string,
+	modelId: string,
+	opts: { role?: string; persist?: boolean } = {},
+): Promise<{ switched: boolean; role: string }> {
+	const reply = await api<{ ok: true; switched: boolean; role: string }>(
+		`/api/sessions/${encodeURIComponent(id)}/model`,
+		{
+			method: "POST",
+			body: JSON.stringify({ provider, modelId, ...opts }),
+		},
+	);
+	return { switched: reply.switched, role: reply.role };
 }
 
 /** Set the session thinking level; resolves the effective level after the set. */

@@ -99,6 +99,8 @@ async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: 
 			cmd: frame.cmd,
 			provider: frame.provider,
 			modelId: frame.modelId,
+			role: frame.role,
+			persist: frame.persist,
 			level: frame.level,
 		});
 		if (result.ok) client.send({ t: "cmd-result", reqId: frame.reqId, ok: true, data: result.data });

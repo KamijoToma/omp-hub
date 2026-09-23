@@ -50,6 +50,10 @@ export interface CommandRequest {
 	cmd: string;
 	provider?: string;
 	modelId?: string;
+	/** `set-model` target role; omitted means `"default"`. */
+	role?: string;
+	/** `set-model`: persist a non-default role assignment (default true). */
+	persist?: boolean;
 	level?: string;
 }
 

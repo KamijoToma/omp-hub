@@ -161,12 +161,55 @@ describe("session commands", () => {
 			method: "POST",
 			body: JSON.stringify({ provider: "openai", modelId: "gpt-5" }),
 		});
-		const frame = await answerCmd(agent, "set-model", { ok: true, data: { switched: true } });
+		const frame = await answerCmd(agent, "set-model", { ok: true, data: { switched: true, role: "default" } });
 		expect(frame).toMatchObject({ id: session.id, provider: "openai", modelId: "gpt-5" });
+		expect(frame).not.toHaveProperty("role");
+		expect(frame).not.toHaveProperty("persist");
 
 		const settled = await response;
 		expect(settled.status).toBe(200);
-		expect(await settled.json()).toEqual({ ok: true, switched: true });
+		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "default" });
+	});
+
+	test("set-model forwards role and persist for non-default roles", async () => {
+		const agent = await connectAgent(main, "m-role", "role-machine");
+		const session = await liveSession(main, agent, "m-role", "/srv/role");
+
+		const response = api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", role: "smol", persist: false }),
+		});
+		const frame = await answerCmd(agent, "set-model", { ok: true, data: { switched: true, role: "smol" } });
+		expect(frame).toMatchObject({ id: session.id, provider: "openai", modelId: "gpt-5", role: "smol", persist: false });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, switched: true, role: "smol" });
+	});
+
+	test("set-model validates role and persist before dispatching", async () => {
+		const agent = await connectAgent(main, "m-role-bad", "role-bad-machine");
+		const session = await liveSession(main, agent, "m-role-bad", "/srv/role-bad");
+
+		const blank = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", role: "  " }),
+		});
+		expect(blank.status).toBe(400);
+		expect(await blank.json()).toEqual({ error: "invalid role" });
+
+		const oversize = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", role: "r".repeat(65) }),
+		});
+		expect(oversize.status).toBe(400);
+
+		const badPersist = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", persist: "yes" }),
+		});
+		expect(badPersist.status).toBe(400);
+		expect(await badPersist.json()).toEqual({ error: "persist must be a boolean" });
 	});
 
 	test("set-thinking forwards the level and returns the effective one", async () => {

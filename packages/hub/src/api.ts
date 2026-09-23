@@ -161,9 +161,30 @@ async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Resp
 	if (!provider || provider.trim() === "") return json({ error: "provider is required" }, 400);
 	const modelId = field(body, "modelId");
 	if (!modelId || modelId.trim() === "") return json({ error: "modelId is required" }, 400);
+	const role = field(body, "role");
+	if (role !== undefined && (role.trim() === "" || role.length > 64)) {
+		return json({ error: "invalid role" }, 400);
+	}
+	const persist = body["persist"];
+	if (persist !== undefined && typeof persist !== "boolean") {
+		return json({ error: "persist must be a boolean" }, 400);
+	}
 
-	const outcome = await dispatchCmd(id, "set-model", { provider, modelId }, ctx);
-	return outcome.ok ? json({ ok: true, switched: pick(outcome.data, "switched") }) : outcome.response;
+	const outcome = await dispatchCmd(id, "set-model", {
+		provider,
+		modelId,
+		...(role === undefined ? {} : { role }),
+		...(typeof persist === "boolean" ? { persist } : {}),
+	}, ctx);
+	// `role` echoes the agent's answer; the fallbacks cover an older agent that
+	// predates role support.
+	return outcome.ok
+		? json({
+				ok: true,
+				switched: pick(outcome.data, "switched"),
+				role: pick(outcome.data, "role") ?? role ?? "default",
+			})
+		: outcome.response;
 }
 
 async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<Response> {

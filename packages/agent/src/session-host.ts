@@ -8,12 +8,14 @@
 
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { createAgentSession, initTheme, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
+import { getKnownRoleIds, getRoleInfo } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
+import { resolveRoleModelFull } from "@oh-my-pi/pi-coding-agent/session/role-models";
+import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx } from "./collab-ctx";
 import { createLogger, errorMessage } from "./log";
 import type { SessionLinks } from "./supervisor";
@@ -38,6 +40,10 @@ type CommandFrame = {
 	cmd: string;
 	provider?: string;
 	modelId?: string;
+	/** `set-model` target role; omitted means `"default"`. */
+	role?: string;
+	/** `set-model`: persist a non-default role assignment (default true). */
+	persist?: boolean;
 	level?: string;
 };
 
@@ -53,6 +59,13 @@ interface AgentModelRef {
 	name: string;
 }
 
+/** One chat-section model role and its current assignment (protocol §2). */
+interface AgentRoleState {
+	role: string;
+	name: string;
+	model: AgentModelRef | null;
+}
+
 /** `get-state` payload (protocol §2 AgentState). */
 interface AgentState {
 	sessionName: string;
@@ -61,6 +74,7 @@ interface AgentState {
 	thinkingLevel: string | null;
 	thinkingLevels: string[];
 	models: AgentModelRef[];
+	roles: AgentRoleState[];
 }
 
 /**
@@ -73,20 +87,52 @@ const FALLBACK_THINKING_LEVELS: readonly string[] = ["off", "low", "medium", "hi
 function agentState(session: AgentSession): AgentState {
 	const model = session.model;
 	const efforts = session.getAvailableThinkingLevels();
+	const available = session.getAvailableModels();
 	return {
 		sessionName: session.sessionName ?? "",
 		cwd: session.sessionManager.getCwd(),
-		model: model ? { provider: model.provider, id: model.id, name: model.name } : null,
+		model: model ? { provider: model.provider, id: model.id, name: model.name ?? model.id } : null,
 		thinkingLevel: session.thinkingLevel ?? null,
 		// `off` is always selectable; the rest are the model's declared efforts
 		// (`Model.thinking.efforts`, already filtered to the reasoning-capable set).
 		thinkingLevels: efforts.length > 0 ? ["off", ...efforts] : [...FALLBACK_THINKING_LEVELS],
-		models: session.getAvailableModels().map(entry => ({
+		models: available.map(entry => ({
 			provider: entry.provider,
 			id: entry.id,
 			name: entry.name ?? entry.id,
 		})),
+		roles: agentRoles(session, available),
 	};
+}
+
+/**
+ * Chat-section roles with their resolved assignment. Kind roles (image/web/
+ * speech/…) select non-chat models the web picker never lists, so they stay
+ * host-only. The default role resolves to the active model when unconfigured.
+ */
+function agentRoles(session: AgentSession, available: Model[]): AgentRoleState[] {
+	const roles: AgentRoleState[] = [];
+	for (const role of getKnownRoleIds(session.settings)) {
+		const info = getRoleInfo(role, session.settings);
+		if (info.section !== "chat") continue;
+		const resolved = resolveRoleModelFull(session.settings, role, available, session.model ?? undefined);
+		roles.push({
+			role,
+			name: info.name || role,
+			model: resolved.model
+				? { provider: resolved.model.provider, id: resolved.model.id, name: resolved.model.name ?? resolved.model.id }
+				: null,
+		});
+	}
+	return roles;
+}
+
+/** Validated `set-model` role; omitted/blank means `"default"`. */
+function parseRole(role: string | undefined): string {
+	if (role === undefined) return "default";
+	const trimmed = role.trim();
+	if (trimmed === "" || trimmed.length > 64) throw new Error(`invalid model role: ${JSON.stringify(role)}`);
+	return trimmed;
 }
 
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
@@ -97,10 +143,18 @@ async function executeCommand(session: AgentSession, frame: CommandFrame): Promi
 		case "set-model": {
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
+			const role = parseRole(frame.role);
 			const model = session.modelRegistry.find(provider, modelId);
 			if (!model) throw new Error(`unknown model ${provider}/${modelId}`);
-			const { switched } = await session.setModel(model);
-			return { switched };
+			// A non-default role is a persistent assignment (omp `/model @role`):
+			// it switches the active model now AND survives the session unless
+			// `persist: false`. The plain switch keeps its session-scope behavior.
+			const { switched } = await session.setModel(
+				model,
+				role,
+				role === "default" || frame.persist === false ? undefined : { persist: true },
+			);
+			return { switched, role };
 		}
 		case "set-thinking": {
 			const level = parseConfiguredThinkingLevel(frame.level);
@@ -215,6 +269,8 @@ async function run(): Promise<void> {
 					cmd: typeof frame.cmd === "string" ? frame.cmd : "",
 					provider: typeof frame.provider === "string" ? frame.provider : undefined,
 					modelId: typeof frame.modelId === "string" ? frame.modelId : undefined,
+					role: typeof frame.role === "string" ? frame.role : undefined,
+					persist: typeof frame.persist === "boolean" ? frame.persist : undefined,
 					level: typeof frame.level === "string" ? frame.level : undefined,
 				};
 				if (!commandRunner) {

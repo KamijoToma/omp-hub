@@ -15,7 +15,15 @@ function write(frame: unknown): void {
 }
 
 function handleLine(line: string): void {
-	const frame = JSON.parse(line) as { t?: string; reqId?: string; cmd?: string };
+	const frame = JSON.parse(line) as {
+		t?: string;
+		reqId?: string;
+		cmd?: string;
+		provider?: string;
+		modelId?: string;
+		role?: string;
+		persist?: boolean;
+	};
 	if (frame.t === "stop") {
 		process.exit(0);
 	}
@@ -24,7 +32,16 @@ function handleLine(line: string): void {
 		// Vanish mid-request: the parent must reject the pending cmd.
 		process.exit(0);
 	}
-	write({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { echo: frame.cmd } });
+	write({
+		t: "cmd-result",
+		reqId: frame.reqId,
+		ok: true,
+		data: {
+			echo: frame.cmd,
+			...(frame.role === undefined ? {} : { role: frame.role }),
+			...(frame.persist === undefined ? {} : { persist: frame.persist }),
+		},
+	});
 }
 
 process.stdin.on("data", (chunk: Uint8Array | string) => {

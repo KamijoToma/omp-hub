@@ -506,6 +506,32 @@
 	border-color: var(--accent);
 }
 
+.hb-role-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin: 0 0 8px;
+}
+
+.hb-role-tab {
+	padding: 4px 9px;
+	color: var(--fg-muted);
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-role-tab:hover {
+	color: var(--fg);
+	border-color: var(--border-strong);
+}
+
+.hb-role-tab-current {
+	color: var(--accent);
+	background: var(--accent-muted);
+	border-color: var(--accent);
+}
+
 .hb-pick-name {
 	flex: 1;
 	min-width: 0;

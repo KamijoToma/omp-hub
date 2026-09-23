@@ -3,7 +3,7 @@
  * {@link HubApiError}, and the exact `POST /api/sessions` body (docs/protocol.md §3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearToken, getMachines, HubApiError, setToken, startSession } from "../src/hub/api";
+import { clearToken, getMachines, HubApiError, setModel, setToken, startSession } from "../src/hub/api";
 import type { SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
@@ -89,5 +89,31 @@ describe("hub api", () => {
 		await startSession({ machineId: "m1", cwd: "/srv/app" });
 
 		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
+	test("setModel posts provider/modelId and unwraps the role reply", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, switched: true, role: "default" }));
+
+		const result = await setModel("s1", "openai", "gpt-5");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/model");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ provider: "openai", modelId: "gpt-5" });
+		expect(result).toEqual({ switched: true, role: "default" });
+	});
+
+	test("setModel forwards role and persist options", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, switched: true, role: "smol" }));
+
+		const result = await setModel("s1", "openai", "gpt-5", { role: "smol", persist: false });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			provider: "openai",
+			modelId: "gpt-5",
+			role: "smol",
+			persist: false,
+		});
+		expect(result).toEqual({ switched: true, role: "smol" });
 	});
 });

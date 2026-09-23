@@ -61,16 +61,21 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 	// `provider/id` of the model being switched to; all rows stay disabled while set.
 	const [pending, setPending] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	// Active model-role tab (`"default"` = the plain session switch).
+	const [roleTab, setRoleTab] = useState("default");
 
 	const groups = useMemo(() => groupModels(load.state, filter), [load.state, filter]);
-	const current = load.state?.model ?? null;
+	const roles = load.state?.roles ?? [];
+	// Falls back when the host hides `"default"` via role tags.
+	const activeRole = roles.some(entry => entry.role === roleTab) ? roleTab : (roles[0]?.role ?? "default");
+	const current = roles.find(entry => entry.role === activeRole)?.model ?? load.state?.model ?? null;
 
 	const pick = (model: AgentModel): void => {
 		setPending(`${model.provider}/${model.id}`);
 		setError(null);
-		void setModel(sessionId, model.provider, model.id).then(
+		void setModel(sessionId, model.provider, model.id, activeRole === "default" ? {} : { role: activeRole }).then(
 			() => {
-				notify("info", `model → ${model.name}`);
+				notify("info", activeRole === "default" ? `model → ${model.name}` : `model → ${model.name} (${activeRole})`);
 				onClose();
 			},
 			(err: unknown) => {
@@ -97,6 +102,22 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 
 	return (
 		<>
+			{roles.length > 1 && (
+				<div className="hb-role-tabs" role="tablist" aria-label="model roles">
+					{roles.map(role => (
+						<button
+							key={role.role}
+							type="button"
+							role="tab"
+							aria-selected={role.role === activeRole}
+							className={`hb-role-tab${role.role === activeRole ? " hb-role-tab-current" : ""}`}
+							onClick={() => setRoleTab(role.role)}
+						>
+							{role.name}
+						</button>
+					))}
+				</div>
+			)}
 			<label className="hb-search">
 				<Search size={13} className="hb-search-icon" aria-hidden="true" />
 				<input
