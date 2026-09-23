@@ -36,6 +36,7 @@ import {
 	postCompact,
 	postExtendedContext,
 	postHandoff,
+	postRename,
 	postRetry,
 	postShake,
 	startSession,
@@ -417,6 +418,18 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		);
 	}, [sessionId, notify]);
 
+	// `/rename`: the agent-side session name is the source of truth (pinned
+	// against auto-titles); the hub registry label and collab header follow.
+	const renameSession = useCallback(
+		(name: string): void => {
+			void postRename(sessionId, name).then(
+				applied => notify("info", `session renamed to "${applied}"`),
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify],
+	);
+
 	// Per-turn "rewind here": the transcript rows carry the target prompt; the
 	// shared core (same flow as the /rewind picker) moves the host leaf and
 	// truncates the replica. Latest snapshot entries ride a ref so the callback
@@ -465,6 +478,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		startNewSession,
 		resumeSession,
 		retrySession,
+		renameSession,
 		setExtendedContext,
 		showTodos,
 	};

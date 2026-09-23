@@ -51,6 +51,8 @@ export interface CommandContext {
 	clearContext(): void;
 	/** Start a fresh session on the same machine and navigate to it; warns without a record. */
 	startNewSession(): void;
+	/** POST the rename command; `SessionView` reports the applied name as a notice. */
+	renameSession(name: string): void;
 	/**
 	 * Resume another machine session (TUI `/resume`): a query resolves against
 	 * the machine's resumable sessions and starts the first match; empty opens
@@ -232,6 +234,20 @@ export const COMMANDS: readonly CommandSpec[] = [
 	},
 	{ name: "clear", description: "clear the conversation context, keep the session", run: ctx => ctx.clearContext() },
 	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },
+	{
+		name: "rename",
+		description: "rename this session — [new name]",
+		run: (ctx, args) => {
+			const name = args.trim();
+			// Bare `/rename` is a usage notice, not a prompt: the sidebar's row
+			// dialog owns pointer-driven renames, the composer takes the name inline.
+			if (!name) {
+				ctx.notify("warning", "usage: /rename <new name>");
+				return;
+			}
+			ctx.renameSession(name);
+		},
+	},
 	{
 		name: "sessions",
 		description: "switch between hub sessions — quick switcher (Ctrl+K)",
