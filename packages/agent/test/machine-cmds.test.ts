@@ -129,25 +129,34 @@ interface FixtureOptions {
 	firstMessage?: string;
 	/** Trailing newline-free second line to prove previews stay single-line. */
 	multiline?: boolean;
+	/** User/assistant turn pairs (default 1 when `firstMessage` is set). */
+	turns?: number;
+	/** Filler bytes appended to the first user prompt, pushing later entries past the SDK's 4 KB scan window. */
+	padBytes?: number;
 }
 
-/** Writes a minimal resumable session file (session header + one user/assistant turn). */
+/** Writes a resumable session file (session header + N user/assistant turns). */
 async function writeSession(sessionDir: string, project: string, options: FixtureOptions): Promise<string> {
 	const lines = [
 		...(options.title
 			? [JSON.stringify({ type: "title", v: 1, title: options.title, updatedAt: "2026-06-27T00:00:00.000Z" })]
 			: []),
 		JSON.stringify({ type: "session", version: 3, id: options.id, timestamp: "2026-06-27T00:00:00.000Z", cwd: project }),
-		...(options.firstMessage
-			? [
-					JSON.stringify({
-						type: "message",
-						message: { role: "user", content: options.multiline ? `${options.firstMessage}\nsecond line` : options.firstMessage },
-					}),
-					JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
-				]
-			: []),
 	];
+	const turns = options.firstMessage ? (options.turns ?? 1) : 0;
+	for (let i = 0; i < turns; i++) {
+		const base = i === 0 ? (options.firstMessage ?? "") : `turn ${i}`;
+		// Padding rides on EVERY prompt: the whole file must outgrow the SDK
+		// scan's 4096-byte window, not just its first entry.
+		const content = options.padBytes ? base + "x".repeat(options.padBytes) : base;
+		lines.push(
+			JSON.stringify({
+				type: "message",
+				message: { role: "user", content: options.multiline && i === 0 ? `${content}\nsecond line` : content },
+			}),
+			JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
+		);
+	}
 	const file = path.join(sessionDir, `20260627_${options.id}.jsonl`);
 	await writeFile(file, `${lines.join("\n")}\n`);
 	return file;
@@ -189,6 +198,27 @@ test("listSessions returns scoped history most-recent-first with single-line pre
 		expect(typeof top.status).toBe("string");
 		expect(second).toMatchObject({ id: "hista00001", firstMessage: "older prompt" });
 		expect(second.title).toBeUndefined();
+	} finally {
+		await rm(path.dirname(sessionDir), { recursive: true, force: true });
+	}
+});
+
+test("listSessions reports the exact message count beyond the picker's 4 KB window", async () => {
+	const { project, sessionDir } = await makeSessionFixtures();
+	try {
+		// 8 turns × (user + assistant), each prompt padded so the SDK picker
+		// scan's 4096-byte window covers only the first ~2 entries. That window
+		// is where the old count came from: every real session reported 2-3.
+		await writeSession(sessionDir, project, {
+			id: "histbig001",
+			firstMessage: "big history",
+			turns: 8,
+			padBytes: 1500,
+		});
+
+		const listing = await listSessions({ cwd: project, sessionDir });
+		expect(listing.sessions).toHaveLength(1);
+		expect(listing.sessions[0]!.messageCount).toBe(16);
 	} finally {
 		await rm(path.dirname(sessionDir), { recursive: true, force: true });
 	}
@@ -283,7 +313,7 @@ test("listAllProfileSessions merges every profile's history and stamps named ent
 			["defb00001", "default"],
 			["defa00001", "default"],
 		]);
-		expect(listing.sessions[0]).toMatchObject({ profile: "work", cwd: project, title: "profile session" });
+		expect(listing.sessions[0]).toMatchObject({ profile: "work", cwd: project, title: "profile session", messageCount: 2 });
 		expect(listing.sessions[1]?.profile).toBeUndefined();
 	} finally {
 		await rm(root, { recursive: true, force: true });

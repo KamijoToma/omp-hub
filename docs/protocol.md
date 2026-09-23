@@ -267,7 +267,8 @@ interface SessionListing {
     title?: string;
     created: string;           // ISO timestamp
     modified: string;
-    messageCount: number;
+    messageCount: number;      // exact stored message entries (full-file line scan; the SDK
+                               // picker scan only reads the first 4 KB and saturates at 2-3)
     assistantTurns?: number;   // persisted assistant turns; 0 = agent never replied
     status?: string;           // complete | interrupted | aborted | error | pending | unknown
     firstMessage: string;      // single-line preview
