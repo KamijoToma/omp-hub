@@ -8,7 +8,10 @@
 
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
+import type { Model } from "@oh-my-pi/pi-ai";
+import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx } from "./collab-ctx";
 import { createLogger, errorMessage } from "./log";
@@ -33,6 +36,10 @@ type CommandFrame = {
 	cmd: string;
 	provider?: string;
 	modelId?: string;
+	/** `set-model` target role; omitted means `"default"`. */
+	role?: string;
+	/** `set-model`: persist a non-default role assignment (default true). */
+	persist?: boolean;
 	level?: string;
 };
 
@@ -48,6 +55,13 @@ interface AgentModelRef {
 	name: string;
 }
 
+/** One chat-section model role and its current assignment (protocol §2). */
+interface AgentRoleState {
+	role: string;
+	name: string;
+	model: AgentModelRef | null;
+}
+
 /** `get-state` payload (protocol §2 AgentState). */
 interface AgentState {
 	sessionName: string;
@@ -56,6 +70,18 @@ interface AgentState {
 	thinkingLevel: string | null;
 	thinkingLevels: string[];
 	models: AgentModelRef[];
+	roles: AgentRoleState[];
+}
+
+/**
+ * SDK functions the command surface needs, loaded lazily in `run()` after the
+ * config boundary (with the rest of the SDK) so native-binding failures still
+ * surface as JSONL error frames.
+ */
+interface CommandDeps {
+	parseThinkingLevel: typeof ParseThinkingLevel;
+	modelRoles: typeof ModelRoles;
+	roleModels: typeof RoleModels;
 }
 
 /**
@@ -65,44 +91,80 @@ interface AgentState {
 const FALLBACK_THINKING_LEVELS: readonly string[] = ["off", "low", "medium", "high"];
 
 /** `get-state`: session identity plus the model/thinking surface for the web UI. */
-function agentState(session: AgentSession): AgentState {
+function agentState(session: AgentSession, deps: CommandDeps): AgentState {
 	const model = session.model;
 	const efforts = session.getAvailableThinkingLevels();
+	const available = session.getAvailableModels();
 	return {
 		sessionName: session.sessionName ?? "",
 		cwd: session.sessionManager.getCwd(),
-		model: model ? { provider: model.provider, id: model.id, name: model.name } : null,
+		model: model ? { provider: model.provider, id: model.id, name: model.name ?? model.id } : null,
 		thinkingLevel: session.thinkingLevel ?? null,
 		// `off` is always selectable; the rest are the model's declared efforts
 		// (`Model.thinking.efforts`, already filtered to the reasoning-capable set).
 		thinkingLevels: efforts.length > 0 ? ["off", ...efforts] : [...FALLBACK_THINKING_LEVELS],
-		models: session.getAvailableModels().map(entry => ({
+		models: available.map(entry => ({
 			provider: entry.provider,
 			id: entry.id,
 			name: entry.name ?? entry.id,
 		})),
+		roles: agentRoles(session, available, deps),
 	};
 }
 
+/**
+ * Chat-section roles with their resolved assignment. Kind roles (image/web/
+ * speech/…) select non-chat models the web picker never lists, so they stay
+ * host-only. The default role resolves to the active model when unconfigured.
+ */
+function agentRoles(session: AgentSession, available: Model[], deps: CommandDeps): AgentRoleState[] {
+	const roles: AgentRoleState[] = [];
+	for (const role of deps.modelRoles.getKnownRoleIds(session.settings)) {
+		const info = deps.modelRoles.getRoleInfo(role, session.settings);
+		if (info.section !== "chat") continue;
+		const resolved = deps.roleModels.resolveRoleModelFull(session.settings, role, available, session.model ?? undefined);
+		roles.push({
+			role,
+			name: info.name || role,
+			model: resolved.model
+				? { provider: resolved.model.provider, id: resolved.model.id, name: resolved.model.name ?? resolved.model.id }
+				: null,
+		});
+	}
+	return roles;
+}
+
+/** Validated `set-model` role; omitted/blank means `"default"`. */
+function parseRole(role: string | undefined): string {
+	if (role === undefined) return "default";
+	const trimmed = role.trim();
+	if (trimmed === "" || trimmed.length > 64) throw new Error(`invalid model role: ${JSON.stringify(role)}`);
+	return trimmed;
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-async function executeCommand(
-	session: AgentSession,
-	frame: CommandFrame,
-	parseThinkingLevel: typeof ParseThinkingLevel,
-): Promise<unknown> {
+async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
-			return agentState(session);
+			return agentState(session, deps);
 		case "set-model": {
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
+			const role = parseRole(frame.role);
 			const model = session.modelRegistry.find(provider, modelId);
 			if (!model) throw new Error(`unknown model ${provider}/${modelId}`);
-			const { switched } = await session.setModel(model);
-			return { switched };
+			// A non-default role is a persistent assignment (omp `/model @role`):
+			// it switches the active model now AND survives the session unless
+			// `persist: false`. The plain switch keeps its session-scope behavior.
+			const { switched } = await session.setModel(
+				model,
+				role,
+				role === "default" || frame.persist === false ? undefined : { persist: true },
+			);
+			return { switched, role };
 		}
 		case "set-thinking": {
-			const level = parseThinkingLevel(frame.level);
+			const level = deps.parseThinkingLevel(frame.level);
 			if (level === undefined) throw new Error(`invalid thinking level: ${String(frame.level)}`);
 			session.setThinkingLevel(level);
 			return { thinkingLevel: session.thinkingLevel ?? null };
@@ -214,6 +276,8 @@ async function run(): Promise<void> {
 					cmd: typeof frame.cmd === "string" ? frame.cmd : "",
 					provider: typeof frame.provider === "string" ? frame.provider : undefined,
 					modelId: typeof frame.modelId === "string" ? frame.modelId : undefined,
+					role: typeof frame.role === "string" ? frame.role : undefined,
+					persist: typeof frame.persist === "boolean" ? frame.persist : undefined,
 					level: typeof frame.level === "string" ? frame.level : undefined,
 				};
 				if (!commandRunner) {
@@ -246,12 +310,17 @@ async function run(): Promise<void> {
 	if (!cwd?.isDirectory()) throw new Error(`cwd is not an existing directory: ${config.cwd}`);
 
 	// Static SDK imports run before stdout sealing and this catch boundary;
-	// load them here so native-binding failures still reach the supervisor as JSONL.
+	// load them here so native-binding failures still reach the supervisor as
+	// JSONL. Same for the role-model helpers: they transitively pull the SDK
+	// tree, which cannot load before this boundary in a broken-native install.
 	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
 	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
 	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
 	const { parseConfiguredThinkingLevel } = await import("@oh-my-pi/pi-tui/thinking");
+	const modelRoles = await import("@oh-my-pi/pi-coding-agent/config/model-roles");
+	const roleModels = await import("@oh-my-pi/pi-coding-agent/session/role-models");
 	const { createStubUIContext } = await import("./ui-stub");
+	const commandDeps: CommandDeps = { parseThinkingLevel: parseConfiguredThinkingLevel, modelRoles, roleModels };
 
 	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
 	// one session, and the global would freeze the first cwd.
@@ -337,7 +406,7 @@ async function run(): Promise<void> {
 			return;
 		}
 		try {
-			const data = await executeCommand(session, frame, parseConfiguredThinkingLevel);
+			const data = await executeCommand(session, frame, commandDeps);
 			respond({ t: "cmd-result", reqId: frame.reqId, ok: true, data });
 		} catch (err) {
 			log.warn(`command ${frame.cmd} failed: ${errorMessage(err)}`);

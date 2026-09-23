@@ -52,6 +52,28 @@ test("supervisor cmd() round-trips cmd-results to the requesting child", async (
 	await supervisor.stopAll("cmd test done");
 });
 
+test("supervisor cmd() forwards set-model role and persist fields intact", async () => {
+	const { supervisor, ready } = fixtureSupervisor();
+	await supervisor.spawn({ id: "s_cmd_roles", cwd: import.meta.dir, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	await ready;
+
+	const roled = await supervisor.cmd("s_cmd_roles", {
+		reqId: "c_role001",
+		cmd: "set-model",
+		provider: "openai",
+		modelId: "gpt-5",
+		role: "smol",
+		persist: false,
+	});
+	expect(roled).toEqual({ ok: true, data: { echo: "set-model", role: "smol", persist: false } });
+
+	// Omitted fields stay absent so children see an unchanged frame.
+	const plain = await supervisor.cmd("s_cmd_roles", { reqId: "c_role002", cmd: "set-model" });
+	expect(plain).toEqual({ ok: true, data: { echo: "set-model" } });
+
+	await supervisor.stopAll("cmd role test done");
+});
+
 test("supervisor cmd() fails unknown sessions instead of hanging", async () => {
 	const { supervisor } = fixtureSupervisor();
 	expect(await supervisor.cmd("s_cmd_missing", { reqId: "c_missing", cmd: "get-state" })).toEqual({

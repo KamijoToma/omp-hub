@@ -68,7 +68,8 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "set-model" | "set-thinking",
-  provider?: string, modelId?: string, level?: string }
+  provider?: string, modelId?: string, level?: string,
+  role?: string, persist?: boolean }                            // set-model only
 ```
 
 agent→hub:
@@ -81,17 +82,24 @@ agent→hub:
 Semantics:
 - `get-state` → `data: AgentState`:
   ```ts
-  interface AgentState {
-    sessionName: string;
-    cwd: string;
-    model: { provider: string; id: string; name: string } | null;
-    thinkingLevel: string | null;             // effective level, never "auto"
-    thinkingLevels: string[];                 // levels valid for the current model
-    models: { provider: string; id: string; name: string }[];  // auth-available
-  }
-  ```
-- `set-model {provider, modelId}` → `data: { switched: boolean }` (session.setModel; errors when
-  no auth for the provider).
+interface AgentState {
+  sessionName: string;
+  cwd: string;
+  model: { provider: string; id: string; name: string } | null;
+  thinkingLevel: string | null;             // effective level, never "auto"
+  thinkingLevels: string[];                 // levels valid for the current model
+  models: { provider: string; id: string; name: string }[];  // auth-available
+  roles: {                                  // chat-section model roles
+    role: string; name: string;             // e.g. "smol", "Fast"
+    model: { provider: string; id: string; name: string } | null;  // resolved assignment
+  }[];
+}
+```
+
+- `set-model {provider, modelId, role?, persist?}` → `data: { switched: boolean, role: string }`
+  (session.setModel; `role` defaults to `"default"`. A non-default role also persists the
+  assignment to settings unless `persist: false`. Errors when no auth for the provider, or
+  `role` is blank/over 64 chars.)
 - `set-thinking {level}` → `data: { thinkingLevel: string }` (effective level after set).
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
@@ -122,7 +130,7 @@ interface SessionRecord {
   pid?: number;
 }
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
-| `POST /api/sessions/:id/model` | `{provider, modelId}` → `{ ok: true, switched }`; same error set |
+| `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?}` → `{ ok: true, switched, role }`; same error set; 400 blank/oversize `role` or non-boolean `persist` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 
 interface MachineRecord {
@@ -166,7 +174,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"set-model"|"set-thinking",
-  provider?: string, modelId?: string, level?: string }
+  provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean }
 ```
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
