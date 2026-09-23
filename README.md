@@ -1,5 +1,7 @@
 # omp-hub
 
+English | [简体中文](README.zh-CN.md)
+
 Headless remote-control suite for [omp](https://github.com/can1357/oh-my-pi) agent sessions.
 
 ## Preview
