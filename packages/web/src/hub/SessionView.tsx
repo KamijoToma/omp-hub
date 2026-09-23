@@ -45,6 +45,7 @@ import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
 import { ThinkingPicker } from "./ThinkingPicker";
+import { TodoPanel } from "./TodoPanel";
 
 /** Local notices never collide with the client's sequence (which starts at 1). */
 const LOCAL_NOTICE_BASE = 1_000_000;
@@ -336,6 +337,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				onKeyDownCapture={onComposerKeyDown}
 				onBlur={onComposerBlur}
 			>
+				<TodoPanel entries={snap.entries} />
 				<Composer client={composerClient} snapshot={snap} />
 				{paletteOpen && (
 					<SlashPalette
