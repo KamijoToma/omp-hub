@@ -46,12 +46,19 @@ export interface PingFrame {
 	ts: number;
 }
 
-/** hub → agent session command (protocol §2); answered with `cmd-result`. */
+/**
+ * hub → agent command (protocol §2); answered with `cmd-result`. With `id` it
+ * targets one session child; without it the daemon answers the machine-level
+ * command itself (e.g. `list-dir` with its `path`).
+ */
 export interface CmdFrame {
 	t: "cmd";
-	id: string;
+	/** Target session id; absent for machine-level commands. */
+	id?: string;
 	reqId: string;
 	cmd: string;
+	/** `list-dir` target directory; omitted lists the agent user's home. */
+	path?: string;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"`. */
@@ -195,14 +202,18 @@ export class HubClient {
 
 	/** Send a frame; queued (bounded) while the socket is down. */
 	send(frame: AgentFrame): void {
+		// `id` names the target session; machine-level frames (e.g. cmd-result
+		// for `list-dir`) carry none.
+		const target = "id" in frame ? frame.id : "machine";
 		if (this.#sendNow(frame)) return;
 		if (this.#closed) {
-			this.#log.warn(`dropping ${frame.t} frame for ${frame.id}: hub connection closed`);
+			this.#log.warn(`dropping ${frame.t} frame for ${target}: hub connection closed`);
 			return;
 		}
 		if (this.#pending.length >= MAX_QUEUED_FRAMES) {
 			const dropped = this.#pending.shift();
-			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped?.id ?? "?"}`);
+			const droppedTarget = dropped && "id" in dropped ? dropped.id : "machine";
+			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${droppedTarget}`);
 		}
 		this.#pending.push(frame);
 	}

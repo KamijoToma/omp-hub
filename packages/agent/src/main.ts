@@ -9,6 +9,7 @@
 import { hostname } from "node:os";
 import { type CmdFrame, HubClient } from "./hub-client";
 import { createLogger, errorMessage } from "./log";
+import { handleMachineCmd } from "./machine-cmds";
 import { resolveMachineId } from "./machine-id";
 import { Supervisor } from "./supervisor";
 
@@ -89,10 +90,22 @@ function parseArgs(argv: string[]): CliOptions | null {
 }
 
 /**
- * Route one hub `cmd` to its session child and answer with `cmd-result` (§2).
- * The 15 s timeout belongs to the hub; here every path replies exactly once.
+ * Route one hub `cmd` and answer with `cmd-result` (§2): frames without `id`
+ * are machine-level and answered by the daemon itself; the rest go to their
+ * session child. The 15 s timeout belongs to the hub; here every path replies
+ * exactly once.
  */
 async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: CmdFrame): Promise<void> {
+	if (frame.id === undefined) {
+		const result = await handleMachineCmd(frame);
+		client.send({
+			t: "cmd-result",
+			reqId: frame.reqId,
+			ok: result.ok,
+			...(result.ok ? { data: result.data } : { error: result.error }),
+		});
+		return;
+	}
 	try {
 		const result = await supervisor.cmd(frame.id, {
 			reqId: frame.reqId,

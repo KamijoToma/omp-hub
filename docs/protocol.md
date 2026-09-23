@@ -104,6 +104,30 @@ interface AgentState {
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
+### Machine commands (hub → agent, no session child)
+
+A `cmd` **without `id`** targets the machine itself; the daemon answers with the same
+`cmd-result` framing, `reqId` correlation, and 15 s hub timeout as session commands.
+
+```ts
+{ t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
+```
+
+- `list-dir` → `data: DirListing`:
+  ```ts
+interface DirListing {
+  path: string;              // absolute, symlink-resolved directory listed
+  parent: string | null;     // null at the filesystem root
+  entries: { name: string; path: string }[];  // child directories only, sorted
+  truncated: boolean;        // entries hit the 500 cap
+}
+```
+
+  Directories only (symlinked directories included, broken links skipped). The target must exist
+  and be a directory. Agent-reported failures use stable strings the hub maps to client errors:
+  `no such directory` / `not a directory` / `permission denied` → 400; anything else → 500.
+  Unknown machine command → `ok:false, "unknown machine command: <cmd>"`.
+
 
 
 ## 3. HTTP API (`/api/*`)
@@ -146,6 +170,7 @@ interface MachineRecord {
 |---|---|
 | `GET /api/health` | → `{ ok: true, version }` (no auth) |
 | `GET /api/machines` | → `{ machines: MachineRecord[] }` |
+| `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields |

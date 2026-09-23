@@ -46,15 +46,23 @@ export type AgentCommand =
 	| { t: "ping"; ts: number }
 	| ({ t: "cmd" } & CmdRequest);
 
-/** Host commands a session answers (protocol §2 "Session commands"). */
-export type CmdName = "get-state" | "set-model" | "set-thinking";
+/** Session commands a session child answers (protocol §2 "Session commands"). */
+export type SessionCmdName = "get-state" | "set-model" | "set-thinking";
+
+/** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
+export type MachineCmdName = "list-dir";
+
+/** Every `cmd` name on the agent channel. */
+export type CmdName = SessionCmdName | MachineCmdName;
 
 /** `cmd` payload; `reqId` correlates the agent's `cmd-result`. */
 export interface CmdRequest {
-	/** Target session id. */
-	id: string;
+	/** Target session id; absent for machine-level commands. */
+	id?: string;
 	reqId: string;
 	cmd: CmdName;
+	/** `list-dir` target directory; omitted lists the agent user's home. */
+	path?: string;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */

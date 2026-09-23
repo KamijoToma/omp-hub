@@ -23,6 +23,7 @@ const STOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/stop$/;
 const AGENT_STATE_PATH_RE = /^\/api\/sessions\/([^/]+)\/agent-state$/;
 const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
+const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -64,6 +65,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 
 	if (req.method === "GET" && route === "/api/machines") {
 		return json({ machines: ctx.agents.listMachines() });
+	}
+	const machineFs = MACHINE_FS_PATH_RE.exec(route);
+	if (machineFs && req.method === "GET") {
+		return listMachineFs(decodeURIComponent(machineFs[1]!), req, ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -149,6 +154,27 @@ function stopSession(id: string, ctx: ApiContext): Response {
 	return json({ ok: true });
 }
 
+/**
+ * Machine-level directory listing for the start-form picker: forwards
+ * `list-dir` to the connected agent (protocol §2 "Machine commands"). 404
+ * unknown machine, 502 agent offline, 504 cmd timeout, mapped status for
+ * agent-reported path errors.
+ */
+async function listMachineFs(machineId: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
+
+	const dirPath = new URL(req.url).searchParams.get("path") ?? undefined;
+	const result = await ctx.agents.sendCmd(machineId, {
+		reqId: newCmdReqId(),
+		cmd: "list-dir",
+		...(dirPath ? { path: dirPath } : {}),
+	});
+	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
+	return json({ ok: true, listing: result.data });
+}
+
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
 	const outcome = await dispatchCmd(id, "get-state", {}, ctx);
 	return outcome.ok ? json({ ok: true, state: outcome.data }) : outcome.response;
@@ -217,6 +243,10 @@ function cmdErrorStatus(error: string): number {
 	switch (error) {
 		case "unknown session":
 			return 409;
+		case "no such directory":
+		case "not a directory":
+		case "permission denied": // list-dir caller-input failures (protocol §2 "Machine commands")
+			return 400;
 		case "agent offline":
 		case "agent disconnected": // the socket died mid-command: just as offline to the caller
 			return 502;

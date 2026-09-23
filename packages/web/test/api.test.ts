@@ -3,7 +3,7 @@
  * {@link HubApiError}, and the exact `POST /api/sessions` body (docs/protocol.md §3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearToken, getMachines, HubApiError, setModel, setToken, startSession } from "../src/hub/api";
+import { clearToken, getMachines, HubApiError, listMachineDirectories, setModel, setToken, startSession } from "../src/hub/api";
 import type { SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
@@ -115,5 +115,30 @@ describe("hub api", () => {
 			persist: false,
 		});
 		expect(result).toEqual({ switched: true, role: "smol" });
+	});
+
+	test("listMachineDirectories encodes the machine id and path and unwraps the listing", async () => {
+		setToken("t0k3n");
+		const listing = {
+			path: "/home/dev",
+			parent: "/home",
+			entries: [{ name: "omp-hub", path: "/home/dev/omp-hub" }],
+			truncated: false,
+		};
+		stubFetch(() => json({ ok: true, listing }));
+
+		const result = await listMachineDirectories("m1", "/home/dev projects");
+
+		expect(calls[0].url).toBe(`/api/machines/m1/fs?path=${encodeURIComponent("/home/dev projects")}`);
+		expect(result).toEqual(listing);
+	});
+
+	test("listMachineDirectories omits the query for the machine home", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, listing: { path: "/home/dev", parent: "/home", entries: [], truncated: false } }));
+
+		await listMachineDirectories("m1");
+
+		expect(calls[0].url).toBe("/api/machines/m1/fs");
 	});
 });
