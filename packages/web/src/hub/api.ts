@@ -186,12 +186,15 @@ export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 export interface UsageAggregate {
 	totalRequests: number;
 	failedRequests: number;
+	/** 0–1 fraction; multiply by 100 for percent (e.g. `fmtPercent(errorRate * 100)`). */
 	errorRate: number;
 	totalInputTokens: number;
 	totalOutputTokens: number;
 	totalCacheReadTokens: number;
 	totalCacheWriteTokens: number;
+	/** 0–1 fraction; multiply by 100 for percent (e.g. `fmtPercent(cacheRate * 100)`). */
 	cacheRate: number;
+	/** 0–1 fraction; multiply by 100 for percent. */
 	cacheSavings: number;
 	totalCost: number;
 	unpricedRequests: number;

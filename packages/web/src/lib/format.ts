@@ -44,7 +44,7 @@ export function relTime(tsMs: number): string {
 	return `${Math.floor(h / 24)}d ago`;
 }
 
-/** "73%" from a 0–100 percent; em dash for null/non-finite. */
+/** "73%" from a 0–100 percent (NOT a 0–1 fraction — scale fractions by 100 first); em dash for null/non-finite. */
 export function fmtPercent(p: number | null | undefined): string {
 	if (p === null || p === undefined || !Number.isFinite(p)) return "—";
 	return `${Math.round(Math.min(100, Math.max(0, p)))}%`;
