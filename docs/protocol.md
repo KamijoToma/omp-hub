@@ -2,11 +2,12 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.3.0** — reported by `hello.version` and `GET /api/health` — is additive: the
-machine-level usage relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`,
-§5 `/usage/<machineId>`) and the optional `hello.tmpdir` (§2), surfaced as `MachineRecord.tmpdir`
-(§3). Revision 0.2.0 added the `get-context` session command (§2) and `GET /api/sessions/:id/context`
-(§3).
+Revision **0.4.0** — reported by `hello.version` and `GET /api/health` — requires a
+`Bearer` authorization header on the agent WebSocket handshake. The legacy query-string token
+is rejected; upgrade the hub and agent together. Revision 0.3.0 added the machine-level usage
+relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`, §5
+`/usage/<machineId>`) and optional `hello.tmpdir` (§2). Revision 0.2.0 added the
+`get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
 
 ## 1. Relay contract (`/r/<roomId>`) — frozen, upstream-compatible
 
@@ -26,9 +27,11 @@ Byte-identical to `oh-my-pi/packages/collab-web/scripts/local-relay.ts`. Summary
   the host's socket closes.
 - `GET /healthz` → 200 `ok` (liveness, unauthenticated).
 
-## 2. Agent channel (`GET /agent?token=<HUB_TOKEN>`)
+## 2. Agent channel (`GET /agent`)
 
-WS upgrade. Wrong token → HTTP 401 (no upgrade). One connection per wrapper daemon.
+WS upgrade with `Authorization: Bearer <HUB_TOKEN>`. Missing/wrong bearer token or a
+query-string token without the header → HTTP 401 (no upgrade). One connection per wrapper
+daemon; use TLS/WSS outside loopback.
 
 ### agent → hub
 

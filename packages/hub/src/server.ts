@@ -33,6 +33,7 @@ const asAgentSocket = (ws: Bun.ServerWebSocket<HubSocketData>): AgentSocket => w
 
 export function startHub(overrides: Partial<Config> = {}): Hub {
 	const cfg: Config = { ...loadConfig(), ...overrides };
+	if (!cfg.token.trim()) throw new Error("HUB_TOKEN is required before starting the hub");
 	const sessions = new SessionStore();
 	const relay = new CollabRelay();
 	const agents = new AgentRegistry(cfg, sessions);
@@ -101,12 +102,7 @@ export function startHub(overrides: Partial<Config> = {}): Hub {
 if (import.meta.main) {
 	const hub = startHub();
 	log.info(`omp-hub ${hub.cfg.version} listening on ${hub.url}`);
-	if (hub.cfg.token === "") {
-		log.warn("!!! HUB_TOKEN IS EMPTY — THE HUB IS RUNNING OPEN (no auth on /agent or /api) !!!");
-		log.warn("!!! anyone who can reach this port can start and control sessions — set HUB_TOKEN !!!");
-	} else {
-		log.info("token auth enabled for /agent and /api/*");
-	}
+	log.info("token auth enabled for /agent and /api/*");
 	log.info(`web dist: ${hub.cfg.webDist}`);
 	if (tlsConfigured(hub.cfg)) log.info(`tls: ${hub.cfg.tlsCert} + ${hub.cfg.tlsKey}`);
 

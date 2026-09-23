@@ -3,3 +3,10 @@ dist/
 *.log
 .DS_Store
 /.worktrees/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx

@@ -86,7 +86,7 @@ interface FakeAgent {
 }
 
 async function connectAgent(ctx: Ctx, machineId: string, name: string): Promise<FakeAgent> {
-	const ws = new WebSocket(`${ctx.ws}/agent?token=t`);
+	const ws = new WebSocket(`${ctx.ws}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
 	ws.addEventListener("message", (event: MessageEvent) => {

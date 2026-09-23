@@ -42,7 +42,6 @@ function json(body: unknown, status = 200): Response {
 }
 
 function authorized(req: Request, cfg: Config): boolean {
-	if (cfg.token === "") return true; // open mode (dev only; warned at startup)
 	const match = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "");
 	return match !== null && match[1] === cfg.token;
 }

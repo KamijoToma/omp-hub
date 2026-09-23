@@ -10,7 +10,7 @@ export interface Config {
 	/** TCP port; `0` picks a free port (tests). */
 	readonly port: number;
 	readonly hostname: string;
-	/** Shared token for the agent channel and `/api/*`. Empty ⇒ hub runs open (dev only). */
+	/** Required shared token for the agent channel and `/api/*`. */
 	readonly token: string;
 	/** Public origin (e.g. `https://hub.lan`); when set it wins over the request Host header. */
 	readonly publicUrl: string;
@@ -31,7 +31,7 @@ export interface PublicBase {
 }
 
 const DEFAULT_PORT = 8080;
-const DEFAULT_HOSTNAME = "0.0.0.0";
+const DEFAULT_HOSTNAME = "127.0.0.1";
 /** Protocol §2: a pending `cmd` is abandoned after 15 s. */
 const DEFAULT_CMD_TIMEOUT_MS = 15_000;
 

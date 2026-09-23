@@ -185,11 +185,10 @@ export class AgentRegistry {
 		this.#pinger = null;
 	}
 
-	/** `GET /agent?token=<HUB_TOKEN>`. Returns a Response on rejection, undefined once upgraded. */
+	/** `GET /agent` with `Authorization: Bearer <HUB_TOKEN>`. */
 	handleUpgrade(req: Request, server: AgentUpgradeServer): Response | undefined {
-		const url = new URL(req.url);
-		const token = url.searchParams.get("token") ?? "";
-		if (!this.#tokenMatches(token)) {
+		const match = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") ?? "");
+		if (this.#cfg.token === "" || match?.[1] !== this.#cfg.token) {
 			return new Response(JSON.stringify({ error: "unauthorized" }), {
 				status: 401,
 				headers: { "content-type": "application/json" },
@@ -425,10 +424,6 @@ export class AgentRegistry {
 		};
 	}
 
-	#tokenMatches(token: string): boolean {
-		// Empty token ⇒ hub runs open (dev only); the startup banner warns loudly.
-		return this.#cfg.token === "" || token === this.#cfg.token;
-	}
 
 	#hello(ws: AgentSocket, frame: Frame): void {
 		if (ws.data.machineId !== null) {

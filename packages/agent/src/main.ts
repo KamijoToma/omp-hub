@@ -70,6 +70,8 @@ function parseArgs(argv: string[]): CliOptions | null {
 	if (!hub || (!hub.startsWith("ws://") && !hub.startsWith("wss://") && !hub.startsWith("http"))) {
 		throw new UsageError("--hub <ws://host:port> is required");
 	}
+	const token = values.get("--token") ?? process.env.HUB_TOKEN ?? "";
+	if (!token.trim()) throw new UsageError("--token or HUB_TOKEN is required");
 
 	const maxSessionsRaw = values.get("--max-sessions");
 	let maxSessions = DEFAULT_MAX_SESSIONS;
@@ -83,7 +85,7 @@ function parseArgs(argv: string[]): CliOptions | null {
 	const name = values.get("--name")?.trim();
 	return {
 		hub,
-		token: values.get("--token") ?? process.env.HUB_TOKEN ?? "",
+		token,
 		name: name && name.length > 0 ? name : hostname(),
 		machineId: values.get("--machine-id"),
 		maxSessions,
@@ -150,7 +152,6 @@ async function main(): Promise<void> {
 	log.info(`name: ${options.name}`);
 	log.info(`machine id: ${machineId}`);
 	log.info(`max sessions: ${options.maxSessions}`);
-	if (!options.token) log.warn("no --token/HUB_TOKEN set: connecting with an empty token (hub must run open)");
 
 	const usageProxy = createUsageProxy();
 
