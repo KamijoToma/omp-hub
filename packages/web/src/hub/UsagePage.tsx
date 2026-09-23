@@ -151,7 +151,7 @@ function UsageBody({ stats }: { stats: MachineUsageStats }): ReactNode {
 					<UsageCard
 						label="requests"
 						value={String(overall.totalRequests)}
-						sub={`${overall.failedRequests} failed · ${fmtPercent(overall.errorRate)} error`}
+						sub={`${overall.failedRequests} failed · ${fmtPercent(overall.errorRate * 100)} error`}
 					/>
 					<UsageCard
 						label="tokens"
@@ -160,8 +160,8 @@ function UsageBody({ stats }: { stats: MachineUsageStats }): ReactNode {
 					/>
 					<UsageCard
 						label="cache"
-						value={`${fmtPercent(overall.cacheRate)} hit`}
-						sub={`${fmtPercent(overall.cacheSavings)} prompt cost saved`}
+						value={`${fmtPercent(overall.cacheRate * 100)} hit`}
+						sub={`${fmtPercent(overall.cacheSavings * 100)} prompt cost saved`}
 					/>
 					<UsageCard
 						label="API-equivalent"
@@ -257,7 +257,7 @@ function UsageModels({ models }: { models: UsageModelStats[] }): ReactNode {
 								<td className="hb-num">{m.totalRequests}</td>
 								<td className="hb-num">{m.failedRequests}</td>
 								<td className="hb-num">{fmtTokens(m.totalInputTokens + m.totalOutputTokens)}</td>
-								<td className="hb-num">{fmtPercent(m.cacheRate)}</td>
+								<td className="hb-num">{fmtPercent(m.cacheRate * 100)}</td>
 								<td className="hb-num">{unpriced ? "n/a" : fmtCost(m.totalCost)}</td>
 								<td className="hb-num">{m.avgTokensPerSecond === null ? "—" : `${fmtTokens(m.avgTokensPerSecond)}/s`}</td>
 							</tr>
