@@ -414,6 +414,48 @@ export async function navigateTree(
 	return result;
 }
 
+/**
+ * One node of the session tree (`get-tree`): structure plus a one-line preview,
+ * never a message body. `parentId` points at the nearest node the host kept —
+ * non-wire entries are pruned, children re-homed — so the shape matches what
+ * the picker renders.
+ */
+export interface TreeWireNode {
+	id: string;
+	parentId: string | null;
+	type: string;
+	/** `message` entries only. */
+	role?: string;
+	/** Host-injected user prompt (not an authored turn). */
+	synthetic?: true;
+	/** `toolResult` messages only. */
+	toolName?: string;
+	/** `custom_message` entries only. */
+	customType?: string;
+	preview: string;
+	timestamp: string;
+	label?: string;
+	/** On the active leaf path (root → leaf). */
+	branch?: true;
+	/** The current leaf. */
+	leaf?: true;
+	children: TreeWireNode[];
+}
+
+/** `GET /api/sessions/:id/tree` payload: the session's entry tree for `/tree`. */
+export interface SessionTree {
+	leafId: string | null;
+	/** `true` when the host's node cap dropped the oldest subtrees. */
+	truncated: boolean;
+	nodes: TreeWireNode[];
+}
+
+/** The session's full entry tree (agent `get-tree`), read-only. */
+export async function getSessionTree(id: string): Promise<SessionTree> {
+	const { ok: _ok, ...tree } = await api<SessionTree & { ok: true }>(`/api/sessions/${encodeURIComponent(id)}/tree`);
+	return tree;
+}
+
 /** Set the session thinking level; resolves the effective level after the set. */
 export async function setThinking(id: string, level: string): Promise<{ thinkingLevel: string }> {
 	const reply = await api<{ ok: true; thinkingLevel: string }>(`/api/sessions/${encodeURIComponent(id)}/thinking`, {

@@ -15,6 +15,7 @@ import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
 import type { computeSessionContextBreakdown } from "@oh-my-pi/pi-coding-agent/session/context-usage-runtime";
+import type { SessionEntry as StoredSessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -208,6 +209,167 @@ function parseRole(role: string | undefined): string {
 	return trimmed;
 }
 
+/** Preview cap per `get-tree` node, in characters after whitespace folding. */
+const TREE_PREVIEW_CHARS = 120;
+/** Hard node cap per `get-tree` payload; the oldest DFS subtrees are dropped. */
+const TREE_NODE_CAP = 4000;
+
+/**
+ * Entry kinds the collab wire carries; everything else (`custom` HUD notes,
+ * `model_usage`, …) is pruned from the tree payload — the web never sees those
+ * types, and pruning them is what forces the re-homing of `parentId` below.
+ */
+const WIRED_ENTRY_TYPES: Record<string, true> = {
+	message: true,
+	custom_message: true,
+	compaction: true,
+	branch_summary: true,
+	model_change: true,
+	thinking_level_change: true,
+};
+
+/** One `get-tree` node: structure plus a one-line preview, never a message body (protocol §2 SessionTree). */
+interface TreeWireNode {
+	id: string;
+	/**
+	 * Nearest KEPT ancestor — non-wire entries (`custom` HUD notes, `model_usage`,
+	 * …) are pruned, and their children are re-homed so the shape the web renders
+	 * matches the real topology.
+	 */
+	parentId: string | null;
+	type: string;
+	/** `message` entries only. */
+	role?: string;
+	/** Host-injected user prompt (not a guest/authored turn). */
+	synthetic?: true;
+	/** `toolResult` messages only. */
+	toolName?: string;
+	/** `custom_message` entries only. */
+	customType?: string;
+	preview: string;
+	timestamp: string;
+	/** Session label attached by the SDK (e.g. branch checkpoints). */
+	label?: string;
+	/** On the active leaf path (root → leaf). */
+	branch?: true;
+	/** The current leaf. */
+	leaf?: true;
+	children: TreeWireNode[];
+}
+
+/** `get-tree` payload (protocol §2 SessionTree). */
+interface SessionTreePayload {
+	leafId: string | null;
+	/** `true` when {@link TREE_NODE_CAP} dropped parts of the tree. */
+	truncated: boolean;
+	nodes: TreeWireNode[];
+}
+
+/** One-line text for a tree node; identity, not content — previews only. */
+function treePreview(entry: StoredSessionEntry): string {
+	switch (entry.type) {
+		case "message": {
+			const message = entry.message;
+			if (message.role === "toolResult") return `[${message.toolName ?? "tool"} result]`;
+			// Conversation turns only; other AgentMessage kinds (bash execution, …)
+			// carry no renderable text block.
+			if (message.role !== "user" && message.role !== "assistant") return "";
+			let text = "";
+			if (typeof message.content === "string") text = message.content;
+			else {
+				for (const block of message.content) {
+					if (block.type === "text" && "text" in block) {
+						text = block.text;
+						break;
+					}
+				}
+			}
+			return text.replace(/\s+/g, " ").trim().slice(0, TREE_PREVIEW_CHARS);
+		}
+		case "custom_message": {
+			const text =
+				typeof entry.content === "string"
+					? entry.content
+					: (entry.content.find(block => block.type === "text")?.text ?? "");
+			return text.replace(/\s+/g, " ").trim().slice(0, TREE_PREVIEW_CHARS);
+		}
+		case "compaction":
+			return `compacted (${entry.tokensBefore} tokens)`;
+		case "branch_summary":
+			return entry.summary.replace(/\s+/g, " ").trim().slice(0, TREE_PREVIEW_CHARS);
+		case "model_change":
+			return `model → ${entry.model}`;
+		case "thinking_level_change":
+			return `thinking → ${entry.thinkingLevel ?? "off"}`;
+		default:
+			return "";
+	}
+}
+
+/**
+ * Serialize the session tree for the web `/tree` picker: every stored entry
+ * kind the wire knows, structure intact, bodies reduced to previews. The node
+ * cap keeps a pathological transcript from producing a multi-megabyte cmd
+ * reply; DFS order is parents-before-children with timestamp-sorted siblings,
+ * so dropping from the front sheds the oldest turns.
+ */
+function sessionTree(session: AgentSession): SessionTreePayload {
+	const manager = session.sessionManager;
+	const leafId = manager.getLeafId();
+	const branchIds = new Set(manager.getBranch().map(entry => entry.id));
+
+	const flat: SessionTreeNode[] = [];
+	const walk = (node: SessionTreeNode): void => {
+		flat.push(node);
+		for (const child of node.children) walk(child);
+	};
+	for (const root of manager.getTree()) walk(root);
+
+	const kept = new Set<string>();
+	for (let i = flat.length - 1; i >= 0 && kept.size < TREE_NODE_CAP; i--) {
+		const entry = flat[i]!.entry;
+		if (WIRED_ENTRY_TYPES[entry.type]) kept.add(entry.id);
+	}
+	const byId = new Map(flat.map(node => [node.entry.id, node]));
+
+	const nodes = new Map<string, TreeWireNode>();
+	for (const node of flat) {
+		const entry = node.entry;
+		if (!kept.has(entry.id)) continue;
+		// Walk literal parents up to the nearest kept ancestor.
+		let effective = entry.parentId;
+		while (effective !== null && !kept.has(effective)) effective = byId.get(effective)?.entry.parentId ?? null;
+		const message = entry.type === "message" ? entry.message : null;
+		nodes.set(entry.id, {
+			id: entry.id,
+			parentId: effective,
+			type: entry.type,
+			...(message
+				? {
+						role: message.role,
+						...(message.role === "user" && message.synthetic === true ? { synthetic: true as const } : {}),
+						...(message.role === "toolResult" ? { toolName: message.toolName } : {}),
+					}
+				: {}),
+			...(entry.type === "custom_message" ? { customType: entry.customType } : {}),
+			preview: treePreview(entry),
+			timestamp: entry.timestamp,
+			...(node.label ? { label: node.label } : {}),
+			...(branchIds.has(entry.id) ? { branch: true as const } : {}),
+			...(entry.id === leafId ? { leaf: true as const } : {}),
+			children: [],
+		});
+	}
+
+	const roots: TreeWireNode[] = [];
+	for (const node of nodes.values()) {
+		const parent = node.parentId ? nodes.get(node.parentId) : undefined;
+		if (parent) parent.children.push(node);
+		else roots.push(node);
+	}
+	return { leafId, truncated: flat.reduce((total, node) => total + (WIRED_ENTRY_TYPES[node.entry.type] ? 1 : 0), 0) > TREE_NODE_CAP, nodes: roots };
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
 async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
@@ -249,6 +411,8 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			session.setThinkingLevel(level);
 			return { thinkingLevel: session.thinkingLevel ?? null };
 		}
+		case "get-tree":
+			return sessionTree(session);
 		case "navigate-tree": {
 			const entryId = typeof frame.entryId === "string" ? frame.entryId.trim() : "";
 			if (!entryId) throw new Error("navigate-tree requires entryId");

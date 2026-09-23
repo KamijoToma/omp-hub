@@ -271,6 +271,33 @@ describe("session commands", () => {
 		expect(await blankLevel.json()).toEqual({ error: "invalid level" });
 	});
 
+	test("get-tree serves the agent's session tree with the leaf marked", async () => {
+		const agent = await connectAgent(main, "m-tree-get", "tree-get-machine");
+		const session = await liveSession(main, agent, "m-tree-get", "/srv/tree-get");
+
+		const node = {
+			id: "e_2",
+			parentId: "e_1",
+			type: "message",
+			role: "user",
+			preview: "fix the flake",
+			timestamp: "2026-09-23T08:00:00.000Z",
+			branch: true,
+			leaf: false,
+			children: [],
+		};
+		const response = api(main, `/api/sessions/${session.id}/tree`);
+		const frame = await answerCmd(agent, "get-tree", {
+			ok: true,
+			data: { leafId: "e_2", truncated: false, nodes: [node] },
+		});
+		expect(frame).toMatchObject({ id: session.id, cmd: "get-tree" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, leafId: "e_2", truncated: false, nodes: [node] });
+	});
+
 	test("navigate-tree forwards entryId and returns the move result", async () => {
 		const agent = await connectAgent(main, "m-tree", "tree-machine");
 		const session = await liveSession(main, agent, "m-tree", "/srv/tree");

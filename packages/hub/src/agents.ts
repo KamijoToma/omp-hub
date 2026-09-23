@@ -65,6 +65,7 @@ export type SessionCmdName =
 	| "get-context"
 	| "set-model"
 	| "set-thinking"
+	| "get-tree"
 	| "navigate-tree"
 	| "compact"
 	| "retry"

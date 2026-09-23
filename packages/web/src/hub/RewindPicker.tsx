@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { GuestClient, Notice } from "../lib/client";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CustomMessageEntry, type MessageEntry, type SessionEntry } from "../lib/wire";
-import { errorText, navigateTree } from "./api";
+import { errorText, navigateTree, type NavigateTreeResult } from "./api";
 import { Modal } from "./Modal";
 
 export interface RewindPickerProps {
@@ -38,22 +38,82 @@ function entryPreview(entry: MessageEntry | CustomMessageEntry): string {
 	return text.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
-/** User messages and collab prompts on the current branch, newest first. */
+/** A rewind can target a real user prompt or a collab guest prompt; nothing else. */
+function isRewindable(entry: SessionEntry): entry is MessageEntry | CustomMessageEntry {
+	if (entry.type === "custom_message") return entry.customType === COLLAB_PROMPT_MESSAGE_TYPE;
+	return entry.type === "message" && entry.message.role === "user" && !entry.message.synthetic;
+}
+
+/**
+ * User messages and collab prompts on the current branch, newest first.
+ *
+ * The replica is the active branch in append order (snapshot + `entry` frames),
+ * so a backwards array walk is the branch walk. The `parentId` chain is NOT
+ * walkable here: the host drops non-wire entries (`custom` HUD notes,
+ * `model_usage`, …) from the snapshot, leaving holes that cut the chain right
+ * after the leaf and made `/rewind` report "nothing to rewind" on every real
+ * session.
+ */
 export function rewindTargets(entries: readonly SessionEntry[]): RewindTarget[] {
-	if (entries.length === 0) return [];
-	const byId = new Map(entries.map(entry => [entry.id, entry]));
 	const targets: RewindTarget[] = [];
-	// Walk parent links from the last appended entry (the leaf) back to the root.
-	for (let cur: SessionEntry | undefined = entries[entries.length - 1]; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) {
-		if (cur.type !== "message" && !(cur.type === "custom_message" && cur.customType === COLLAB_PROMPT_MESSAGE_TYPE)) continue;
-		if (cur.type === "message" && (cur.message.role !== "user" || cur.message.synthetic)) continue;
-		targets.push({
-			entry: cur,
-			droppedCount: entries.length - entries.indexOf(cur),
-			preview: entryPreview(cur),
-		});
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i]!;
+		if (!isRewindable(entry)) continue;
+		targets.push({ entry, droppedCount: entries.length - i, preview: entryPreview(entry) });
 	}
 	return targets;
+}
+
+/** Entry id → the turn prompt a "rewind here" action targets: the nearest rewindable entry at or before it. */
+export function rewindTargetMap(entries: readonly SessionEntry[]): ReadonlyMap<string, string> {
+	const map = new Map<string, string>();
+	let current: string | null = null;
+	for (const entry of entries) {
+		if (isRewindable(entry)) current = entry.id;
+		if (current !== null) map.set(entry.id, current);
+	}
+	return map;
+}
+
+export type RewindOutcomeKind = "moved" | "aborted" | "cancelled" | "error";
+
+/** User-facing result of one rewind; `message` is final copy for every kind. */
+export interface RewindOutcome {
+	kind: RewindOutcomeKind;
+	message: string;
+}
+
+/**
+ * One rewind, shared by the `/rewind` picker and the transcript's per-turn
+ * "rewind here" button: move the host leaf via `POST /api/sessions/:id/tree`,
+ * then truncate the local replica (the host broadcasts no tree-change frame).
+ * Never throws — failures come back as `{kind: "error"}`.
+ */
+export async function rewindToEntry(
+	sessionId: string,
+	client: GuestClient,
+	entries: readonly SessionEntry[],
+	entryId: string,
+): Promise<RewindOutcome> {
+	const entry = entries.find(candidate => candidate.id === entryId);
+	const fallbackPreview = entry && isRewindable(entry) ? entryPreview(entry) : "";
+	let result: NavigateTreeResult;
+	try {
+		result = await navigateTree(sessionId, entryId);
+	} catch (err) {
+		return { kind: "error", message: errorText(err) };
+	}
+	if (result.cancelled) {
+		return result.aborted
+			? { kind: "aborted", message: "the agent turn was aborting — try again in a moment" }
+			: { kind: "cancelled", message: "a session hook cancelled the rewind" };
+	}
+	client.dropEntriesFrom(entryId);
+	const draft = result.editorText?.trim() || fallbackPreview;
+	return {
+		kind: "moved",
+		message: draft ? `rewound — draft restored: ${draft.slice(0, 80)}` : "rewound",
+	};
 }
 
 export function RewindPicker({ sessionId, client, entries, working, notify, onClose }: RewindPickerProps): ReactNode {
@@ -66,23 +126,16 @@ export function RewindPicker({ sessionId, client, entries, working, notify, onCl
 		if (!selected) return;
 		setPending(true);
 		setError(null);
-		void navigateTree(sessionId, selected.entry.id).then(
-			result => {
-				if (result.cancelled) {
-					setPending(false);
-					setError(result.aborted ? "the agent turn was aborting — try again in a moment" : "a session hook cancelled the rewind");
-					return;
-				}
-				client.dropEntriesFrom(selected.entry.id);
-				const draft = result.editorText?.trim() || selected.preview;
-				notify("info", draft ? `rewound — draft restored: ${draft.slice(0, 80)}` : "rewound");
+		void rewindToEntry(sessionId, client, entries, selected.entry.id).then(outcome => {
+			// Success closes; every failure keeps the modal up with inline copy.
+			if (outcome.kind === "moved") {
+				notify("info", outcome.message);
 				onClose();
-			},
-			(err: unknown) => {
-				setPending(false);
-				setError(errorText(err));
-			},
-		);
+				return;
+			}
+			setPending(false);
+			setError(outcome.message);
+		});
 	};
 
 	return (

@@ -98,7 +98,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
-  cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree"
+  cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
      | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
@@ -178,6 +178,14 @@ interface LoopStatus {
   ```
   All values are estimates: `categories` need not sum to `usedTokens`, and messages stay one
   bucket — the SDK cannot honestly split them into user/tool/assistant.
+- `get-tree` → `data: { leafId, truncated, nodes: SessionTreeNode[] }` (protocol §2 SessionTree;
+  `sessionManager.getTree()` reduced to previews for the web `/tree` picker). Non-wire entry
+  kinds (`custom` HUD notes, `model_usage`, …) are pruned and their children re-homed onto the
+  nearest kept ancestor, so `parentId` in the payload is the nearest KEPT parent. Nodes carry
+  `{ id, parentId, type, role?, synthetic?, toolName?, customType?, preview, timestamp, label?,
+  branch?, leaf?, children }` — `branch` marks the active leaf path (root → leaf), `leaf` the
+  current leaf, `preview` a ≤120-char one-line summary; message bodies never cross the wire.
+  `truncated: true` means the host's 4000-node cap dropped the oldest subtrees.
 - `navigate-tree {entryId, summarize?}` → `data: { cancelled, aborted, editorText, leafId }`
   (session.navigateTree; moves the tree leaf — the target entry and everything after it leave
   the active branch; a user-message target rewinds PAST itself and returns its text as
@@ -320,6 +328,7 @@ interface MachineRecord {
 | `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
+| `GET /api/sessions/:id/tree` | → `{ ok: true, leafId, truncated, nodes }` (§2 `get-tree`: preview-only session tree for the web `/tree` picker); same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
 | `POST /api/sessions/:id/compact` | `{instructions?, mode?}` → `{ ok: true }` (§2 `compact`); 400 non-string `instructions`/`mode` |
 | `POST /api/sessions/:id/retry` | → `{ ok: true, started }`; 409 on "nothing to retry" / streaming guard |
@@ -352,7 +361,7 @@ parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
-{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree"
+{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
      |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
@@ -397,6 +406,8 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/model` | model picker modal (drives `GET/POST …/agent-state`, `…/model`) |
 | `/thinking` | thinking-level picker (drives `…/agent-state`, `…/thinking`) |
 | `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
+| `/branch` | same picker as `/rewind` (TUI parity: `/branch` is the omp `/rewind` alias — the old path stays as an abandoned branch) |
+| `/tree` | session-tree picker: browse the host's full entry tree (previews only, `GET …/tree`) and move the leaf to any node (`POST …/tree`); success resyncs the transcript via reconnect. Every message row also carries a hover/tap "rewind here" button targeting its turn prompt |
 | `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
 | `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
 | `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |

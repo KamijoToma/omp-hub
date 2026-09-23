@@ -5,7 +5,7 @@ import type {
 	TextContent,
 	ToolResultMessage,
 } from "../../lib/wire";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, History } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
@@ -16,6 +16,12 @@ import { Markdown } from "./Markdown";
 import { ToolCard } from "./ToolCard";
 import "./transcript.css";
 
+/** Optional per-turn "rewind here" affordance; `targets` maps entry id → its turn prompt id. */
+export interface TranscriptRewind {
+	targets: ReadonlyMap<string, string>;
+	onRewind(entryId: string): void;
+}
+
 export interface TranscriptProps {
 	entries: readonly SessionEntry[];
 	stream: AssistantMessage | null;
@@ -25,17 +31,22 @@ export interface TranscriptProps {
 	compact?: boolean; // dense variant for the agent drawer
 	/** Sub-session drill-down capabilities forwarded to tool renderers. */
 	host?: ToolRenderHost;
+	/** When present, message rows show a hover/tap "rewind here" button. */
+	rewind?: TranscriptRewind;
 }
 
 function Row({
 	kind,
 	gutter,
 	title,
+	action,
 	children,
 }: {
 	kind: "user" | "assistant" | "custom" | "marker";
 	gutter: ReactNode;
 	title?: string;
+	/** Hover/tap affordance pinned to the row's top-right corner. */
+	action?: ReactNode;
 	children: ReactNode;
 }): ReactNode {
 	return (
@@ -44,7 +55,17 @@ function Row({
 				{gutter}
 			</div>
 			<div className="tr-body">{children}</div>
+			{action}
 		</div>
+	);
+}
+
+/** Per-turn rewind affordance: hidden until row hover on pointers, always visible on touch. */
+function RewindButton({ onRewind }: { onRewind(): void }): ReactNode {
+	return (
+		<button type="button" className="tr-rewind" title="rewind to this turn" onClick={onRewind}>
+			<History size={12} aria-hidden="true" />
+		</button>
 	);
 }
 
@@ -248,11 +269,15 @@ interface EntryRowProps {
 	results: ReadonlyMap<string, ToolResultMessage>;
 	active: ReadonlyMap<string, ActiveTool>;
 	host?: ToolRenderHost;
+	/** Id of the turn prompt this row rewinds to; absent before the first prompt. */
+	rewindTargetId?: string;
+	onRewindEntry?: (entryId: string) => void;
 }
 
 /** Re-render only when the entry itself or one of its tool pairings changed. */
 function entryRowEqual(prev: EntryRowProps, next: EntryRowProps): boolean {
 	if (prev.entry !== next.entry || prev.host !== next.host) return false;
+	if (prev.rewindTargetId !== next.rewindTargetId || prev.onRewindEntry !== next.onRewindEntry) return false;
 	const e = next.entry;
 	if (e.type !== "message" || e.message.role !== "assistant") return true;
 	for (const block of e.message.content) {
@@ -263,20 +288,31 @@ function entryRowEqual(prev: EntryRowProps, next: EntryRowProps): boolean {
 	return true;
 }
 
-const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryRowProps): ReactNode {
+const EntryRow = memo(function EntryRow({
+	entry,
+	results,
+	active,
+	host,
+	rewindTargetId,
+	onRewindEntry,
+}: EntryRowProps): ReactNode {
+	const action =
+		rewindTargetId !== undefined && onRewindEntry !== undefined ? (
+			<RewindButton onRewind={() => onRewindEntry(rewindTargetId)} />
+		) : undefined;
 	switch (entry.type) {
 		case "message": {
 			const msg = entry.message;
 			switch (msg.role) {
 				case "user":
 					return (
-						<Row kind="user" gutter="host" title={entry.timestamp}>
+						<Row kind="user" gutter="host" title={entry.timestamp} action={action}>
 							<MsgContent content={msg.content} />
 						</Row>
 					);
 				case "assistant":
 					return (
-						<Row kind="assistant" gutter="agent" title={entry.timestamp}>
+						<Row kind="assistant" gutter="agent" title={entry.timestamp} action={action}>
 							<AssistantBody message={msg} results={results} active={active} pending={false} host={host} />
 						</Row>
 					);
@@ -295,7 +331,12 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 						? ((details as Record<string, unknown>).from as string)
 						: "guest";
 				return (
-					<Row kind="user" gutter={<span className="tr-badge">{from}</span>} title={entry.timestamp}>
+					<Row
+						kind="user"
+						gutter={<span className="tr-badge">{from}</span>}
+						title={entry.timestamp}
+						action={action}
+					>
 						<MsgContent content={entry.content} />
 					</Row>
 				);
@@ -341,7 +382,7 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 }, entryRowEqual);
 
 export function Transcript(props: TranscriptProps): ReactNode {
-	const { entries, stream, streamDone, activeTools, working, compact, host } = props;
+	const { entries, stream, streamDone, activeTools, working, compact, host, rewind } = props;
 
 	const results = useMemo(() => {
 		const map = new Map<string, ToolResultMessage>();
@@ -387,7 +428,15 @@ export function Transcript(props: TranscriptProps): ReactNode {
 		>
 			{entries.length === 0 && stream === null && !working && <div className="tr-empty">no activity yet</div>}
 			{entries.map(entry => (
-				<EntryRow key={entry.id} entry={entry} results={results} active={activeTools} host={host} />
+				<EntryRow
+					key={entry.id}
+					entry={entry}
+					results={results}
+					active={activeTools}
+					host={host}
+					rewindTargetId={rewind?.targets.get(entry.id)}
+					onRewindEntry={rewind?.onRewind}
+				/>
 			))}
 			{stream !== null && (
 				<Row kind="assistant" gutter="agent">
