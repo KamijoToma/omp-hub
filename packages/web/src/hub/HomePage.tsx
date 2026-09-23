@@ -12,6 +12,7 @@ import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
 import type { MachineRecord, SessionRecord, SessionStatus } from "./api";
 import { errorText, getMachines, getSessions, startSession, stopSession } from "./api";
+import { copyText } from "./clipboard";
 import { navigate } from "./router";
 
 const POLL_MS = 2000;
@@ -22,30 +23,6 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
 	exited: "exited",
 	failed: "failed",
 };
-
-/** Clipboard API, falling back to the legacy selection copy for insecure contexts. */
-async function copyText(text: string): Promise<boolean> {
-	try {
-		await navigator.clipboard.writeText(text);
-		return true;
-	} catch {
-		// blocked (insecure context, no focus): fall through to execCommand
-	}
-	try {
-		const el = document.createElement("textarea");
-		el.value = text;
-		el.setAttribute("readonly", "");
-		el.style.position = "fixed";
-		el.style.opacity = "0";
-		document.body.appendChild(el);
-		el.select();
-		const ok = document.execCommand("copy");
-		el.remove();
-		return ok;
-	} catch {
-		return false;
-	}
-}
 
 export interface HomePageProps {
 	onLogout(): void;

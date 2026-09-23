@@ -45,6 +45,26 @@ export interface StartSessionRequest {
 	prompt?: string;
 }
 
+/** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
+export interface AgentModel {
+	provider: string;
+	id: string;
+	name: string;
+}
+
+/** Agent-side session state behind the slash-command pickers (docs/protocol.md §2). */
+export interface AgentState {
+	sessionName: string;
+	cwd: string;
+	model: AgentModel | null;
+	/** Effective level, never `"auto"`. */
+	thinkingLevel: string | null;
+	/** Levels valid for the current model. */
+	thinkingLevels: string[];
+	/** Auth-available models. */
+	models: AgentModel[];
+}
+
 export const TOKEN_KEY = "omp-hub.token";
 export const NAME_KEY = "omp-hub.name";
 export const DEFAULT_DISPLAY_NAME = "guest";
@@ -153,6 +173,34 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 
 export async function stopSession(id: string): Promise<void> {
 	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+
+/**
+ * Agent-side state for a live session: current model, effective thinking level,
+ * and the options it can switch to. The hub answers 404 (unknown session), 409
+ * (not live), 502 (agent offline), 504 (cmd timed out) — all {@link HubApiError}.
+ */
+export async function getAgentState(id: string): Promise<AgentState> {
+	const reply = await api<{ ok: true; state: AgentState }>(`/api/sessions/${encodeURIComponent(id)}/agent-state`);
+	return reply.state;
+}
+
+/** Switch the session model through the agent control channel. */
+export async function setModel(id: string, provider: string, modelId: string): Promise<{ switched: boolean }> {
+	const reply = await api<{ ok: true; switched: boolean }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
+		method: "POST",
+		body: JSON.stringify({ provider, modelId }),
+	});
+	return { switched: reply.switched };
+}
+
+/** Set the session thinking level; resolves the effective level after the set. */
+export async function setThinking(id: string, level: string): Promise<{ thinkingLevel: string }> {
+	const reply = await api<{ ok: true; thinkingLevel: string }>(`/api/sessions/${encodeURIComponent(id)}/thinking`, {
+		method: "POST",
+		body: JSON.stringify({ level }),
+	});
+	return { thinkingLevel: reply.thinkingLevel };
 }
 
 /** Human-readable message for an unknown thrown value. */

@@ -300,3 +300,386 @@
 		display: none;
 	}
 }
+
+/* ---- slash commands: composer palette (docs/protocol.md §6) ---- */
+.hb-composer-wrap {
+	position: relative;
+}
+
+.hb-palette {
+	position: absolute;
+	right: 12px;
+	bottom: 100%;
+	left: 12px;
+	z-index: 40;
+	display: flex;
+	flex-direction: column;
+	max-width: 880px;
+	max-height: min(320px, 45vh);
+	margin: 0 auto 6px;
+	overflow-y: auto;
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-overlay);
+	animation: hb-rise-in 120ms ease-out;
+}
+
+.hb-palette-row {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	width: 100%;
+	padding: 7px 10px;
+	color: var(--fg);
+	text-align: left;
+	background: none;
+	border: 0;
+	border-left: 2px solid transparent;
+}
+
+.hb-palette-row:hover,
+.hb-palette-row-active {
+	background: var(--accent-muted);
+	border-left-color: var(--accent);
+}
+
+.hb-palette-name {
+	flex: none;
+	font: 500 12px / 1.5 var(--font-mono);
+	color: var(--accent);
+}
+
+.hb-palette-desc {
+	min-width: 0;
+	font-size: 12px;
+	color: var(--fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ---- slash commands: dialogs ---- */
+.hb-modal-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 55;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 16px;
+	background: var(--backdrop);
+	animation: sh-fade-in 120ms ease-out;
+}
+
+.hb-modal {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	max-width: 460px;
+	max-height: min(86vh, 720px);
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-overlay);
+	animation: hb-rise-in 140ms ease-out;
+}
+
+.hb-modal-head {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.hb-modal-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.hb-modal-close {
+	flex: none;
+}
+
+.hb-modal-body {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 12px;
+	overflow-y: auto;
+}
+
+.hb-modal-section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.hb-modal-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.hb-modal-value {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	color: var(--fg-muted);
+	overflow-wrap: anywhere;
+}
+
+.hb-modal-error {
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--err);
+	overflow-wrap: anywhere;
+}
+
+/* ---- slash commands: pickers ---- */
+.hb-search {
+	position: relative;
+	display: flex;
+	flex: none;
+	align-items: center;
+}
+
+.hb-search-icon {
+	position: absolute;
+	left: 8px;
+	color: var(--fg-faint);
+	pointer-events: none;
+}
+
+.hb-search-input {
+	width: 100%;
+	padding-left: 27px;
+}
+
+.hb-pick-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.hb-pick-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-pick-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 7px 9px;
+	color: var(--fg);
+	text-align: left;
+	background: none;
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+}
+
+.hb-pick-row:hover:not(:disabled) {
+	background: var(--bg-overlay);
+	border-color: var(--border-strong);
+}
+
+.hb-pick-row:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.hb-pick-row-current {
+	background: var(--accent-muted);
+	border-color: var(--accent);
+}
+
+.hb-pick-name {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-pick-id {
+	flex: none;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-faint);
+}
+
+.hb-pick-mark {
+	flex: none;
+	color: var(--accent);
+}
+
+.hb-busy {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: var(--fg-muted);
+}
+
+.hb-spin {
+	flex: none;
+	animation: hb-spin 900ms linear infinite;
+}
+
+/* ---- slash commands: links + help ---- */
+.hb-links {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-link-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 9px;
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-link-copy {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.hb-link-label {
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.hb-link-url {
+	color: var(--fg-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-cmd-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-cmd-row {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.hb-cmd-name {
+	font: 500 12px / 1.5 var(--font-mono);
+	color: var(--accent);
+}
+
+.hb-cmd-desc {
+	font-size: 12px;
+	color: var(--fg-muted);
+}
+
+@keyframes hb-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes hb-rise-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+
+@media (max-width: 640px) {
+	/* Palette: full-width sheet right above the composer. */
+	.hb-palette {
+		right: 0;
+		left: 0;
+		max-width: none;
+		max-height: 50vh;
+		margin: 0;
+		border-right: 0;
+		border-bottom: 0;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+	}
+
+	.hb-palette-row {
+		align-items: center;
+		min-height: 44px;
+		padding: 10px 12px;
+	}
+
+	/* Dialogs: bottom sheet. */
+	.hb-modal-backdrop {
+		align-items: flex-end;
+		padding: 0;
+	}
+
+	.hb-modal {
+		max-width: none;
+		max-height: 88vh;
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+	}
+
+	.hb-modal .sh-btn {
+		min-height: 40px;
+		padding-right: 12px;
+		padding-left: 12px;
+	}
+
+	.hb-modal .sh-btn-label {
+		display: inline;
+	}
+
+	.hb-pick-row,
+	.hb-link-row {
+		min-height: 44px;
+	}
+
+	.hb-search-input,
+	.hb-modal .sh-input {
+		font-size: 16px;
+		min-height: 40px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-modal,
+	.hb-modal-backdrop,
+	.hb-palette {
+		animation: none;
+	}
+
+	.hb-spin {
+		animation-duration: 3s;
+	}
+}

@@ -43,7 +43,15 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 	}, [id]);
 
 	if (record?.status === "live" && record.links) {
-		return <SessionView link={record.links.full} displayName={getDisplayName()} onLeave={() => navigate("/")} />;
+		return (
+			<SessionView
+				sessionId={record.id}
+				link={record.links.full}
+				record={record}
+				displayName={getDisplayName()}
+				onLeave={() => navigate("/")}
+			/>
+		);
 	}
 
 	return (
