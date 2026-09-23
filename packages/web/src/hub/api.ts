@@ -36,6 +36,8 @@ export interface MachineRecord {
 	connected: boolean;
 	connectedAt: number;
 	sessionCount: number;
+	/** Agent-reported temp directory (`os.tmpdir()`); missing from pre-0.3.0 agents. */
+	tmpdir?: string;
 }
 
 export interface StartSessionRequest {

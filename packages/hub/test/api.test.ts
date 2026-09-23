@@ -30,6 +30,7 @@ interface MachineJson {
 	connected: boolean;
 	connectedAt: number;
 	sessionCount: number;
+	tmpdir?: string;
 }
 
 /** Yields the event loop so pending socket I/O can be processed (no fixed delay). */
@@ -99,7 +100,11 @@ interface FakeAgent {
 	wait<T>(match: (frame: Record<string, unknown>) => T | undefined, what: string): Promise<T>;
 }
 
-async function connectAgent(machineId: string, name: string): Promise<{ agent: FakeAgent; welcome: Record<string, unknown> }> {
+async function connectAgent(
+	machineId: string,
+	name: string,
+	extra: Record<string, unknown> = {},
+): Promise<{ agent: FakeAgent; welcome: Record<string, unknown> }> {
 	const ws = new WebSocket(`${wsBase}/agent?token=t`);
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
@@ -125,7 +130,7 @@ async function connectAgent(machineId: string, name: string): Promise<{ agent: F
 		}
 	};
 
-	ws.send(JSON.stringify({ t: "hello", name, machineId, version: "test" }));
+	ws.send(JSON.stringify({ t: "hello", name, machineId, version: "test", ...extra }));
 	const welcome = await wait((frame) => (frame.t === "welcome" ? frame : undefined), "welcome");
 	return { agent: { ws, frames, wait }, welcome };
 }
@@ -161,6 +166,19 @@ describe("hub api", () => {
 		expect(await machinesJson()).toEqual([
 			{ machineId: "m-hello", name: "hello-machine", connected: true, connectedAt: expect.any(Number), sessionCount: 0 },
 		]);
+	});
+
+	test("hello.tmpdir surfaces in the machine record", async () => {
+		await connectAgent("m-tmp", "tmp-machine", { tmpdir: "/var/tmp" });
+		const machine = (await machinesJson()).find((record) => record.machineId === "m-tmp");
+		expect(machine).toEqual({
+			machineId: "m-tmp",
+			name: "tmp-machine",
+			connected: true,
+			connectedAt: expect.any(Number),
+			sessionCount: 0,
+			tmpdir: "/var/tmp",
+		});
 	});
 
 	test("POST /api/sessions dispatches start and session-ready attaches the links", async () => {

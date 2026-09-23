@@ -15,6 +15,8 @@ export interface MachineRecord {
 	connectedAt: number;
 	/** live + starting sessions on this machine. */
 	sessionCount: number;
+	/** Agent-reported temp directory (`hello.tmpdir`); absent from pre-0.3.0 agents. */
+	tmpdir?: string;
 }
 
 export interface AgentSocketData {
@@ -111,6 +113,8 @@ interface MachineState {
 	name: string;
 	connectedAt: number;
 	connected: boolean;
+	/** Reported by `hello`; null until then and for pre-0.3.0 agents. */
+	tmpdir: string | null;
 }
 
 function asFrame(raw: string): Frame | null {
@@ -352,6 +356,7 @@ export class AgentRegistry {
 			connected: machine.connected,
 			connectedAt: machine.connectedAt,
 			sessionCount: this.#sessions.countActiveFor(machine.machineId),
+			tmpdir: machine.tmpdir ?? undefined,
 		};
 	}
 
@@ -372,6 +377,7 @@ export class AgentRegistry {
 			return;
 		}
 		const version = str(frame.version) ?? "unknown";
+		const tmpdir = str(frame.tmpdir) ?? null;
 		const now = Date.now();
 
 		const previous = this.#connections.get(machineId);
@@ -393,8 +399,9 @@ export class AgentRegistry {
 			machine.name = name;
 			machine.connected = true;
 			machine.connectedAt = now;
+			machine.tmpdir = tmpdir;
 		} else {
-			this.#machines.set(machineId, { machineId, name, connectedAt: now, connected: true });
+			this.#machines.set(machineId, { machineId, name, connectedAt: now, connected: true, tmpdir });
 		}
 		this.#connections.set(machineId, { ws, machineId, version, connectedAt: now, lastHb: now });
 
