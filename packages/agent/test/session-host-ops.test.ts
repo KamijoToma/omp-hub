@@ -61,7 +61,7 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 		expect(exits).toEqual([]);
 
 		const cmd = (reqId: string, frame: Record<string, unknown>): Promise<CommandOutcome> =>
-			supervisor.cmd("s_ops001", { reqId, ...frame }) as Promise<CommandOutcome>;
+			supervisor.cmd("s_ops001", { reqId, cmd: "", ...frame }) as Promise<CommandOutcome>;
 
 		// get-state: the three new fields exist with off-state defaults.
 		const state = await cmd("c_ops01", { cmd: "get-state" });
