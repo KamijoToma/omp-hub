@@ -1,5 +1,5 @@
 /**
- * `/rewind` — move the session tree leaf back to an earlier user message (the
+ * `/rewind` — move the session tree leaf back to an earlier user prompt (the
  * web analogue of the TUI's esc-esc): the target prompt and everything after it
  * leave the active branch, and the prompt text comes back as the draft. The
  * host confirms the move through `POST /api/sessions/:id/tree`; the transcript
@@ -10,7 +10,7 @@ import { History, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { GuestClient, Notice } from "../lib/client";
-import type { MessageEntry, SessionEntry } from "../lib/wire";
+import { COLLAB_PROMPT_MESSAGE_TYPE, type CustomMessageEntry, type MessageEntry, type SessionEntry } from "../lib/wire";
 import { errorText, navigateTree } from "./api";
 import { Modal } from "./Modal";
 
@@ -26,28 +26,27 @@ export interface RewindPickerProps {
 }
 
 export interface RewindTarget {
-	entry: MessageEntry;
+	entry: MessageEntry | CustomMessageEntry;
 	/** Entries that leave the active branch when rewinding past this message. */
 	droppedCount: number;
 	preview: string;
 }
 
-function entryPreview(entry: MessageEntry): string {
-	const { content } = entry.message;
+function entryPreview(entry: MessageEntry | CustomMessageEntry): string {
+	const content = entry.type === "message" ? entry.message.content : entry.content;
 	const text = typeof content === "string" ? content : (content.find(block => block.type === "text")?.text ?? "");
 	return text.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
-/** User messages on the current branch, newest first (append order ends at the leaf). */
+/** User messages and collab prompts on the current branch, newest first. */
 export function rewindTargets(entries: readonly SessionEntry[]): RewindTarget[] {
 	if (entries.length === 0) return [];
 	const byId = new Map(entries.map(entry => [entry.id, entry]));
 	const targets: RewindTarget[] = [];
 	// Walk parent links from the last appended entry (the leaf) back to the root.
 	for (let cur: SessionEntry | undefined = entries[entries.length - 1]; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) {
-		if (cur.type !== "message") continue;
-		const message = cur.message;
-		if (message.role !== "user" || message.synthetic) continue;
+		if (cur.type !== "message" && !(cur.type === "custom_message" && cur.customType === COLLAB_PROMPT_MESSAGE_TYPE)) continue;
+		if (cur.type === "message" && (cur.message.role !== "user" || cur.message.synthetic)) continue;
 		targets.push({
 			entry: cur,
 			droppedCount: entries.length - entries.indexOf(cur),
@@ -103,9 +102,9 @@ export function RewindPicker({ sessionId, client, entries, working, notify, onCl
 			) : selected ? (
 				<>
 					<p className="hb-rewind-confirm">
-						rewind to “{selected.preview || "this prompt"}”? {selected.droppedCount} later{" "}
-						{selected.droppedCount === 1 ? "entry leaves" : "entries leave"} the active branch (kept in the
-						session file).
+						rewind to “{selected.preview || "this prompt"}”? {selected.droppedCount}{" "}
+						{selected.droppedCount === 1 ? "entry leaves" : "entries leave"} the active branch, including the
+						selected prompt (kept in the session file).
 					</p>
 					<div className="hb-rewind-actions">
 						<button type="button" className="hb-rewind-go" onClick={rewind} disabled={pending}>
