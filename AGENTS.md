@@ -50,6 +50,7 @@ The hub and agent also expose `bun run start` (same entry points as `dev`). Hub 
 
 ## Code Conventions & Common Patterns
 
+- **Feature worktrees:** Implement all feature additions and behavior changes in a dedicated Git worktree (one per concurrent change). Reserve the main working tree solely for merging completed worktree changes; never implement feature work there.
 - TypeScript ESM, strict `tsconfig.json`, tabs in source; `PascalCase.tsx` React components, kebab-case modules such as `hub-client.ts`. Prefer existing `t`-discriminated frames (`session-ready`, `cmd-result`) and `machineId`/`reqId` fields. `docs/protocol.md` freezes the hub wire shapes: coordinate protocol changes with the doc, both endpoints, and relevant tests; keep the vendored web `COLLAB_PROTO` compatible with omp's host.
 - Keep the hub on Bun built-ins (zero runtime dependencies). Use explicit config/constructor options and small protocol-facing interfaces rather than a DI container; examples: `startHub({ port: 0, token: "t" })` in tests and `Supervisor`'s child entry option.
 - Reserve session-host **stdout for JSONL IPC**. Log diagnostics to stderr; do not leave headless UI dialog promises pending. Use `Settings.loadIsolated`, not global `Settings.init`, when creating SDK sessions.
