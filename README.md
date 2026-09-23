@@ -23,6 +23,9 @@ or by attaching a real omp client (`omp join "<link>"`) to a live session.
   any terminal for the native TUI experience.
 - **Responsive layout**: phone and desktop layouts share the upstream collab-web breakpoints.
 - **Hub as one Docker container**: single port serves relay + API + web UI.
+- **Web slash commands**: typing `/` in the composer opens a palette — `/model`, `/thinking`,
+  `/settings`, `/collab` (links), `/theme`, `/dump`, `/leave`, `/help`. Model/thinking changes run
+  on the host through the hub→agent command channel; slash text is never sent to the LLM.
 
 ## How it works (30 seconds)
 

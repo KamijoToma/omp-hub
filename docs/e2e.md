@@ -25,6 +25,7 @@ provider DeepSeek via the shared `~/.omp` auth store.
 | 9 | Hub restart → agent auto-reconnects and re-registers (sessions lost — in-memory registry, see M7) | ✅ |
 | 10 | Responsive: 390×844 home (single column, ≥40px targets) and session (transcript, badges, tool cards, drawer) render correctly; 1440×900 two-column home + full session chrome | ✅ (screenshots reviewed) |
 | 11 | Docker (podman): image builds (~52 s); container on `127.0.0.1:8480` serves health/API/web; host agent `docker-machine` connects; browser start → prompt `container-ok` streamed; stop → `exited` | ✅ |
+| 12 | Web slash commands: `/` palette (8 commands, filter, keyboard nav, mobile sheet); `/model` picker switched deepseek-flash → v4-flash → v4-pro live (header chip + transcript entries update via state broadcast); `/thinking` xhigh; `/collab` links modal; unknown `/frobnicator` → "host-only or unknown command — not sent", nothing reaches the agent; palette-run commands clear the composer; palette suppressed while a modal is open | ✅ |
 
 ## Environment quirks observed (not product bugs)
 
