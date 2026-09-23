@@ -19,6 +19,8 @@ export interface Config {
 	/** Directory served for `/*` with SPA fallback. */
 	readonly webDist: string;
 	readonly version: string;
+	/** How long a `/api/sessions/:id/*` command waits for the agent's `cmd-result`. */
+	readonly cmdTimeoutMs: number;
 }
 
 export interface PublicBase {
@@ -30,6 +32,8 @@ export interface PublicBase {
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_HOSTNAME = "0.0.0.0";
+/** Protocol §2: a pending `cmd` is abandoned after 15 s. */
+const DEFAULT_CMD_TIMEOUT_MS = 15_000;
 
 /** Built web assets: `<hub pkg>/web/dist`, falling back to the sibling `<repo>/packages/web/dist`. */
 const PACKAGE_WEB_DIST = path.resolve(import.meta.dir, "../web/dist");
@@ -43,6 +47,16 @@ function readPort(raw: string | undefined): number {
 		throw new Error(`invalid PORT "${raw}" (expected an integer 0-65535)`);
 	}
 	return port;
+}
+
+function readCmdTimeout(raw: string | undefined): number {
+	const value = raw?.trim();
+	if (!value) return DEFAULT_CMD_TIMEOUT_MS;
+	const ms = Number(value);
+	if (!Number.isInteger(ms) || ms <= 0) {
+		throw new Error(`invalid HUB_CMD_TIMEOUT_MS "${raw}" (expected a positive integer of milliseconds)`);
+	}
+	return ms;
 }
 
 function resolveWebDist(raw: string | undefined): string {
@@ -72,6 +86,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 		tlsKey,
 		webDist: resolveWebDist(env.WEB_DIST),
 		version: typeof pkg.version === "string" ? pkg.version : "0.0.0",
+		cmdTimeoutMs: readCmdTimeout(env.HUB_CMD_TIMEOUT_MS),
 	};
 }
 

@@ -2,7 +2,7 @@
  * HTTP API (docs/protocol.md §3): machine/session registry for the web UI.
  * Everything except `/api/health` requires `Authorization: Bearer <HUB_TOKEN>`.
  */
-import type { AgentRegistry } from "./agents";
+import { newCmdReqId, type AgentRegistry, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import type { SessionStore } from "./sessions";
 
@@ -12,8 +12,17 @@ export interface ApiContext {
 	readonly agents: AgentRegistry;
 }
 
+/** `cmd` parameters, minus the routing fields the hub fills in. */
+type CmdParams = Omit<CmdRequest, "id" | "reqId" | "cmd">;
+
+/** Result of the shared `cmd` gate: the agent's payload, or the mapped error reply. */
+type CmdOutcome = { readonly ok: true; readonly data: unknown } | { readonly ok: false; readonly response: Response };
+
 const SESSION_PATH_RE = /^\/api\/sessions\/([^/]+)$/;
 const STOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/stop$/;
+const AGENT_STATE_PATH_RE = /^\/api\/sessions\/([^/]+)\/agent-state$/;
+const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
+const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -31,6 +40,17 @@ function authorized(req: Request, cfg: Config): boolean {
 function field(body: Record<string, unknown>, key: string): string | undefined {
 	const value = body[key];
 	return typeof value === "string" ? value : undefined;
+}
+
+/** Parsed JSON object body; null on malformed JSON or a non-object payload. */
+async function jsonBody(req: Request): Promise<Record<string, unknown> | null> {
+	let parsed: unknown;
+	try {
+		parsed = await req.json();
+	} catch {
+		return null;
+	}
+	return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 }
 
 export async function handleApi(req: Request, ctx: ApiContext): Promise<Response> {
@@ -65,18 +85,25 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 		return stopSession(decodeURIComponent(stop[1]!), ctx);
 	}
 
+	const state = AGENT_STATE_PATH_RE.exec(route);
+	if (state && req.method === "GET") {
+		return agentState(decodeURIComponent(state[1]!), ctx);
+	}
+	const model = MODEL_PATH_RE.exec(route);
+	if (model && req.method === "POST") {
+		return setModel(decodeURIComponent(model[1]!), req, ctx);
+	}
+	const thinking = THINKING_PATH_RE.exec(route);
+	if (thinking && req.method === "POST") {
+		return setThinking(decodeURIComponent(thinking[1]!), req, ctx);
+	}
+
 	return json({ error: "not found" }, 404);
 }
 
 async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
-	let parsed: unknown;
-	try {
-		parsed = await req.json();
-	} catch {
-		return json({ error: "invalid json body" }, 400);
-	}
-	if (parsed === null || typeof parsed !== "object") return json({ error: "invalid json body" }, 400);
-	const body = parsed as Record<string, unknown>;
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
 
 	const machineId = field(body, "machineId");
 	if (!machineId) return json({ error: "machineId is required" }, 400);
@@ -120,4 +147,67 @@ function stopSession(id: string, ctx: ApiContext): Response {
 	// Best effort: the record flips when the agent reports session-exit.
 	ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user stop" });
 	return json({ ok: true });
+}
+
+async function agentState(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "get-state", {}, ctx);
+	return outcome.ok ? json({ ok: true, state: outcome.data }) : outcome.response;
+}
+
+async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const provider = field(body, "provider");
+	if (!provider || provider.trim() === "") return json({ error: "provider is required" }, 400);
+	const modelId = field(body, "modelId");
+	if (!modelId || modelId.trim() === "") return json({ error: "modelId is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "set-model", { provider, modelId }, ctx);
+	return outcome.ok ? json({ ok: true, switched: pick(outcome.data, "switched") }) : outcome.response;
+}
+
+async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const level = field(body, "level");
+	if (!level || level.trim() === "") return json({ error: "level is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "set-thinking", { level }, ctx);
+	return outcome.ok ? json({ ok: true, thinkingLevel: pick(outcome.data, "thinkingLevel") }) : outcome.response;
+}
+
+/**
+ * Streams one `cmd` to the owning agent: 404 unknown session, 409 unless `live`,
+ * 502 agent offline, 504 agent silent past `cmdTimeoutMs`, 500 anything else.
+ */
+async function dispatchCmd(id: string, cmd: CmdName, params: CmdParams, ctx: ApiContext): Promise<CmdOutcome> {
+	const record = ctx.sessions.get(id);
+	if (!record) return { ok: false, response: json({ error: "session not found" }, 404) };
+	if (record.status !== "live") return { ok: false, response: json({ error: `session is ${record.status}` }, 409) };
+	if (!ctx.agents.isOnline(record.machineId)) return { ok: false, response: json({ error: "agent offline" }, 502) };
+
+	const result = await ctx.agents.sendCmd(record.machineId, { id: record.id, reqId: newCmdReqId(), cmd, ...params });
+	if (!result.ok) return { ok: false, response: json({ error: result.error }, cmdErrorStatus(result.error)) };
+	return { ok: true, data: result.data };
+}
+
+/** HTTP status for an agent-reported failure (protocol §3 session-command rows). */
+function cmdErrorStatus(error: string): number {
+	switch (error) {
+		case "unknown session":
+			return 409;
+		case "agent offline":
+		case "agent disconnected": // the socket died mid-command: just as offline to the caller
+			return 502;
+		case "cmd timeout":
+			return 504;
+		default:
+			return 500;
+	}
+}
+
+/** Nested field of the agent's `data` payload; undefined when the payload is malformed. */
+function pick(data: unknown, key: string): unknown {
+	if (data === null || typeof data !== "object") return undefined;
+	return (data as Record<string, unknown>)[key];
 }

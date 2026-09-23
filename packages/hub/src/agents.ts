@@ -6,7 +6,7 @@
  */
 import { derivePublicBase, type Config } from "./config";
 import { log } from "./log";
-import type { SessionLinks, SessionStore } from "./sessions";
+import { randomId, type SessionLinks, type SessionStore } from "./sessions";
 
 export interface MachineRecord {
 	machineId: string;
@@ -43,7 +43,30 @@ export type AgentCommand =
 	| { t: "welcome"; relayUrl: string; webUrl: string }
 	| { t: "start"; id: string; cwd: string; name?: string; prompt?: string; relayUrl: string; webUrl: string }
 	| { t: "stop"; id: string; reason?: string }
-	| { t: "ping"; ts: number };
+	| { t: "ping"; ts: number }
+	| ({ t: "cmd" } & CmdRequest);
+
+/** Host commands a session answers (protocol §2 "Session commands"). */
+export type CmdName = "get-state" | "set-model" | "set-thinking";
+
+/** `cmd` payload; `reqId` correlates the agent's `cmd-result`. */
+export interface CmdRequest {
+	/** Target session id. */
+	id: string;
+	reqId: string;
+	cmd: CmdName;
+	provider?: string;
+	modelId?: string;
+	level?: string;
+}
+
+/** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */
+export type CmdResult = { ok: true; data: unknown } | { ok: false; error: string };
+
+/** `c_` + 10 base36 characters from a CSPRNG. */
+export function newCmdReqId(): string {
+	return randomId("c_");
+}
 
 /** Heartbeat expected every 15 s; two consecutive misses mark the agent offline. */
 const HB_TIMEOUT_MS = 30_000;
@@ -58,6 +81,13 @@ interface Connection {
 	version: string;
 	connectedAt: number;
 	lastHb: number;
+}
+
+/** One in-flight `cmd`, keyed by `reqId` until the agent answers or the timeout fires. */
+interface PendingCmd {
+	machineId: string;
+	timer: Timer;
+	resolve: (result: CmdResult) => void;
 }
 
 interface MachineState {
@@ -100,6 +130,7 @@ export class AgentRegistry {
 	readonly #sessions: SessionStore;
 	readonly #machines = new Map<string, MachineState>();
 	readonly #connections = new Map<string, Connection>();
+	readonly #pending = new Map<string, PendingCmd>();
 	#watchdog: Timer | null = null;
 	#pinger: Timer | null = null;
 
@@ -194,6 +225,20 @@ export class AgentRegistry {
 				this.#sessions.markExited(id, str(frame.reason) ?? "session exited");
 				return;
 			}
+			case "cmd-result": {
+				const reqId = str(frame.reqId);
+				if (!reqId) return;
+				const pending = this.#pending.get(reqId);
+				if (!pending || pending.machineId !== machineId) return; // stale or another machine's
+				this.#pending.delete(reqId);
+				clearTimeout(pending.timer);
+				if (frame.ok === true) {
+					pending.resolve({ ok: true, data: frame.data });
+				} else {
+					pending.resolve({ ok: false, error: str(frame.error) ?? "command failed" });
+				}
+				return;
+			}
 			default:
 				return; // forward-compatible: unknown frames are ignored
 		}
@@ -206,6 +251,7 @@ export class AgentRegistry {
 		// Superseded by a newer socket, or already taken offline by the watchdog.
 		if (!conn || conn.ws !== ws) return;
 		this.#connections.delete(machineId);
+		this.#failPending(machineId, "agent disconnected");
 		const machine = this.#machines.get(machineId);
 		if (machine) machine.connected = false;
 		const exited = this.#sessions.exitSessionsFor(machineId, "agent disconnected");
@@ -225,12 +271,51 @@ export class AgentRegistry {
 		}
 	}
 
+	/**
+	 * One `cmd` round trip (protocol §2 "Session commands"). Settles with
+	 * `{ok:false, error}` when the agent is offline, the write fails, the agent
+	 * disconnects, or the agent stays silent for `cmdTimeoutMs`; never rejects.
+	 */
+	sendCmd(machineId: string, frame: CmdRequest): Promise<CmdResult> {
+		const conn = this.#connections.get(machineId);
+		if (!conn) return Promise.resolve({ ok: false, error: "agent offline" });
+		const { promise, resolve } = Promise.withResolvers<CmdResult>();
+		const pending: PendingCmd = {
+			machineId,
+			resolve,
+			timer: setTimeout(() => {
+				this.#pending.delete(frame.reqId);
+				resolve({ ok: false, error: "cmd timeout" });
+			}, this.#cfg.cmdTimeoutMs),
+		};
+		this.#pending.set(frame.reqId, pending);
+		try {
+			conn.ws.send(JSON.stringify({ t: "cmd", ...frame } satisfies AgentCommand));
+		} catch (error) {
+			this.#pending.delete(frame.reqId);
+			clearTimeout(pending.timer);
+			log.warn(`machine ${machineId}: cmd send failed (${error instanceof Error ? error.message : String(error)})`);
+			resolve({ ok: false, error: "agent offline" });
+		}
+		return promise;
+	}
+
 	getMachine(machineId: string): MachineRecord | undefined {
 		return this.#record(this.#machines.get(machineId));
 	}
 
 	isOnline(machineId: string): boolean {
 		return this.#connections.has(machineId);
+	}
+
+	/** Settles every pending command of a machine whose socket is gone or replaced. */
+	#failPending(machineId: string, error: string): void {
+		for (const [reqId, pending] of [...this.#pending]) {
+			if (pending.machineId !== machineId) continue;
+			this.#pending.delete(reqId);
+			clearTimeout(pending.timer);
+			pending.resolve({ ok: false, error });
+		}
 	}
 
 	/** Machines stay listed with `connected: false` until hub restart. */
@@ -276,6 +361,7 @@ export class AgentRegistry {
 		const previous = this.#connections.get(machineId);
 		if (previous && previous.ws !== ws) {
 			this.#connections.delete(machineId);
+			this.#failPending(machineId, "agent disconnected");
 			const exited = this.#sessions.exitSessionsFor(machineId, "agent replaced");
 			log.warn(`machine ${machineId}: replaced by a new connection (${exited.length} session(s) exited)`);
 			try {
@@ -330,6 +416,7 @@ export class AgentRegistry {
 	#offline(conn: Connection, reason: string): void {
 		if (this.#connections.get(conn.machineId)?.ws !== conn.ws) return;
 		this.#connections.delete(conn.machineId);
+		this.#failPending(conn.machineId, "agent offline");
 		const machine = this.#machines.get(conn.machineId);
 		if (machine) machine.connected = false;
 		const exited = this.#sessions.exitSessionsFor(conn.machineId, reason);

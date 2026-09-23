@@ -47,11 +47,11 @@ export const SESSION_CAP = 500;
 
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-/** `s_` + 10 base36 characters from a CSPRNG. */
-export function newSessionId(): string {
+/** `prefix` + 10 base36 characters from a CSPRNG. */
+export function randomId(prefix: string): string {
 	const bytes = new Uint8Array(10);
 	crypto.getRandomValues(bytes);
-	let id = "s_";
+	let id = prefix;
 	for (const byte of bytes) id += ID_ALPHABET[byte % ID_ALPHABET.length];
 	return id;
 }
@@ -68,7 +68,7 @@ export class SessionStore {
 
 	create(input: CreateSessionInput): SessionRecord {
 		const record: SessionRecord = {
-			id: newSessionId(),
+			id: randomId("s_"),
 			machineId: input.machineId,
 			machineName: input.machineName,
 			cwd: input.cwd,
