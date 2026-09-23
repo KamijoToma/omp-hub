@@ -377,6 +377,84 @@
 	padding-bottom: 1px;
 }
 
+/* Drag-and-drop target highlight while files hover over the composer. */
+.sh-composer-drag {
+	outline: 1px dashed var(--accent);
+	outline-offset: -3px;
+}
+
+/* Staged attachment band: pastes, images, and uploads waiting on the prompt. */
+.sh-composer-chips {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	max-width: 880px;
+	margin: 0 auto 6px;
+}
+
+.sh-atchip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 320px;
+	padding: 2px 4px 2px 7px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--fg-muted, var(--fg));
+	background: var(--accent-muted);
+	border-radius: calc(var(--radius) + 2px);
+}
+
+.sh-atchip-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sh-atchip-upload .sh-atchip-label {
+	font-family: var(--mono, monospace);
+}
+
+.sh-atchip-error,
+.sh-atchip-upload.sh-atchip-error {
+	color: var(--err);
+	background: transparent;
+	border: 1px solid var(--err);
+	padding-left: 6px;
+}
+
+.sh-atchip-spin {
+	animation: sh-atchip-rotate 0.9s linear infinite;
+}
+
+@keyframes sh-atchip-rotate {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.sh-atchip-remove {
+	display: inline-flex;
+	padding: 1px;
+	color: inherit;
+	cursor: pointer;
+	background: none;
+	border: 0;
+	border-radius: var(--radius);
+}
+
+.sh-atchip-remove:hover {
+	color: var(--fg);
+	background: var(--bg-inset);
+}
+
+.sh-staging-error {
+	font-size: 11px;
+	color: var(--err);
+}
+
+
 .sh-composer-ask {
 	display: grid;
 	gap: 8px;

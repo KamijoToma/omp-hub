@@ -32,6 +32,10 @@ const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
 const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
 const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
 const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
+const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
+/** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
+const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
+const MAX_FILENAME_CHARS = 200;
 const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
 /** `/api/machines/:id/usage/<dashboard path>`; the rest is relayed verbatim. */
 const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
@@ -164,6 +168,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const clearContext = CLEAR_CONTEXT_PATH_RE.exec(route);
 	if (clearContext && req.method === "POST") {
 		return clearSessionContext(decodeURIComponent(clearContext[1]!), ctx);
+	}
+	const files = FILES_PATH_RE.exec(route);
+	if (files && req.method === "POST") {
+		return uploadSessionFile(decodeURIComponent(files[1]!), req, ctx);
 	}
 
 	return json({ error: "not found" }, 404);
@@ -602,6 +610,31 @@ async function dispatchCmd(id: string, cmd: CmdName, params: CmdParams, ctx: Api
 	return { ok: true, data: result.data };
 }
 
+/**
+ * `upload-file` (protocol §2): stream the raw request body to the owning session's machine
+ * and answer with the written file's absolute path for `@` references in prompts.
+ * 400 missing/oversized `X-Filename`, 413 body over the cap, 404/409/502/504 via {@link dispatchCmd}.
+ */
+async function uploadSessionFile(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const encodedName = req.headers.get("x-filename");
+	if (!encodedName) return json({ error: "x-filename header is required" }, 400);
+	const name = decodeURIComponent(encodedName).trim();
+	if (name === "" || name.length > MAX_FILENAME_CHARS) return json({ error: "invalid x-filename" }, 400);
+
+	const declared = Number(req.headers.get("content-length") ?? "0");
+	if (Number.isFinite(declared) && declared > MAX_UPLOAD_BODY_BYTES) return json({ error: "file too large" }, 413);
+	const bytes = new Uint8Array(await req.arrayBuffer());
+	if (bytes.byteLength > MAX_UPLOAD_BODY_BYTES) return json({ error: "file too large" }, 413);
+	if (bytes.byteLength === 0) return json({ error: "empty body" }, 400);
+
+	const outcome = await dispatchCmd(id, "upload-file", { name, dataB64: Buffer.from(bytes).toString("base64") }, ctx);
+	if (!outcome.ok) return outcome.response;
+	const path = pick(outcome.data, "path");
+	if (typeof path !== "string" || path === "") return json({ error: "malformed upload-file result" }, 500);
+	const written = pick(outcome.data, "bytes");
+	return json({ ok: true, path, bytes: typeof written === "number" ? written : bytes.byteLength });
+}
+
 /** HTTP status for an agent-reported failure (protocol §3 session-command rows). */
 function cmdErrorStatus(error: string): number {
 	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
@@ -613,7 +646,10 @@ function cmdErrorStatus(error: string): number {
 		case "no such directory":
 		case "not a directory":
 		case "permission denied": // list-dir caller-input failures (protocol §2 "Machine commands")
+		case "invalid upload encoding": // upload-file caller-input failures (protocol §2)
 			return 400;
+		case "file too large":
+			return 413;
 		case "agent offline":
 		case "agent disconnected": // the socket died mid-command: just as offline to the caller
 			return 502;

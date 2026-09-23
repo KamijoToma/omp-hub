@@ -99,7 +99,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
-     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context",
+     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -107,6 +107,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // action, objective, tokenBudget → goal
                                                                 // prompt, limit, condition → loop
                                                                 // enabled → set-extended-context
+                                                                // name, dataB64 → upload-file
 ```
 
 agent→hub:
@@ -219,6 +220,15 @@ interface LoopStatus {
   bash/eval runs, or the session is mid-transition → `ok:false` (409 via the
   "Wait for the current response…" mapping). Older omp builds without the SDK method answer
   `ok:false, "clear-context is not supported by this omp build"` (500).
+- `upload-file` → `data: { path: string, bytes: number }`: writes the base64-decoded payload to a
+  fresh owner-only file under the machine's temp directory
+  (`omp-hub-upload-<rand>-<sanitized name>`) and returns its absolute path, which callers
+  reference as plain text (`@path`) in prompts for the model to `read` on demand (PDFs convert
+  through the agent's own markit tooling). The child sanitizes `name` to a bare filename
+  (basename, control chars stripped, 128-char cap), re-validates size against the same 15 MiB
+  cap the hub enforces on the HTTP body, and maps caller-input failures to stable strings:
+  `file too large` → 413, `invalid upload encoding` → 400. Each upload opportunistically prunes
+  `omp-hub-upload-*` files older than 7 days; OS tmp cleaners are the backstop.
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -337,6 +347,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
 | `POST /api/sessions/:id/clear-context` | → `{ ok: true, droppedCount }` (§2 `clear-context`); 409 streaming guard |
+| `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -363,12 +374,13 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context",
+     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
   action?: string, objective?: string, tokenBudget?: number,
-  prompt?: string, limit?: object, condition?: object, enabled?: boolean }
+  prompt?: string, limit?: object, condition?: object, enabled?: boolean,
+  name?: string, dataB64?: string }
                                             // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation
 ```

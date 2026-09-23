@@ -6,8 +6,10 @@
  * nothing else; every log line goes to stderr.
  */
 
-import { stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { randomBytes } from "node:crypto";
+import { readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
@@ -75,6 +77,10 @@ type CommandFrame = {
 	condition?: LoopConditionConfig;
 	/** `set-extended-context`: target state; omitted toggles. */
 	enabled?: boolean;
+	/** `upload-file` client-supplied file name; sanitized before writing (protocol §2). */
+	name?: string;
+	/** `upload-file` payload, base64. */
+	dataB64?: string;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -370,6 +376,50 @@ function sessionTree(session: AgentSession): SessionTreePayload {
 	return { leafId, truncated: flat.reduce((total, node) => total + (WIRED_ENTRY_TYPES[node.entry.type] ? 1 : 0), 0) > TREE_NODE_CAP, nodes: roots };
 }
 
+/** Hard cap on one hub upload's decoded bytes (mirrors the hub's HTTP body cap, protocol §2). */
+const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+/** Tmp-file prefix for hub uploads; also the sweep selector (exported for tests). */
+export const UPLOAD_PREFIX = "omp-hub-upload-";
+/** Uploads older than this are pruned opportunistically; OS tmp cleaners are the backstop. */
+const UPLOAD_SWEEP_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Hub upload write path (protocol §2 `upload-file`; exported test seam): write one
+ * uploaded attachment under the machine's temp directory and return the absolute path
+ * the model can target with `read`. The client-supplied name is reduced to a bare
+ * filename before it ever reaches the filesystem, and the file is owner-only.
+ */
+export async function writeHubUpload(rawName: string | undefined, dataB64: string | undefined): Promise<{ path: string; bytes: number }> {
+	if (!dataB64) throw new Error("upload-file requires dataB64");
+	const bytes = Buffer.from(dataB64, "base64");
+	if (bytes.byteLength === 0) throw new Error("invalid upload encoding");
+	if (bytes.byteLength > UPLOAD_MAX_BYTES) throw new Error("file too large");
+	const safeName = (rawName ?? "").replace(/^.*[\\/]/, "").replace(/[\x00-\x1F\x7F]/g, "").trim() || "file";
+	const name = safeName.length > 128 ? `${safeName.slice(0, 100)}…${safeName.slice(-24)}` : safeName;
+	const target = join(tmpdir(), `${UPLOAD_PREFIX}${randomBytes(6).toString("hex")}-${name}`);
+	await writeFile(target, bytes, { mode: 0o600 });
+	void sweepOldUploads();
+	return { path: target, bytes: bytes.byteLength };
+}
+
+/** Stale-upload prune (exported test seam): removes `omp-hub-upload-*` files older than a week. */
+export async function sweepOldUploads(): Promise<void> {
+	try {
+		const dir = tmpdir();
+		const now = Date.now();
+		for (const entry of await readdir(dir)) {
+			if (!entry.startsWith(UPLOAD_PREFIX)) continue;
+			const full = join(dir, entry);
+			const info = await stat(full).catch(() => undefined);
+			if (info?.isFile() && now - info.mtimeMs > UPLOAD_SWEEP_AGE_MS) {
+				await rm(full, { force: true }).catch(() => {});
+			}
+		}
+	} catch {
+		// the sweep is opportunistic; tmp cleaner policies own the real reclamation
+	}
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
 async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
@@ -507,6 +557,8 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// SDK throws bubble (they carry good messages); reply is the post-op state.
 			return { goal: goalState(session) };
 		}
+		case "upload-file":
+			return writeHubUpload(frame.name, frame.dataB64);
 		case "set-extended-context": {
 			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
 				throw new Error("set-extended-context requires a boolean enabled");
@@ -827,13 +879,17 @@ async function run(): Promise<void> {
 	}
 }
 
-run().catch(async err => {
-	const message = errorMessage(err);
-	rawStdoutWrite(`${JSON.stringify({ t: "error", message })}\n`);
-	process.stderr.write(`session-host fatal: ${message}\n`);
-	// Give the pipe reader a beat to see the frame before the hard exit.
-	const grace = Promise.withResolvers<void>();
-	setTimeout(grace.resolve, 20);
-	await grace.promise;
-	process.exit(1);
-});
+// Child entry (spawned as `bun session-host.ts --config <json>`); importing the module
+// for its exported helpers must not start a host or exit the importer's process.
+if (import.meta.main) {
+	run().catch(async err => {
+		const message = errorMessage(err);
+		rawStdoutWrite(`${JSON.stringify({ t: "error", message })}\n`);
+		process.stderr.write(`session-host fatal: ${message}\n`);
+		// Give the pipe reader a beat to see the frame before the hard exit.
+		const grace = Promise.withResolvers<void>();
+		setTimeout(grace.resolve, 20);
+		await grace.promise;
+		process.exit(1);
+	});
+}
