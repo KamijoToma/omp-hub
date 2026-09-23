@@ -7,19 +7,22 @@ Headless per-machine daemon: dials out to the hub, spawns one child process per 
 
 This package resolves the omp SDK from a sibling `../oh-my-pi` checkout; it is not a
 standalone published daemon. From the omp-hub repository root, clone the tested public
-SDK revision and install its workspace dependencies:
+SDK revision, install its workspace dependencies, and build its native addon (requires
+Rust/Cargo and the platform's native build toolchain):
 
 ```bash
 git clone https://github.com/KamijoToma/oh-my-pi.git ../oh-my-pi
 git -C ../oh-my-pi checkout 7ae76f8e4daca0c8f409f61bcd514260cd522365
 bun --cwd=../oh-my-pi install --frozen-lockfile
+bun --cwd=../oh-my-pi run build:native
 bun --cwd=packages/agent install --frozen-lockfile
 ```
 
-If a sibling checkout already exists, verify its revision and install its dependencies instead
-of cloning over it. `tsconfig.json` contains the source import mappings and asset type roots;
-the SDK and web guest must use compatible `COLLAB_PROTO` versions. Do not deploy against an
-unverified SDK revision. `bun run typecheck` resolves real upstream sources, not a mock.
+If a sibling checkout already exists, verify its revision, install its dependencies, and build
+the native addon instead of cloning over it. `tsconfig.json` contains the source import mappings
+and asset type roots. The SDK and web guest must use compatible `COLLAB_PROTO` versions.
+Do not deploy against an unverified SDK revision. `bun run typecheck` resolves real
+upstream sources, not a mock.
 
 ## Run
 
