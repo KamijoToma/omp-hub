@@ -2,7 +2,7 @@
  * HTTP API (docs/protocol.md §3): machine/session registry for the web UI.
  * Everything except `/api/health` requires `Authorization: Bearer <HUB_TOKEN>`.
  */
-import { newCmdReqId, type AgentRegistry, type CmdName, type CmdRequest } from "./agents";
+import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import { normalizeProfileName } from "./profiles";
 import type { SessionStore } from "./sessions";
@@ -26,6 +26,12 @@ const CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/context$/;
 const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
 const THINKING_PATH_RE = /^\/api\/sessions\/([^/]+)\/thinking$/;
 const TREE_PATH_RE = /^\/api\/sessions\/([^/]+)\/tree$/;
+const COMPACT_PATH_RE = /^\/api\/sessions\/([^/]+)\/compact$/;
+const RETRY_PATH_RE = /^\/api\/sessions\/([^/]+)\/retry$/;
+const TODOS_PATH_RE = /^\/api\/sessions\/([^/]+)\/todos$/;
+const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
+const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
+const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
 const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
 /** `/api/machines/:id/usage/<dashboard path>`; the rest is relayed verbatim. */
 const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
@@ -132,6 +138,30 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const tree = TREE_PATH_RE.exec(route);
 	if (tree && req.method === "POST") {
 		return navigateTree(decodeURIComponent(tree[1]!), req, ctx);
+	}
+	const compact = COMPACT_PATH_RE.exec(route);
+	if (compact && req.method === "POST") {
+		return compactSession(decodeURIComponent(compact[1]!), req, ctx);
+	}
+	const retry = RETRY_PATH_RE.exec(route);
+	if (retry && req.method === "POST") {
+		return retrySession(decodeURIComponent(retry[1]!), ctx);
+	}
+	const todos = TODOS_PATH_RE.exec(route);
+	if (todos && req.method === "GET") {
+		return sessionTodos(decodeURIComponent(todos[1]!), ctx);
+	}
+	const loop = LOOP_PATH_RE.exec(route);
+	if (loop && req.method === "POST") {
+		return sessionLoop(decodeURIComponent(loop[1]!), req, ctx);
+	}
+	const goal = GOAL_PATH_RE.exec(route);
+	if (goal && req.method === "POST") {
+		return sessionGoal(decodeURIComponent(goal[1]!), req, ctx);
+	}
+	const extendedContext = EXTENDED_CONTEXT_PATH_RE.exec(route);
+	if (extendedContext && req.method === "POST") {
+		return setExtendedContext(decodeURIComponent(extendedContext[1]!), req, ctx);
 	}
 
 	return json({ error: "not found" }, 404);
@@ -397,6 +427,143 @@ async function navigateTree(id: string, req: Request, ctx: ApiContext): Promise<
 }
 
 /**
+ * Compaction is a long-running model call: the agent dispatches it in the
+ * background and answers immediately, so this only confirms the dispatch —
+ * progress streams through the transcript (contract §1).
+ */
+async function compactSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const instructions = body["instructions"];
+	if (instructions !== undefined && typeof instructions !== "string") {
+		return json({ error: "instructions must be a string" }, 400);
+	}
+	const mode = body["mode"];
+	if (mode !== undefined && typeof mode !== "string") return json({ error: "mode must be a string" }, 400);
+
+	const outcome = await dispatchCmd(id, "compact", {
+		...(typeof instructions === "string" ? { instructions } : {}),
+		...(typeof mode === "string" ? { mode } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true }) : outcome.response;
+}
+
+/**
+ * Retry the last failed turn. `session.retry()` reports `started: false` when
+ * there is nothing to retry (contract §1) — the same 409 the agent's explicit
+ * errors map to below.
+ */
+async function retrySession(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "retry", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	if (pick(outcome.data, "started") !== true) return json({ error: "Nothing to retry." }, 409);
+	return json({ ok: true, started: true });
+}
+
+/** Read-only todo phases for the session's current branch (contract §1). */
+async function sessionTodos(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "get-todos", {}, ctx);
+	return outcome.ok ? json({ ok: true, phases: pick(outcome.data, "phases") ?? [] }) : outcome.response;
+}
+
+const LOOP_ACTIONS: Record<string, true> = { enable: true, disable: true, pause: true, resume: true, status: true };
+
+/** Type guard for the `loop` limiter: exactly one positive `iterations` or `durationMs`. */
+function isLoopLimit(value: unknown): value is CmdLoopLimit {
+	if (value === null || typeof value !== "object") return false;
+	const { iterations, durationMs } = value as Record<string, unknown>;
+	const positive = (candidate: unknown): boolean =>
+		typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0;
+	if (positive(iterations)) return durationMs === undefined;
+	return positive(durationMs) && iterations === undefined;
+}
+
+/** Type guard for the `loop` condition: a non-blank command plus a boolean polarity. */
+function isLoopCondition(value: unknown): value is CmdLoopCondition {
+	if (value === null || typeof value !== "object") return false;
+	const { command, until } = value as Record<string, unknown>;
+	return typeof command === "string" && command.trim() !== "" && typeof until === "boolean";
+}
+
+/**
+ * Drive the session loop engine (contract §1/§2): enable/disable/pause/resume,
+ * or read its status. The loop status echoes back so the caller can refresh
+ * its state card without a second `get-state`.
+ */
+async function sessionLoop(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (!action || LOOP_ACTIONS[action] !== true) {
+		return json({ error: "action must be one of enable, disable, pause, resume, status" }, 400);
+	}
+	const prompt = field(body, "prompt");
+	if (prompt !== undefined && prompt.trim() === "") return json({ error: "invalid prompt" }, 400);
+	const limit: unknown = body["limit"];
+	if (limit !== undefined && !isLoopLimit(limit)) return json({ error: "invalid limit" }, 400);
+	const condition: unknown = body["condition"];
+	if (condition !== undefined && !isLoopCondition(condition)) return json({ error: "invalid condition" }, 400);
+
+	const outcome = await dispatchCmd(id, "loop", {
+		action,
+		...(prompt === undefined ? {} : { prompt }),
+		...(limit === undefined ? {} : { limit }),
+		...(condition === undefined ? {} : { condition }),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, loop: pick(outcome.data, "loop") ?? null }) : outcome.response;
+}
+
+const GOAL_ACTIONS: Record<string, true> = { set: true, replace: true, pause: true, resume: true, drop: true, budget: true };
+
+/**
+ * Drive the session's goal runtime (contract §1): set/replace/pause/resume/
+ * drop the objective or set a token budget. SDK-side failures (missing budget
+ * number, unknown objective state) bubble through the cmd-result mapping.
+ */
+async function sessionGoal(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (!action || GOAL_ACTIONS[action] !== true) {
+		return json({ error: "action must be one of set, replace, pause, resume, drop, budget" }, 400);
+	}
+	const objective = field(body, "objective");
+	if (objective !== undefined && objective.trim() === "") return json({ error: "invalid objective" }, 400);
+	if ((action === "set" || action === "replace") && (objective ?? "").trim() === "") {
+		return json({ error: "objective is required" }, 400);
+	}
+	const tokenBudget = body["tokenBudget"];
+	if (tokenBudget !== undefined && (typeof tokenBudget !== "number" || !Number.isFinite(tokenBudget) || tokenBudget < 0)) {
+		return json({ error: "tokenBudget must be a non-negative number" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "goal", {
+		action,
+		...(objective === undefined ? {} : { objective }),
+		...(typeof tokenBudget === "number" ? { tokenBudget } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, goal: pick(outcome.data, "goal") ?? null }) : outcome.response;
+}
+
+/**
+ * Toggle (or set) the session's extended-context setting (contract §1);
+ * `enabled` omitted flips the current state on the agent.
+ */
+async function setExtendedContext(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const enabled = body["enabled"];
+	if (enabled !== undefined && typeof enabled !== "boolean") {
+		return json({ error: "enabled must be a boolean" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "set-extended-context", {
+		...(typeof enabled === "boolean" ? { enabled } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, extendedContext: pick(outcome.data, "extendedContext") ?? false }) : outcome.response;
+}
+
+/**
  * Streams one `cmd` to the owning agent: 404 unknown session, 409 unless `live`,
  * 502 agent offline, 504 agent silent past `cmdTimeoutMs`, 500 anything else.
  */
@@ -413,6 +580,9 @@ async function dispatchCmd(id: string, cmd: CmdName, params: CmdParams, ctx: Api
 
 /** HTTP status for an agent-reported failure (protocol §3 session-command rows). */
 function cmdErrorStatus(error: string): number {
+	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
+	// still streaming — the agent's own message tells the caller which.
+	if (error === "Nothing to retry." || error.startsWith("Wait for the current response")) return 409;
 	switch (error) {
 		case "unknown session":
 			return 409;

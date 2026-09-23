@@ -60,13 +60,30 @@ export type AgentCommand =
 	| { t: "usage-req"; reqId: string; method: "GET" | "HEAD" | "POST"; path: string; bodyB64?: string };
 
 /** Session commands a session child answers (protocol §2 "Session commands"). */
-export type SessionCmdName = "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree";
+export type SessionCmdName =
+	| "get-state"
+	| "get-context"
+	| "set-model"
+	| "set-thinking"
+	| "navigate-tree"
+	| "compact"
+	| "retry"
+	| "get-todos"
+	| "loop"
+	| "goal"
+	| "set-extended-context";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
+
+/** `loop` limiter: a positive iteration count or a positive time budget (contract §1). */
+export type CmdLoopLimit = { iterations: number } | { durationMs: number };
+
+/** `loop` shell condition evaluated between iterations (contract §1). */
+export type CmdLoopCondition = { command: string; until: boolean };
 
 /** `cmd` payload; `reqId` correlates the agent's `cmd-result`. */
 export interface CmdRequest {
@@ -89,6 +106,24 @@ export interface CmdRequest {
 	/** `navigate-tree`: build a branch summary (default false). */
 	summarize?: boolean;
 	level?: string;
+	/** `compact` free-form instructions (contract §1). */
+	instructions?: string;
+	/** `compact` mode name; the agent validates it against the SDK's compact modes. */
+	mode?: string;
+	/** `loop`/`goal` state-machine action. */
+	action?: string;
+	/** `goal` objective text (set/replace). */
+	objective?: string;
+	/** `goal` token budget for the `budget` action (≥ 0). */
+	tokenBudget?: number;
+	/** `loop` prompt submitted on each iteration. */
+	prompt?: string;
+	/** `loop` iteration/duration limiter. */
+	limit?: CmdLoopLimit;
+	/** `loop` continue/halt shell condition. */
+	condition?: CmdLoopCondition;
+	/** `set-extended-context` target state; omitted toggles (contract §1). */
+	enabled?: boolean;
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */

@@ -952,6 +952,183 @@
 	color: var(--fg-muted);
 }
 
+/* ---- slash commands: session ops (todos, goal, loop) ---- */
+.hb-ops-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.hb-todo-refresh {
+	align-self: flex-start;
+}
+
+.hb-todo-phases {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-todo-phase {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.hb-todo-phase-name {
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+
+.hb-todo-tasks {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-todo-task {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: baseline;
+	gap: 3px 8px;
+}
+
+.hb-todo-chip {
+	justify-self: start;
+	padding: 0 6px;
+	font: 400 10px / 1.6 var(--font-mono);
+	color: var(--fg-muted);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	white-space: nowrap;
+}
+
+.hb-todo-in_progress {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.hb-todo-completed {
+	color: var(--ok);
+	border-color: var(--ok);
+}
+
+.hb-todo-blocked {
+	color: var(--warn);
+	border-color: var(--warn);
+}
+
+.hb-todo-abandoned {
+	color: var(--fg-faint);
+	text-decoration: line-through;
+}
+
+.hb-todo-content {
+	font-size: 13px;
+	color: var(--fg);
+	overflow-wrap: anywhere;
+}
+
+.hb-todo-blocker {
+	grid-column: 2;
+	font-size: 11px;
+	color: var(--warn);
+	overflow-wrap: anywhere;
+}
+
+.hb-goal-status,
+.hb-loop-status {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.hb-goal-objective {
+	font-size: 13px;
+	color: var(--fg);
+	overflow-wrap: anywhere;
+}
+
+.hb-goal-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 10px;
+	min-width: 0;
+}
+
+.hb-goal-badge {
+	padding: 0 6px;
+	font: 400 10px / 1.6 var(--font-mono);
+	color: var(--fg-muted);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	white-space: nowrap;
+}
+
+.hb-goal-active,
+.hb-loop-running {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.hb-goal-paused,
+.hb-loop-paused,
+.hb-loop-waiting {
+	color: var(--warn);
+	border-color: var(--warn);
+}
+
+.hb-goal-complete {
+	color: var(--ok);
+	border-color: var(--ok);
+}
+
+.hb-goal-budget-limited {
+	color: var(--err);
+	border-color: var(--err);
+}
+
+.hb-goal-dropped {
+	color: var(--fg-faint);
+}
+
+.hb-goal-tokens {
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+}
+
+.hb-goal-meta-note {
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+.hb-loop-prompt {
+	font-size: 12px;
+	color: var(--fg);
+	overflow-wrap: anywhere;
+}
+
+.hb-loop-condition {
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+	overflow-wrap: anywhere;
+}
+
+.hb-loop-until {
+	width: auto;
+}
+
 @keyframes hb-spin {
 	to {
 		transform: rotate(360deg);

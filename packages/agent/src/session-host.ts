@@ -10,14 +10,19 @@ import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
+import type { computeSessionContextBreakdown } from "@oh-my-pi/pi-coding-agent/session/context-usage-runtime";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
+import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
-import { createLogger, errorMessage } from "./log";
+import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
-
-type ComputeSessionContextBreakdown = typeof import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime").computeSessionContextBreakdown;
+import type { LoopConditionConfig, LoopStatus } from "./session-loop";
+import { SessionLoop, type LoopLimitConfig } from "./session-loop";
 
 interface HostConfig {
 	id: string;
@@ -51,6 +56,24 @@ type CommandFrame = {
 	entryId?: string;
 	/** `navigate-tree`: build a branch summary (default false). */
 	summarize?: boolean;
+	/** `compact`: directed-summary instructions (optional). */
+	instructions?: string;
+	/** `compact`: forced one-off compaction mode (`COMPACT_MODES` name). */
+	mode?: string;
+	/** `loop`/`goal`: action selector. */
+	action?: string;
+	/** `goal` set/replace: objective text. */
+	objective?: string;
+	/** `goal`: token budget (optional on set/replace; required by `budget`). */
+	tokenBudget?: number;
+	/** `loop` enable: prompt to repeat (optional — waiting state allowed). */
+	prompt?: string;
+	/** `loop` enable: iteration/duration budget. */
+	limit?: LoopLimitConfig;
+	/** `loop` enable: continue-condition. */
+	condition?: LoopConditionConfig;
+	/** `set-extended-context`: target state; omitted toggles. */
+	enabled?: boolean;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -89,6 +112,12 @@ interface AgentState {
 	thinkingLevels: string[];
 	models: AgentModelRef[];
 	roles: AgentRoleState[];
+	/** Opt-in to advertised maximum context windows. */
+	extendedContext: boolean;
+	/** SDK goal-mode state, cloned for the wire; null when no goal is armed. */
+	goal: GoalModeState | null;
+	/** Loop controller status; null when the loop is disabled. */
+	loop: LoopStatus | null;
 }
 
 /**
@@ -100,7 +129,13 @@ interface CommandDeps {
 	parseThinkingLevel: typeof ParseThinkingLevel;
 	modelRoles: typeof ModelRoles;
 	roleModels: typeof RoleModels;
-	computeSessionContextBreakdown: ComputeSessionContextBreakdown;
+	computeSessionContextBreakdown: typeof computeSessionContextBreakdown;
+	/** Valid one-off compact mode names (contract §1). */
+	compactModes: typeof COMPACT_MODES;
+	getLatestTodoPhases: typeof getLatestTodoPhasesFromEntries;
+	evaluateLoopCondition: typeof evaluateLoopCondition;
+	/** Background dispatches (`compact`) can only log their failures. */
+	log: Logger;
 }
 
 /**
@@ -110,7 +145,7 @@ interface CommandDeps {
 const FALLBACK_THINKING_LEVELS: readonly string[] = ["off", "low", "medium", "high"];
 
 /** `get-state`: session identity plus the model/thinking surface for the web UI. */
-function agentState(session: AgentSession, deps: CommandDeps): AgentState {
+function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus | null): AgentState {
 	const model = session.model;
 	const efforts = session.getAvailableThinkingLevels();
 	const available = session.getAvailableModels();
@@ -132,7 +167,16 @@ function agentState(session: AgentSession, deps: CommandDeps): AgentState {
 			defaultThinkingLevel: entry.thinking?.defaultLevel ?? null,
 		})),
 		roles: agentRoles(session, available, deps),
+		extendedContext: session.settings.get("extendedContext") === true,
+		goal: goalState(session),
+		loop,
 	};
+}
+
+/** The SDK's goal-mode state, deep-cloned so wire JSON cannot alias live SDK objects. */
+function goalState(session: AgentSession): GoalModeState | null {
+	const state = session.getGoalModeState();
+	return state ? (JSON.parse(JSON.stringify(state)) as GoalModeState) : null;
 }
 
 /**
@@ -166,10 +210,10 @@ function parseRole(role: string | undefined): string {
 }
 
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps): Promise<unknown> {
+async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
-			return agentState(session, deps);
+			return agentState(session, deps, loop.status());
 		case "get-context":
 			// The SDK's own estimated split, without the snapcompact planner: it
 			// renders images for a savings estimate the UI never shows. Numbers and
@@ -219,6 +263,97 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 				editorText: result.editorText ?? null,
 				leafId: session.sessionManager.getLeafId() ?? null,
 			};
+		}
+		case "compact": {
+			const instructions = typeof frame.instructions === "string" && frame.instructions.trim() ? frame.instructions : undefined;
+			const mode = typeof frame.mode === "string" && frame.mode.trim() ? frame.mode.trim() : undefined;
+			// Validate up front: compaction is a model call that cannot answer the
+			// 15 s cmd budget, so a typo'd mode must fail here, synchronously.
+			const modeDef = mode === undefined ? undefined : deps.compactModes.find(entry => entry.name === mode);
+			if (mode !== undefined && !modeDef) {
+				throw new Error(`unknown compact mode: ${mode} (known: ${deps.compactModes.map(entry => entry.name).join(", ")})`);
+			}
+			// Background dispatch (contract §1): reply immediately, errors log
+			// only — progress is visible in the transcript via collab events.
+			void session
+				.compact(instructions, modeDef === undefined ? undefined : { mode: modeDef.name })
+				.catch((err: unknown) => deps.log.error(`compact failed: ${errorMessage(err)}`));
+			return { started: true };
+		}
+		case "retry": {
+			// A retry mid-stream would interleave two turns on one transcript.
+			if (session.isStreaming) throw new Error("Wait for the current response to finish or abort it before retrying.");
+			return { started: await session.retry() };
+		}
+		case "get-todos":
+			// Plain JSON phases read off the session branch — numbers and strings only.
+			return { phases: deps.getLatestTodoPhases(session.sessionManager.getBranch()) };
+		case "loop": {
+			switch (frame.action) {
+				case "enable":
+					// enable validates prompt/limit/condition; a throw answers `ok:false`.
+					loop.enable({ prompt: frame.prompt, limit: frame.limit, condition: frame.condition });
+					break;
+				case "disable":
+					loop.disable();
+					break;
+				case "pause":
+					loop.pause();
+					break;
+				case "resume":
+					loop.resume();
+					break;
+				case "status":
+					break;
+				default:
+					throw new Error(`unknown loop action: ${String(frame.action)}`);
+			}
+			return { loop: loop.status() };
+		}
+		case "goal": {
+			const runtime = session.goalRuntime;
+			switch (frame.action) {
+				case "set":
+				case "replace": {
+					const objective = typeof frame.objective === "string" ? frame.objective.trim() : "";
+					if (!objective) throw new Error(`goal ${frame.action} requires objective`);
+					if (frame.tokenBudget !== undefined && typeof frame.tokenBudget !== "number") {
+						throw new Error("goal tokenBudget must be a number");
+					}
+					const input = { objective, tokenBudget: frame.tokenBudget };
+					if (frame.action === "set") await runtime.createGoal(input);
+					else await runtime.replaceGoal(input);
+					break;
+				}
+				case "pause":
+					await runtime.pauseGoal();
+					break;
+				case "resume":
+					await runtime.resumeGoal();
+					break;
+				case "drop":
+					await runtime.dropGoal();
+					break;
+				case "budget":
+					// No number clears the cap; a non-number is a caller bug.
+					if (frame.tokenBudget !== undefined && typeof frame.tokenBudget !== "number") {
+						throw new Error("goal budget requires a numeric tokenBudget");
+					}
+					await runtime.onBudgetMutated(frame.tokenBudget ?? undefined);
+					break;
+				default:
+					throw new Error(`unknown goal action: ${String(frame.action)}`);
+			}
+			// SDK throws bubble (they carry good messages); reply is the post-op state.
+			return { goal: goalState(session) };
+		}
+		case "set-extended-context": {
+			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
+				throw new Error("set-extended-context requires a boolean enabled");
+			}
+			const next = frame.enabled ?? !(session.settings.get("extendedContext") === true);
+			session.settings.set("extendedContext", next);
+			return { extendedContext: session.settings.get("extendedContext") === true };
 		}
 		default:
 			throw new Error(`unknown command: ${String(frame.cmd)}`);
@@ -362,8 +497,9 @@ async function run(): Promise<void> {
 
 	// Static SDK imports run before stdout sealing and this catch boundary;
 	// load them here so native-binding failures still reach the supervisor as
-	// JSONL. Same for the role-model helpers: they transitively pull the SDK
-	// tree, which cannot load before this boundary in a broken-native install.
+	// JSONL. Same for the role-model helpers and the compact/todo/loop-condition
+	// modules: they transitively pull the SDK tree, which cannot load before
+	// this boundary in a broken-native install.
 	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
 	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
 	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
@@ -371,8 +507,20 @@ async function run(): Promise<void> {
 	const modelRoles = await import("@oh-my-pi/pi-coding-agent/config/model-roles");
 	const roleModels = await import("@oh-my-pi/pi-coding-agent/session/role-models");
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
+	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
+	const { getLatestTodoPhasesFromEntries } = await import("@oh-my-pi/pi-coding-agent/tools/todo");
+	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
 	const { createStubUIContext } = await import("./ui-stub");
-	const commandDeps: CommandDeps = { parseThinkingLevel: parseConfiguredThinkingLevel, modelRoles, roleModels, computeSessionContextBreakdown };
+	const commandDeps: CommandDeps = {
+		parseThinkingLevel: parseConfiguredThinkingLevel,
+		modelRoles,
+		roleModels,
+		computeSessionContextBreakdown,
+		compactModes: COMPACT_MODES,
+		getLatestTodoPhases: getLatestTodoPhasesFromEntries,
+		evaluateLoopCondition,
+		log,
+	};
 
 	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
 	// one session, and the global would freeze the first cwd.
@@ -409,6 +557,28 @@ async function run(): Promise<void> {
 		reportRuntimeError: () => {},
 	});
 
+	// Loop controller (contract §2): re-submits its prompt after each terminal
+	// turn; narrow adapter keeps the SDK session out of the controller's type.
+	const loop = new SessionLoop({
+		session: {
+			get isStreaming() {
+				return session.isStreaming;
+			},
+			get isCompacting() {
+				return session.isCompacting;
+			},
+			get hasPostPromptWork() {
+				return session.hasPostPromptWork;
+			},
+			prompt: text => session.prompt(text),
+			subscribe: listener => session.subscribe(listener),
+			getCwd: () => session.sessionManager.getCwd(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+			conditionTimeoutMs: () => settings.get("loop.conditionTimeoutMs") ?? 120_000,
+		},
+		evaluate: evaluateLoopCondition,
+	});
+
 	const ctx = buildCollabCtx(session, eventBus);
 	const host = new CollabHost(ctx);
 	await host.start(config.relayUrl, config.webUrl);
@@ -431,6 +601,9 @@ async function run(): Promise<void> {
 		if (stopping) return;
 		stopping = true;
 		log.info(`stopping (${reason})`);
+		// Kill loop timers first: an iteration firing mid-shutdown would prompt
+		// a disposing session.
+		loop.dispose();
 		// The supervisor SIGKILLs 10 s after stop; never leave it to that.
 		const bail = setTimeout(() => {
 			log.warn("dispose did not finish in 9s; forcing exit");
@@ -466,7 +639,7 @@ async function run(): Promise<void> {
 			return;
 		}
 		try {
-			const data = await executeCommand(session, frame, commandDeps);
+			const data = await executeCommand(session, frame, commandDeps, loop);
 			respond({ t: "cmd-result", reqId: frame.reqId, ok: true, data });
 		} catch (err) {
 			log.warn(`command ${frame.cmd} failed: ${errorMessage(err)}`);

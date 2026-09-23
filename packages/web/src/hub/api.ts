@@ -87,6 +87,72 @@ export interface AgentState {
 	models: AgentModel[];
 	/** Chat-section roles with their resolved assignments. */
 	roles: AgentRole[];
+	/** Whether the session reads beyond the default context window. */
+	extendedContext: boolean;
+	/** Active goal-mode state; null when no goal exists. */
+	goal: GoalModeState | null;
+	/** Loop-controller status; null when the loop is disabled. */
+	loop: LoopStatus | null;
+}
+
+/** Lifecycle state of one todo task (agent `get-todos`, oh-my-pi todo tool). */
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+
+/** One task of a todo phase. */
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	/** When `status === "blocked"`, what the task is waiting for. */
+	blocker?: string;
+}
+
+/** One named group of tasks in the session's latest todo snapshot. */
+export interface TodoPhase {
+	name: string;
+	tasks: TodoItem[];
+}
+
+/** The session's tracked goal object (agent `get-state.goal.goal`). */
+export interface SessionGoal {
+	id: string;
+	objective: string;
+	status: "active" | "paused" | "budget-limited" | "complete" | "dropped";
+	tokenBudget?: number;
+	tokensUsed: number;
+	timeUsedSeconds: number;
+	createdAt: number;
+	updatedAt: number;
+}
+
+/** Goal-mode state behind the goal modal (agent `get-state.goal`). */
+export interface GoalModeState {
+	enabled: boolean;
+	mode: "active" | "exiting";
+	reason?: "completed";
+	goal: SessionGoal;
+}
+
+/**
+ * Iteration or time budget of a session loop. Requests send only `kind` +
+ * the amount; the agent's status report adds `iterationsLeft` / `deadlineMs`.
+ */
+export type LoopLimit =
+	| { kind: "iterations"; iterations: number; iterationsLeft?: number }
+	| { kind: "duration"; durationMs: number; deadlineMs?: number };
+
+/** Shell command re-evaluated before each loop iteration. */
+export interface LoopCondition {
+	/** Continue while the command succeeds (`until: false`) or until it succeeds (`until: true`). */
+	command: string;
+	until: boolean;
+}
+
+/** Loop-controller status behind the loop modal (agent `get-state.loop`). */
+export interface LoopStatus {
+	state: "waiting" | "running" | "paused";
+	prompt?: string;
+	limit?: LoopLimit;
+	condition?: LoopCondition;
 }
 
 export const TOKEN_KEY = "omp-hub.token";
@@ -372,6 +438,92 @@ export async function setThinking(id: string, level: string): Promise<{ thinking
 		body: JSON.stringify({ level }),
 	});
 	return { thinkingLevel: reply.thinkingLevel };
+}
+
+/**
+ * Start compacting the session context (agent `compact`). The command is
+ * background dispatch on the agent — the reply only confirms the start; the
+ * summary itself streams into the transcript. Dispatch semantics as
+ * {@link getAgentState}; a bad mode/instructions surface as 400.
+ */
+export async function postCompact(
+	id: string,
+	opts: { instructions?: string; mode?: string } = {},
+): Promise<void> {
+	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/compact`, {
+		method: "POST",
+		body: JSON.stringify(opts),
+	});
+}
+
+/**
+ * Retry the session's last failed turn (agent `retry`). The hub answers 409
+ * with the agent's message when there is nothing to retry or a response is
+ * still streaming.
+ */
+export async function postRetry(id: string): Promise<void> {
+	await api<{ ok: true; started: boolean }>(`/api/sessions/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+/**
+ * The session's latest todo phases (agent `get-todos`), a plain read of the
+ * todo snapshots on the active branch. Empty when the session never created a
+ * todo list.
+ */
+export async function getTodos(id: string): Promise<TodoPhase[]> {
+	const reply = await api<{ ok: true; phases: TodoPhase[] }>(`/api/sessions/${encodeURIComponent(id)}/todos`);
+	return reply.phases;
+}
+
+export type LoopAction = "enable" | "disable" | "pause" | "resume" | "status";
+
+/**
+ * Drive the session's loop controller (agent `loop`): `enable` starts (or
+ * re-configures) a repeating prompt, the other actions manage it. The reply
+ * carries the controller status after the action, null when disabled. Errors
+ * (bad action, malformed limit/condition) surface as 400.
+ */
+export async function postLoop(
+	id: string,
+	input: { action: LoopAction; prompt?: string; limit?: LoopLimit; condition?: LoopCondition },
+): Promise<LoopStatus | null> {
+	const reply = await api<{ ok: true; loop: LoopStatus | null }>(`/api/sessions/${encodeURIComponent(id)}/loop`, {
+		method: "POST",
+		body: JSON.stringify(input),
+	});
+	return reply.loop;
+}
+
+export type GoalAction = "set" | "replace" | "pause" | "resume" | "drop" | "budget";
+
+/**
+ * Drive the session's goal runtime (agent `goal`): set/replace the objective,
+ * pause/resume/drop it, or move its token budget. The reply carries the
+ * goal-mode state after the action, null when no goal remains. Agent-side SDK
+ * errors (missing objective, no goal to resume, …) surface as 400 with the
+ * SDK's own message.
+ */
+export async function postGoal(
+	id: string,
+	input: { action: GoalAction; objective?: string; tokenBudget?: number },
+): Promise<GoalModeState | null> {
+	const reply = await api<{ ok: true; goal: GoalModeState | null }>(`/api/sessions/${encodeURIComponent(id)}/goal`, {
+		method: "POST",
+		body: JSON.stringify(input),
+	});
+	return reply.goal;
+}
+
+/**
+ * Turn the session's extended-context setting on or off; omit `enabled` to
+ * toggle. Returns the resulting state.
+ */
+export async function postExtendedContext(id: string, opts: { enabled?: boolean } = {}): Promise<boolean> {
+	const reply = await api<{ ok: true; extendedContext: boolean }>(
+		`/api/sessions/${encodeURIComponent(id)}/extended-context`,
+		{ method: "POST", body: JSON.stringify(opts) },
+	);
+	return reply.extendedContext;
 }
 
 /** One browsable child directory of a machine listing (protocol §2 `DirListing`). */

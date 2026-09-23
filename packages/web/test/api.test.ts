@@ -7,15 +7,21 @@ import {
 	clearToken,
 	getMachineSessions,
 	getMachines,
+	getTodos,
 	HubApiError,
 	listMachineDirectories,
 	listMachineProfiles,
 	navigateTree,
+	postCompact,
+	postExtendedContext,
+	postGoal,
+	postLoop,
+	postRetry,
 	setModel,
 	setToken,
 	startSession,
 } from "../src/hub/api";
-import type { SessionRecord } from "../src/hub/api";
+import type { GoalModeState, SessionRecord, TodoPhase } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; init: RequestInit | undefined }[] = [];
@@ -246,10 +252,182 @@ describe("hub api", () => {
 
 	test("listMachineDirectories omits the query for the machine home", async () => {
 		setToken("t0k3n");
-		stubFetch(() => json({ ok: true, listing: { path: "/home/dev", parent: "/home", entries: [], truncated: false } }));
+		stubFetch(() => json({ path: "/home/dev", parent: "/home", entries: [], truncated: false }));
 
 		await listMachineDirectories("m1");
 
 		expect(calls[0].url).toBe("/api/machines/m1/fs");
+	});
+
+	test("postCompact posts the mode and instructions and resolves on ok", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true }));
+
+		await postCompact("s1", { mode: "soft", instructions: "keep the plan" });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/compact");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ mode: "soft", instructions: "keep the plan" });
+	});
+
+	test("postCompact sends an empty body object when no options are given", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true }));
+
+		await postCompact("s1");
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+	});
+
+	test("postRetry posts to the retry route", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, started: true }));
+
+		await postRetry("s1");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/retry");
+		expect(calls[0].init?.method).toBe("POST");
+	});
+
+	test("postRetry surfaces the 409 message as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "Wait for the current response to finish or abort it before retrying." }, 409));
+
+		const err = await postRetry("s1").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(409);
+		expect((err as HubApiError).message).toBe("Wait for the current response to finish or abort it before retrying.");
+	});
+
+	test("getTodos unwraps the phase list", async () => {
+		setToken("t0k3n");
+		const phases: TodoPhase[] = [
+			{
+				name: "setup",
+				tasks: [
+					{ content: "clone the repo", status: "completed" },
+					{ content: "install deps", status: "in_progress" },
+				],
+			},
+		];
+		stubFetch(() => json({ ok: true, phases }));
+
+		const result = await getTodos("s1");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/todos");
+		expect(result).toEqual(phases);
+	});
+
+	test("postLoop posts the action with limit and condition and unwraps the status", async () => {
+		setToken("t0k3n");
+		stubFetch(() =>
+			json({
+				ok: true,
+				loop: {
+					state: "running",
+					prompt: "fix the failing tests",
+					limit: { kind: "iterations", iterations: 10, iterationsLeft: 9 },
+					condition: { command: "bun test", until: true },
+				},
+			}),
+		);
+
+		const result = await postLoop("s1", {
+			action: "enable",
+			prompt: "fix the failing tests",
+			limit: { kind: "iterations", iterations: 10 },
+			condition: { command: "bun test", until: true },
+		});
+
+		expect(calls[0].url).toBe("/api/sessions/s1/loop");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			action: "enable",
+			prompt: "fix the failing tests",
+			limit: { kind: "iterations", iterations: 10 },
+			condition: { command: "bun test", until: true },
+		});
+		expect(result).toEqual({
+			state: "running",
+			prompt: "fix the failing tests",
+			limit: { kind: "iterations", iterations: 10, iterationsLeft: 9 },
+			condition: { command: "bun test", until: true },
+		});
+	});
+
+	test("postLoop unwraps a null status after disable", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, loop: null }));
+
+		const result = await postLoop("s1", { action: "disable" });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ action: "disable" });
+		expect(result).toBeNull();
+	});
+
+	test("postGoal posts the action with the objective and unwraps the state", async () => {
+		setToken("t0k3n");
+		const goal: GoalModeState = {
+			enabled: true,
+			mode: "active",
+			goal: {
+				id: "g1",
+				objective: "make the tests pass",
+				status: "active",
+				tokenBudget: 50_000,
+				tokensUsed: 1200,
+				timeUsedSeconds: 30,
+				createdAt: 1,
+				updatedAt: 2,
+			},
+		};
+		stubFetch(() => json({ ok: true, goal }));
+
+		const result = await postGoal("s1", { action: "set", objective: "make the tests pass", tokenBudget: 50_000 });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/goal");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			action: "set",
+			objective: "make the tests pass",
+			tokenBudget: 50_000,
+		});
+		expect(result).toEqual(goal);
+	});
+
+	test("postGoal unwraps a null state after drop and omits unset fields", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, goal: null }));
+
+		const result = await postGoal("s1", { action: "drop" });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ action: "drop" });
+		expect(result).toBeNull();
+	});
+
+	test("postExtendedContext posts the explicit switch and returns the resulting state", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, extendedContext: true }));
+
+		const result = await postExtendedContext("s1", { enabled: true });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/extended-context");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ enabled: true });
+		expect(result).toBe(true);
+	});
+
+	test("postExtendedContext sends an empty body for the toggle", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, extendedContext: false }));
+
+		const result = await postExtendedContext("s1");
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+		expect(result).toBe(false);
 	});
 });

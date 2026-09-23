@@ -94,10 +94,15 @@ Generic request/response control channel for web-driven host commands. hub→age
 
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
-  cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree",
+  cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree"
+     | "compact" | "retry" | "get-todos" | "loop" | "goal" | "set-extended-context",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
+                                                                // instructions, mode → compact
+                                                                // action, objective, tokenBudget → goal
+                                                                // prompt, limit, condition → loop
+                                                                // enabled → set-extended-context
 ```
 
 agent→hub:
@@ -125,6 +130,26 @@ interface AgentState {
     role: string; name: string;             // e.g. "smol", "Fast"
     model: { provider: string; id: string; name: string } | null;  // resolved assignment
   }[];
+  extendedContext: boolean;                 // session `extendedContext` setting
+  goal: SessionGoalState | null;            // active/paused goal; null when off
+  loop: LoopStatus | null;                  // host-side loop mode; null when off
+}
+```
+
+```ts
+interface SessionGoalState {                  // SDK GoalModeState projection
+  enabled: boolean;
+  mode: "active" | "exiting";
+  reason?: "completed";
+  goal: { status: string; objective: string; tokenBudget?: number; updatedAt: number } & Record<string, unknown>;
+}
+
+interface LoopStatus {
+  state: "waiting" | "running" | "paused";  // paused flag; else prompt set → running
+  prompt?: string;
+  limit?: { kind: "iterations"; iterations: number; iterationsLeft: number }
+        | { kind: "duration"; durationMs: number; deadlineMs: number };
+  condition?: { command: string; until: boolean };   // until=true → `--until` polarity
 }
 ```
 
@@ -155,6 +180,29 @@ interface AgentState {
   `editorText`. `aborted: true` means an in-flight turn was aborted — retry once settled.
   `summarize: true` records a branch summary; requires a model. The host broadcasts no
   tree-change frame: callers rebuild their transcript locally, and guests resync on reconnect.)
+- `compact {instructions?, mode?}` → `data: { started: true }`. Validates `mode` against the SDK's
+  compact modes (empty = default), then background-dispatches `session.compact` and replies
+  immediately — compaction is a model call and outlives the 15 s hub timeout. Progress and the
+  outcome arrive through the normal transcript/notice stream, not this channel. Errors after the
+  reply are logged host-side only.
+- `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
+  to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
+  The retried turn itself streams through the normal session channel.
+- `get-todos` → `data: { phases }`: todo phases rehydrated from the current transcript branch
+  (`TodoPhase[]` — plain JSON `{phase, tasks:[…]}` with per-task `status`), [] when none.
+- `loop {action, prompt?, limit?, condition?}` → `data: { loop: LoopStatus | null }`. Host-side
+  loop engine (session-host re-submits `prompt` after every terminal turn end): `enable` sets or
+  replaces prompt/limit/condition; `disable` clears; `pause` keeps config and drops the pending
+  resubmit; `resume` re-arms; `status` just reports. `limit` is `{iterations: N>0}` or
+  `{durationMs: N>0}`; exhaustion/expiry disables the loop. `condition` gates each subsequent
+  iteration on a shell command's exit status (`--while`: continue while it succeeds;
+  `--until`: continue while it fails).
+- `goal {action, objective?, tokenBudget?}` → `data: { goal: SessionGoalState | null }`.
+  `set` (requires non-empty `objective`) → `goalRuntime.createGoal`; `replace` → `replaceGoal`;
+  `pause` / `resume` / `drop` map to the runtime methods; `budget` → `onBudgetMutated(tokenBudget)`
+  (number or absent = clear). SDK precondition errors surface as `cmd-result` errors.
+- `set-extended-context {enabled?}` → `data: { extendedContext: boolean }`; omitted `enabled`
+  toggles. Affects model resolution for subsequent turns.
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -259,6 +307,12 @@ interface MachineRecord {
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
+| `POST /api/sessions/:id/compact` | `{instructions?, mode?}` → `{ ok: true }` (§2 `compact`); 400 non-string `instructions`/`mode` |
+| `POST /api/sessions/:id/retry` | → `{ ok: true, started }`; 409 on "nothing to retry" / streaming guard |
+| `GET /api/sessions/:id/todos` | → `{ ok: true, phases }` (§2 `get-todos`); same error set as `…/context` |
+| `POST /api/sessions/:id/loop` | `{action, prompt?, limit?, condition?}` → `{ ok: true, loop }` (§2 `loop`); 400 bad action/limit/condition |
+| `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
+| `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -284,9 +338,14 @@ parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
-{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree",
+{ t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree"
+     |"compact"|"retry"|"get-todos"|"loop"|"goal"|"set-extended-context",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
-  entryId?: string, summarize?: boolean }   // parameters pass through unvalidated;
+  entryId?: string, summarize?: boolean,
+  instructions?: string, mode?: string,
+  action?: string, objective?: string, tokenBudget?: number,
+  prompt?: string, limit?: object, condition?: object, enabled?: boolean }
+                                            // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation
 ```
 
@@ -324,6 +383,12 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/model` | model picker modal (drives `GET/POST …/agent-state`, `…/model`) |
 | `/thinking` | thinking-level picker (drives `…/agent-state`, `…/thinking`) |
 | `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
+| `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
+| `/retry` | retry the last failed agent turn (drives `POST …/retry`) |
+| `/todo` | todo list modal: phases/tasks with status chips (drives `GET …/todos`) |
+| `/goal` | goal mode modal: status card, set/replace objective + token budget, pause/resume/drop (drives `…/agent-state`, `POST …/goal`) |
+| `/loop` | loop mode modal: status card, prompt + iteration/duration limit + `--while`/`--until` gate, enable/disable/pause/resume (drives `…/agent-state`, `POST …/loop`) |
+| `/extended-context` | toggle extended context windows; bare = toggle, `on`/`off` forces (drives `POST …/extended-context`) |
 | `/settings` | settings modal: model + thinking + links + theme + display name |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/theme` | toggle light/dark (vendored theme store) |

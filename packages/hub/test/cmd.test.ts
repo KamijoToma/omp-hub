@@ -472,4 +472,308 @@ describe("session commands", () => {
 		const after = await api(main, `/api/sessions/${session.id}/agent-state`);
 		expect(after.status).toBe(409);
 	});
+
+	test("compact dispatches in the background and confirms the dispatch", async () => {
+		const agent = await connectAgent(main, "m-compact", "compact-machine");
+		const session = await liveSession(main, agent, "m-compact", "/srv/compact");
+
+		const response = api(main, `/api/sessions/${session.id}/compact`, {
+			method: "POST",
+			body: JSON.stringify({ instructions: "focus on the failing tests", mode: "block" }),
+		});
+		const frame = await answerCmd(agent, "compact", { ok: true, data: { started: true } });
+		expect(frame).toMatchObject({
+			t: "cmd",
+			id: session.id,
+			cmd: "compact",
+			instructions: "focus on the failing tests",
+			mode: "block",
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true });
+	});
+
+	test("compact validates instructions and mode types", async () => {
+		const agent = await connectAgent(main, "m-compact-bad", "compact-bad-machine");
+		const session = await liveSession(main, agent, "m-compact-bad", "/srv/compact-bad");
+
+		const badInstructions = await api(main, `/api/sessions/${session.id}/compact`, {
+			method: "POST",
+			body: JSON.stringify({ instructions: 7 }),
+		});
+		expect(badInstructions.status).toBe(400);
+		expect(await badInstructions.json()).toEqual({ error: "instructions must be a string" });
+
+		const badMode = await api(main, `/api/sessions/${session.id}/compact`, {
+			method: "POST",
+			body: JSON.stringify({ mode: { name: "block" } }),
+		});
+		expect(badMode.status).toBe(400);
+		expect(await badMode.json()).toEqual({ error: "mode must be a string" });
+	});
+
+	test("retry reports started, and nothing-to-retry conflicts map to 409", async () => {
+		const agent = await connectAgent(main, "m-retry", "retry-machine");
+		const session = await liveSession(main, agent, "m-retry", "/srv/retry");
+
+		const response = api(main, `/api/sessions/${session.id}/retry`, { method: "POST" });
+		const frame = await answerCmd(agent, "retry", { ok: true, data: { started: true } });
+		// No parameters: the frame is exactly the routing envelope.
+		expect(frame).toEqual({ t: "cmd", id: session.id, reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/), cmd: "retry" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, started: true });
+
+		const nothing = api(main, `/api/sessions/${session.id}/retry`, { method: "POST" });
+		await answerCmd(agent, "retry", { ok: false, error: "Nothing to retry." });
+		const conflict = await nothing;
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toEqual({ error: "Nothing to retry." });
+
+		const streaming = api(main, `/api/sessions/${session.id}/retry`, { method: "POST" });
+		await answerCmd(agent, "retry", {
+			ok: false,
+			error: "Wait for the current response to finish or abort it before retrying.",
+		});
+		const busy = await streaming;
+		expect(busy.status).toBe(409);
+		expect(await busy.json()).toEqual({ error: "Wait for the current response to finish or abort it before retrying." });
+	});
+
+	test("retry maps the agent's started:false to a 409 conflict", async () => {
+		const agent = await connectAgent(main, "m-retry-false", "retry-false-machine");
+		const session = await liveSession(main, agent, "m-retry-false", "/srv/retry-false");
+
+		const response = api(main, `/api/sessions/${session.id}/retry`, { method: "POST" });
+		await answerCmd(agent, "retry", { ok: true, data: { started: false } });
+		const settled = await response;
+		expect(settled.status).toBe(409);
+		expect(await settled.json()).toEqual({ error: "Nothing to retry." });
+	});
+
+	test("get-todos relays the branch phases without parameters", async () => {
+		const agent = await connectAgent(main, "m-todos", "todos-machine");
+		const session = await liveSession(main, agent, "m-todos", "/srv/todos");
+
+		const phases = [
+			{ title: "Setup", tasks: [{ text: "install deps", status: "done" }] },
+			{ title: "Work", tasks: [{ text: "implement routes", status: "in_progress" }] },
+		];
+		const response = api(main, `/api/sessions/${session.id}/todos`);
+		const frame = await answerCmd(agent, "get-todos", { ok: true, data: { phases } });
+		expect(frame).toEqual({ t: "cmd", id: session.id, reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/), cmd: "get-todos" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, phases });
+	});
+
+	test("loop forwards enable config and echoes the loop status", async () => {
+		const agent = await connectAgent(main, "m-loop", "loop-machine");
+		const session = await liveSession(main, agent, "m-loop", "/srv/loop");
+
+		const status = {
+			state: "running",
+			prompt: "keep polishing",
+			limit: { kind: "iterations", iterations: 3, iterationsLeft: 3 },
+			condition: { command: "bun test", until: true },
+		};
+		const response = api(main, `/api/sessions/${session.id}/loop`, {
+			method: "POST",
+			body: JSON.stringify({
+				action: "enable",
+				prompt: "keep polishing",
+				limit: { iterations: 3 },
+				condition: { command: "bun test", until: true },
+			}),
+		});
+		const frame = await answerCmd(agent, "loop", { ok: true, data: { loop: status } });
+		expect(frame).toMatchObject({
+			t: "cmd",
+			id: session.id,
+			cmd: "loop",
+			action: "enable",
+			prompt: "keep polishing",
+			limit: { iterations: 3 },
+			condition: { command: "bun test", until: true },
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, loop: status });
+
+		const statusResponse = api(main, `/api/sessions/${session.id}/loop`, {
+			method: "POST",
+			body: JSON.stringify({ action: "status" }),
+		});
+		const statusFrame = await answerCmd(agent, "loop", { ok: true, data: { loop: null } });
+		expect(statusFrame).toEqual({
+			t: "cmd",
+			id: session.id,
+			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
+			cmd: "loop",
+			action: "status",
+		});
+		expect(await (await statusResponse).json()).toEqual({ ok: true, loop: null });
+	});
+
+	test("loop validates action, limit, and condition shapes", async () => {
+		const agent = await connectAgent(main, "m-loop-bad", "loop-bad-machine");
+		const session = await liveSession(main, agent, "m-loop-bad", "/srv/loop-bad");
+		const post = (body: Record<string, unknown>): Promise<Response> =>
+			api(main, `/api/sessions/${session.id}/loop`, { method: "POST", body: JSON.stringify(body) });
+
+		const badAction = await post({ action: "frobnicate" });
+		expect(badAction.status).toBe(400);
+		expect(await badAction.json()).toEqual({ error: "action must be one of enable, disable, pause, resume, status" });
+
+		const missingAction = await post({ prompt: "keep going" });
+		expect(missingAction.status).toBe(400);
+
+		const zeroIterations = await post({ action: "enable", prompt: "keep going", limit: { iterations: 0 } });
+		expect(zeroIterations.status).toBe(400);
+		expect(await zeroIterations.json()).toEqual({ error: "invalid limit" });
+
+		const negativeDuration = await post({ action: "enable", limit: { durationMs: -5 } });
+		expect(negativeDuration.status).toBe(400);
+
+		const bothLimits = await post({ action: "enable", limit: { iterations: 2, durationMs: 100 } });
+		expect(bothLimits.status).toBe(400);
+
+		const stringLimit = await post({ action: "enable", limit: "3" });
+		expect(stringLimit.status).toBe(400);
+
+		const conditionWithoutUntil = await post({ action: "enable", condition: { command: "bun test" } });
+		expect(conditionWithoutUntil.status).toBe(400);
+		expect(await conditionWithoutUntil.json()).toEqual({ error: "invalid condition" });
+
+		const blankConditionCommand = await post({ action: "enable", condition: { command: "  ", until: true } });
+		expect(blankConditionCommand.status).toBe(400);
+
+		const nonBooleanUntil = await post({ action: "enable", condition: { command: "bun test", until: "yes" } });
+		expect(nonBooleanUntil.status).toBe(400);
+
+		const blankPrompt = await post({ action: "enable", prompt: "  " });
+		expect(blankPrompt.status).toBe(400);
+		expect(await blankPrompt.json()).toEqual({ error: "invalid prompt" });
+	});
+
+	test("goal forwards actions and surfaces SDK failures via cmd-result mapping", async () => {
+		const agent = await connectAgent(main, "m-goal", "goal-machine");
+		const session = await liveSession(main, agent, "m-goal", "/srv/goal");
+
+		const goal = { enabled: true, mode: "active", goal: { objective: "ship the release" } };
+		const response = api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "set", objective: "ship the release", tokenBudget: 120_000 }),
+		});
+		const frame = await answerCmd(agent, "goal", { ok: true, data: { goal } });
+		expect(frame).toMatchObject({
+			t: "cmd",
+			id: session.id,
+			cmd: "goal",
+			action: "set",
+			objective: "ship the release",
+			tokenBudget: 120_000,
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, goal });
+
+		const drop = api(main, `/api/sessions/${session.id}/goal`, { method: "POST", body: JSON.stringify({ action: "drop" }) });
+		const dropFrame = await answerCmd(agent, "goal", { ok: true, data: { goal: null } });
+		expect(dropFrame).toEqual({
+			t: "cmd",
+			id: session.id,
+			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
+			cmd: "goal",
+			action: "drop",
+		});
+		expect(await (await drop).json()).toEqual({ ok: true, goal: null });
+
+		// A budget without a number is the agent's call: its message wins (contract §3).
+		const budget = api(main, `/api/sessions/${session.id}/goal`, { method: "POST", body: JSON.stringify({ action: "budget" }) });
+		await answerCmd(agent, "goal", { ok: false, error: "budget requires a numeric tokenBudget" });
+		const failed = await budget;
+		expect(failed.status).toBe(500);
+		expect(await failed.json()).toEqual({ error: "budget requires a numeric tokenBudget" });
+	});
+
+	test("goal validates action, objective, and tokenBudget", async () => {
+		const agent = await connectAgent(main, "m-goal-bad", "goal-bad-machine");
+		const session = await liveSession(main, agent, "m-goal-bad", "/srv/goal-bad");
+
+		const badAction = await api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "win" }),
+		});
+		expect(badAction.status).toBe(400);
+		expect(await badAction.json()).toEqual({ error: "action must be one of set, replace, pause, resume, drop, budget" });
+
+		const missingObjective = await api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "set" }),
+		});
+		expect(missingObjective.status).toBe(400);
+		expect(await missingObjective.json()).toEqual({ error: "objective is required" });
+
+		const blankObjective = await api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "replace", objective: "   " }),
+		});
+		expect(blankObjective.status).toBe(400);
+		expect(await blankObjective.json()).toEqual({ error: "invalid objective" });
+
+		const negativeBudget = await api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "budget", tokenBudget: -1 }),
+		});
+		expect(negativeBudget.status).toBe(400);
+		expect(await negativeBudget.json()).toEqual({ error: "tokenBudget must be a non-negative number" });
+
+		const stringBudget = await api(main, `/api/sessions/${session.id}/goal`, {
+			method: "POST",
+			body: JSON.stringify({ action: "budget", tokenBudget: "many" }),
+		});
+		expect(stringBudget.status).toBe(400);
+	});
+
+	test("extended-context forwards enabled and relays the resulting state", async () => {
+		const agent = await connectAgent(main, "m-extctx", "extctx-machine");
+		const session = await liveSession(main, agent, "m-extctx", "/srv/extctx");
+
+		const response = api(main, `/api/sessions/${session.id}/extended-context`, {
+			method: "POST",
+			body: JSON.stringify({ enabled: true }),
+		});
+		const frame = await answerCmd(agent, "set-extended-context", { ok: true, data: { extendedContext: true } });
+		expect(frame).toEqual({
+			t: "cmd",
+			id: session.id,
+			reqId: expect.stringMatching(/^c_[0-9a-z]{10}$/),
+			cmd: "set-extended-context",
+			enabled: true,
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, extendedContext: true });
+
+		// No `enabled` key: the agent toggles and reports the new state.
+		const toggle = api(main, `/api/sessions/${session.id}/extended-context`, { method: "POST", body: JSON.stringify({}) });
+		const toggleFrame = await answerCmd(agent, "set-extended-context", { ok: true, data: { extendedContext: false } });
+		expect("enabled" in toggleFrame).toBe(false);
+		expect(await (await toggle).json()).toEqual({ ok: true, extendedContext: false });
+
+		const badEnabled = await api(main, `/api/sessions/${session.id}/extended-context`, {
+			method: "POST",
+			body: JSON.stringify({ enabled: "on" }),
+		});
+		expect(badEnabled.status).toBe(400);
+		expect(await badEnabled.json()).toEqual({ error: "enabled must be a boolean" });
+	});
 });

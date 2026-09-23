@@ -27,7 +27,8 @@ import { useThemePreference } from "../lib/theme";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
 import type { SessionRecord } from "./api";
-import type { CommandContext, ModalKind } from "./commands";
+import { errorText, postCompact, postExtendedContext, postRetry } from "./api";
+import type { CommandContext, CompactRequest, ModalKind } from "./commands";
 import {
 	commandQuery,
 	createComposerClient,
@@ -37,14 +38,17 @@ import {
 	transcriptJsonl,
 } from "./commands";
 import { ContextModal } from "./ContextModal";
+import { GoalModal } from "./GoalModal";
 import { HelpModal } from "./HelpModal";
 import { LinksModal } from "./LinksModal";
+import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
 import { RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
 import { ThinkingPicker } from "./ThinkingPicker";
+import { TodosModal } from "./TodosModal";
 
 /** Local notices never collide with the client's sequence (which starts at 1). */
 const LOCAL_NOTICE_BASE = 1_000_000;
@@ -160,8 +164,45 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
 	}, [record?.name, snap.header?.title, snap.state?.sessionName, snap.entries]);
 
+	// `/compact`, `/retry`, `/extended-context`: fire the hub command, toast the outcome.
+	const compactSession = useCallback(
+		(request: CompactRequest): void => {
+			void postCompact(sessionId, request).then(
+				() => notify("info", "compaction started"),
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify],
+	);
+
+	const retrySession = useCallback((): void => {
+		void postRetry(sessionId).then(
+			() => notify("info", "retrying last failed turn"),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
+	const setExtendedContext = useCallback(
+		(enabled?: boolean): void => {
+			void postExtendedContext(sessionId, { enabled }).then(
+				on => notify("info", `extended context ${on ? "on" : "off"}`),
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify],
+	);
+
 	// Latest command context, so the long-lived composer wrapper never sees a stale one.
-	const ctx: CommandContext = { openModal: setModal, toggleTheme, navigate, downloadDump, notify };
+	const ctx: CommandContext = {
+		openModal: setModal,
+		toggleTheme,
+		navigate,
+		downloadDump,
+		notify,
+		compactSession,
+		retrySession,
+		setExtendedContext,
+	};
 	const ctxRef = useRef(ctx);
 	useEffect(() => {
 		ctxRef.current = ctx;
@@ -374,6 +415,9 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 					onClose={closeModal}
 				/>
 			)}
+			{modal === "todos" && <TodosModal sessionId={sessionId} onClose={closeModal} />}
+			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
+			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "settings" && (
 				<SettingsModal
 					sessionId={sessionId}

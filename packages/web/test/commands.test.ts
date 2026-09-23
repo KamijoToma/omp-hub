@@ -13,6 +13,9 @@ import {
 	dumpFileName,
 	matchCommands,
 	parseCommand,
+	parseCompactArgs,
+	parseExtendedContextArg,
+	parseLoopLimit,
 	routeComposerText,
 	transcriptJsonl,
 	UNKNOWN_COMMAND_MESSAGE,
@@ -26,10 +29,22 @@ interface Trace {
 	paths: string[];
 	dumps: number;
 	notices: { level: Notice["level"]; message: string }[];
+	compacts: unknown[];
+	retries: number;
+	extendedContext: (boolean | undefined)[];
 }
 
 function makeContext(): { ctx: CommandContext; trace: Trace } {
-	const trace: Trace = { modals: [], themes: 0, paths: [], dumps: 0, notices: [] };
+	const trace: Trace = {
+		modals: [],
+		themes: 0,
+		paths: [],
+		dumps: 0,
+		notices: [],
+		compacts: [],
+		retries: 0,
+		extendedContext: [],
+	};
 	return {
 		trace,
 		ctx: {
@@ -42,6 +57,11 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 				trace.dumps += 1;
 			},
 			notify: (level, message) => trace.notices.push({ level, message }),
+			compactSession: request => trace.compacts.push(request),
+			retrySession: () => {
+				trace.retries += 1;
+			},
+			setExtendedContext: enabled => trace.extendedContext.push(enabled),
 		},
 	};
 }
@@ -69,7 +89,16 @@ describe("composer routing", () => {
 
 		expect(routeComposerText("fix the failing test", ctx)).toBe("passthrough");
 
-		expect(trace).toEqual({ modals: [], themes: 0, paths: [], dumps: 0, notices: [] });
+		expect(trace).toEqual({
+			modals: [],
+			themes: 0,
+			paths: [],
+			dumps: 0,
+			notices: [],
+			compacts: [],
+			retries: 0,
+			extendedContext: [],
+		});
 	});
 
 	test("only a leading slash starts a command", () => {
@@ -88,6 +117,12 @@ describe("composer routing", () => {
 			"model",
 			"thinking",
 			"rewind",
+			"compact",
+			"retry",
+			"todo",
+			"goal",
+			"loop",
+			"extended-context",
 			"settings",
 			"collab",
 			"theme",
@@ -103,6 +138,12 @@ describe("composer routing", () => {
 			{ text: "/MODEL", check: t => expect(t.modals).toEqual(["model"]) },
 			{ text: "/thinking", check: t => expect(t.modals).toEqual(["thinking"]) },
 			{ text: "/rewind", check: t => expect(t.modals).toEqual(["rewind"]) },
+			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
+			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
+			{ text: "/todo", check: t => expect(t.modals).toEqual(["todos"]) },
+			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
+			{ text: "/loop", check: t => expect(t.modals).toEqual(["loop"]) },
+			{ text: "/extended-context", check: t => expect(t.extendedContext).toEqual([undefined]) },
 			{ text: "/settings", check: t => expect(t.modals).toEqual(["settings"]) },
 			{ text: "/collab", check: t => expect(t.modals).toEqual(["links"]) },
 			{ text: "/theme", check: t => expect(t.themes).toBe(1) },
@@ -117,6 +158,42 @@ describe("composer routing", () => {
 			expect(trace.notices).toEqual([]);
 			check(trace);
 		}
+	});
+
+	test("compact arguments split into mode + instructions", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/compact soft clean up the auth module", ctx)).toBe("ran");
+		expect(trace.compacts).toEqual([{ mode: "soft", instructions: "clean up the auth module" }]);
+
+		const bare = makeContext();
+		expect(routeComposerText("/compact summarize the session so far", bare.ctx)).toBe("ran");
+		expect(bare.trace.compacts).toEqual([{ instructions: "summarize the session so far" }]);
+
+		const modeOnly = makeContext();
+		expect(routeComposerText("/compact remote", modeOnly.ctx)).toBe("ran");
+		expect(modeOnly.trace.compacts).toEqual([{ mode: "remote" }]);
+	});
+
+	test("snapcompact rejects instructions locally without dispatching", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/compact snapcompact keep the plan", ctx)).toBe("ran");
+
+		expect(trace.compacts).toEqual([]);
+		expect(trace.notices).toEqual([{ level: "warning", message: "snapcompact takes no instructions" }]);
+	});
+
+	test("extended-context accepts on/off and passes the rest through as a toggle", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/extended-context on", ctx)).toBe("ran");
+		expect(routeComposerText("/extended-context off", ctx)).toBe("ran");
+		expect(routeComposerText("/EXTENDED-CONTEXT ON", ctx)).toBe("ran");
+		expect(routeComposerText("/extended-context sometimes", ctx)).toBe("ran");
+
+		expect(trace.extendedContext).toEqual([true, false, true, undefined]);
+		expect(trace.notices).toEqual([]);
 	});
 
 	test("unknown slash words are noticed and report themselves as consumed", () => {
@@ -162,6 +239,58 @@ describe("composer routing", () => {
 		expect(matchCommands("th").map(cmd => cmd.name)).toEqual(["thinking", "theme"]);
 		expect(matchCommands("se").map(cmd => cmd.name)).toEqual(["settings"]);
 		expect(matchCommands("zz")).toEqual([]);
+	});
+});
+
+describe("session-op argument parsers", () => {
+	test("parseCompactArgs splits a leading mode from the instructions", () => {
+		expect(parseCompactArgs("")).toEqual({});
+		expect(parseCompactArgs("   ")).toEqual({});
+		expect(parseCompactArgs("remote")).toEqual({ mode: "remote" });
+		expect(parseCompactArgs("  SOFT   focus on the failing tests  ")).toEqual({
+			mode: "soft",
+			instructions: "focus on the failing tests",
+		});
+		// An unknown first word is instructions, not a mode — the whole text.
+		expect(parseCompactArgs("summarize the auth work")).toEqual({ instructions: "summarize the auth work" });
+		expect(parseCompactArgs("softly summarize")).toEqual({ instructions: "softly summarize" });
+	});
+
+	test("parseCompactArgs rejects snapcompact focus text", () => {
+		expect(parseCompactArgs("snapcompact")).toEqual({ mode: "snapcompact" });
+		expect(parseCompactArgs("snapcompact archive this")).toEqual({ error: "snapcompact takes no instructions" });
+	});
+
+	test("parseExtendedContextArg maps on/off and defaults to a toggle", () => {
+		expect(parseExtendedContextArg("")).toBeUndefined();
+		expect(parseExtendedContextArg("on")).toBe(true);
+		expect(parseExtendedContextArg("OFF")).toBe(false);
+		expect(parseExtendedContextArg("  on  ")).toBe(true);
+		expect(parseExtendedContextArg("maybe")).toBeUndefined();
+	});
+
+	test("parseLoopLimit reads iteration counts", () => {
+		expect(parseLoopLimit("10")).toEqual({ kind: "iterations", iterations: 10 });
+		expect(parseLoopLimit(" 1 ")).toEqual({ kind: "iterations", iterations: 1 });
+		expect(parseLoopLimit("0")).toBeNull();
+		expect(parseLoopLimit("-5")).toBeNull();
+		expect(parseLoopLimit("1.5")).toBeNull();
+	});
+
+	test("parseLoopLimit reads compact and compound durations", () => {
+		expect(parseLoopLimit("10m")).toEqual({ kind: "duration", durationMs: 600_000 });
+		expect(parseLoopLimit("90s")).toEqual({ kind: "duration", durationMs: 90_000 });
+		expect(parseLoopLimit("2h")).toEqual({ kind: "duration", durationMs: 7_200_000 });
+		expect(parseLoopLimit("1h30m")).toEqual({ kind: "duration", durationMs: 5_400_000 });
+		expect(parseLoopLimit("10 minutes")).toBeNull();
+	});
+
+	test("parseLoopLimit rejects junk and unknown units", () => {
+		expect(parseLoopLimit("")).toBeNull();
+		expect(parseLoopLimit("abc")).toBeNull();
+		expect(parseLoopLimit("10x")).toBeNull();
+		expect(parseLoopLimit("1.5h")).toBeNull();
+		expect(parseLoopLimit("10m5")).toBeNull();
 	});
 });
 
