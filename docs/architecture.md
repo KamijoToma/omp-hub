@@ -36,7 +36,7 @@ Headless daemon per machine. **No TUI is ever constructed.** Two process layers:
 main.ts (supervisor)                session-host.ts (one child process per session)
   hub-client.ts  ◀── JSONL stdio ──   createAgentSession({cwd, …})
   supervisor.ts                       CollabHost over a stub InteractiveModeContext
-                                      default-deny ExtensionUIContext (23 members)
+                                      default-deny ExtensionUIContext
 ```
 
 **Why process-per-session (not N sessions in one process):** omp's SDK has documented
@@ -57,7 +57,7 @@ isolation sidesteps all of it and adds crash containment. Evidence:
    - `autoApprove: true` ⇒ forced `tools.approvalMode: "yolo"` (headless precedent:
      `src/task/executor.ts:786-796` "Subagents run headless"). Policy knobs:
      `tools.approval.<tool>: allow|deny` honored in every mode.
-2. Install the **default-deny UI context** (all 23 `ExtensionUIContext` members; awaitables
+2. Install the **default-deny UI context** (all required `ExtensionUIContext` methods; awaitables
    resolve immediately: select→`undefined` (mapped to Deny upstream), confirm→`false`,
    input/editor/custom→`undefined`; everything else no-op; `theme` after `initTheme()`):
    - `setToolUIContext(ui, false)` (tools stay non-interactive; ask tool stays off),

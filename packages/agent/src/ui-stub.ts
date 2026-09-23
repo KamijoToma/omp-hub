@@ -9,8 +9,7 @@
  * (see session-host.ts) before the context is handed to tools/extensions.
  */
 
-import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
-import { theme as globalTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { theme as globalTheme, type ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
 
 export function createStubUIContext(): ExtensionUIContext {
 	return {
@@ -36,6 +35,7 @@ export function createStubUIContext(): ExtensionUIContext {
 		setTitle: () => {},
 		setEditorText: () => {},
 		pasteToEditor: () => {},
+		addAutocompleteProvider: () => {},
 		setEditorComponent: () => {},
 		setToolsExpanded: () => {},
 		get theme() {
