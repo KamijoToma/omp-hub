@@ -8,6 +8,7 @@
 
 import { stat } from "node:fs/promises";
 import { errorMessage, type Logger, type LogLevel } from "./log";
+import { defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
 
 /** docs/protocol.md §3 SessionStatus. */
 export type SessionStatus = "starting" | "live" | "exited" | "failed";
@@ -26,6 +27,8 @@ export interface SessionConfig {
 	cwd: string;
 	name?: string;
 	prompt?: string;
+	/** Named omp profile; validated against the machine before the child spawns. */
+	profile?: string;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -66,6 +69,8 @@ interface PendingCommand {
 export interface SupervisorOptions {
 	/** Session host entry point to spawn; defaults to `./session-host.ts`. */
 	hostEntry?: string;
+	/** omp profiles root for existence checks; defaults to `~/$PI_CONFIG_DIR|.omp/profiles`. */
+	profilesRoot?: string;
 }
 
 /** Child must exit within 10 s of stop; escalate to SIGKILL after that (protocol §4). */
@@ -91,6 +96,8 @@ export class Supervisor {
 	#log: Logger;
 	/** Session host entry point spawned for every child. */
 	#hostEntry: string;
+	/** omp profiles root backing profile existence checks. */
+	#profilesRoot: string;
 	/** In-flight `cmd` requests keyed by reqId (protocol §4). */
 	#pending = new Map<string, PendingCommand>();
 
@@ -98,6 +105,7 @@ export class Supervisor {
 		this.#handlers = handlers;
 		this.#log = log;
 		this.#hostEntry = options.hostEntry ?? new URL("./session-host.ts", import.meta.url).pathname;
+		this.#profilesRoot = options.profilesRoot ?? defaultProfilesRoot();
 	}
 
 	/** Sessions occupying a slot (starting or live). */
@@ -161,10 +169,39 @@ export class Supervisor {
 			return;
 		}
 
+		let profile: string | undefined;
+		try {
+			profile = normalizeProfileName(config.profile);
+		} catch (err) {
+			const message = errorMessage(err);
+			this.#log.error(`session ${config.id}: ${message}`);
+			this.#handlers.onError(config.id, message);
+			return;
+		}
+		// omp would create an unknown profile on first CLI use; a hub start with
+		// `autoApprove` and the profile's credentials must not mint one on a typo.
+		if (profile && !(await profileExists(profile, this.#profilesRoot))) {
+			const message = `profile "${profile}" not found on this machine`;
+			this.#log.error(`session ${config.id}: ${message}`);
+			this.#handlers.onError(config.id, message);
+			return;
+		}
+
 		const argv = [process.execPath, this.#hostEntry, "--config", JSON.stringify(config)];
 		let child: SessionChild;
 		try {
-			child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", cwd: config.cwd });
+			// The web selection fully determines the child's omp profile: ambient
+			// daemon-level OMP_PROFILE/PI_PROFILE never leaks into a session the hub
+			// started as "default", and a chosen profile overrides both. The child
+			// resolves these before any SDK import (pi-utils/dirs, module load).
+			const env: Record<string, string | undefined> = { ...process.env };
+			delete env.OMP_PROFILE;
+			delete env.PI_PROFILE;
+			if (profile) {
+				env.OMP_PROFILE = profile;
+				env.PI_PROFILE = profile;
+			}
+			child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", cwd: config.cwd, env });
 		} catch (err) {
 			const message = `failed to spawn session host: ${errorMessage(err)}`;
 			this.#log.error(`session ${config.id}: ${message}`);

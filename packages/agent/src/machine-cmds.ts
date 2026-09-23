@@ -9,6 +9,7 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { errorMessage } from "./log";
+import { listProfiles } from "./profiles";
 
 /** One browsable child directory of the listing root. */
 export interface DirEntry {
@@ -27,6 +28,12 @@ export interface DirListing {
 	truncated: boolean;
 }
 
+/** `list-profiles` payload: named omp profiles that exist on this machine. */
+export interface ProfileListing {
+	/** Valid profile names with an `agent` directory, sorted; `default` is implicit and never listed. */
+	profiles: string[];
+}
+
 /**
  * Upper bound on returned entries so a huge home directory cannot stall the
  * picker or the 15 s hub cmd budget (protocol §2).
@@ -40,7 +47,7 @@ export interface MachineCmdFrame {
 	path?: string;
 }
 
-export type MachineCmdResult = { ok: true; data: DirListing } | { ok: false; error: string };
+export type MachineCmdResult = { ok: true; data: DirListing | ProfileListing } | { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
 async function listDirs(dir: string): Promise<DirEntry[]> {
@@ -97,10 +104,19 @@ function fsError(err: unknown): string {
 
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
 export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineCmdResult> {
-	if (frame.cmd !== "list-dir") return { ok: false, error: `unknown machine command: ${frame.cmd}` };
-	try {
-		return { ok: true, data: await listDirectories(frame.path) };
-	} catch (err) {
-		return { ok: false, error: fsError(err) };
+	if (frame.cmd === "list-dir") {
+		try {
+			return { ok: true, data: await listDirectories(frame.path) };
+		} catch (err) {
+			return { ok: false, error: fsError(err) };
+		}
 	}
+	if (frame.cmd === "list-profiles") {
+		try {
+			return { ok: true, data: { profiles: await listProfiles() } };
+		} catch (err) {
+			return { ok: false, error: fsError(err) };
+		}
+	}
+	return { ok: false, error: `unknown machine command: ${frame.cmd}` };
 }

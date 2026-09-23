@@ -19,6 +19,8 @@ export interface SessionRecord {
 	machineName: string;
 	cwd: string;
 	name: string;
+	/** Named omp profile the session runs under; absent means the default profile. */
+	profile?: string;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -34,6 +36,7 @@ export interface CreateSessionInput {
 	machineName: string;
 	cwd: string;
 	name?: string;
+	profile?: string;
 }
 
 export interface SessionReadyInput {
@@ -73,6 +76,7 @@ export class SessionStore {
 			machineName: input.machineName,
 			cwd: input.cwd,
 			name: input.name?.trim() || path.basename(input.cwd) || input.cwd,
+			...(input.profile ? { profile: input.profile } : {}),
 			status: "starting",
 			startedAt: Date.now(),
 		};

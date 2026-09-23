@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
 import type { MachineRecord, SessionRecord, SessionStatus } from "./api";
-import { errorText, getMachines, getSessions, startSession, stopSession } from "./api";
+import { errorText, getMachines, getSessions, listMachineProfiles, startSession, stopSession } from "./api";
 import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { navigate } from "./router";
@@ -40,6 +40,8 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [cwd, setCwd] = useState("");
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
+	const [profiles, setProfiles] = useState<string[]>([]);
+	const [profile, setProfile] = useState("");
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -79,6 +81,27 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 		if (!connected.some(m => m.machineId === machineId)) setMachineId(connected[0]?.machineId ?? "");
 	}, [connected, machineId]);
 
+	// Profiles are machine-local state: refetch on machine switches and drop a
+	// stale selection. A listing failure leaves default-only, never blocks a start.
+	useEffect(() => {
+		let cancelled = false;
+		setProfile("");
+		if (!machineId) {
+			setProfiles([]);
+			return;
+		}
+		listMachineProfiles(machineId)
+			.then(found => {
+				if (!cancelled) setProfiles(found);
+			})
+			.catch(() => {
+				if (!cancelled) setProfiles([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [machineId]);
+
 	const submit = async (): Promise<void> => {
 		if (!machineId) {
 			setFormError("no connected machine to start on");
@@ -97,6 +120,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				cwd: target,
 				name: name.trim() || undefined,
 				prompt: prompt.trim() || undefined,
+				profile: profile || undefined,
 			});
 			setName("");
 			setPrompt("");
@@ -198,6 +222,23 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									))}
 								</select>
 							</label>
+							<label className="sh-field">
+								<span className="sh-field-label">omp profile (optional)</span>
+								<select
+									className="sh-input"
+									value={profile}
+									onChange={e => setProfile(e.target.value)}
+									disabled={!machineId}
+									title="named omp profile the session runs under"
+								>
+									<option value="">default</option>
+									{profiles.map(p => (
+										<option key={p} value={p}>
+											{p}
+										</option>
+									))}
+								</select>
+							</label>
 							<div className="sh-field">
 								<span className="sh-field-label">working directory</span>
 								<div className="hb-cwd-row">
@@ -289,6 +330,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 											<span className="hb-mono" title={s.cwd}>
 												{s.cwd}
 											</span>
+											{s.profile && (
+												<span className="hb-mono" title="omp profile">
+													{s.profile}
+												</span>
+											)}
 											<span className="hb-mono">{s.machineName}</span>
 											<span className="hb-mono">{relTime(s.startedAt)}</span>
 										</div>

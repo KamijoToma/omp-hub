@@ -53,7 +53,7 @@ export type AgentCommand =
 export type SessionCmdName = "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir";
+export type MachineCmdName = "list-dir" | "list-profiles";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;

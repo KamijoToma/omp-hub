@@ -3,7 +3,7 @@
  * {@link HubApiError}, and the exact `POST /api/sessions` body (docs/protocol.md §3).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearToken, getMachines, HubApiError, listMachineDirectories, navigateTree, setModel, setToken, startSession } from "../src/hub/api";
+import { clearToken, getMachines, HubApiError, listMachineDirectories, listMachineProfiles, navigateTree, setModel, setToken, startSession } from "../src/hub/api";
 import type { SessionRecord } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
@@ -89,6 +89,29 @@ describe("hub api", () => {
 		await startSession({ machineId: "m1", cwd: "/srv/app" });
 
 		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
+	test("startSession forwards the selected omp profile", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", profile: "work" });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			profile: "work",
+		});
+	});
+
+	test("listMachineProfiles unwraps the machine's profile list", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, profiles: ["personal", "work"] }));
+
+		const profiles = await listMachineProfiles("m1");
+
+		expect(calls[0].url).toBe("/api/machines/m1/profiles");
+		expect(profiles).toEqual(["personal", "work"]);
 	});
 
 	test("setModel posts provider/modelId and unwraps the role reply", async () => {
