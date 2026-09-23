@@ -103,6 +103,16 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 		// get-state reflects the toggled setting and the disabled loop.
 		const after = await cmd("c_ops09", { cmd: "get-state" });
 		expect(after.data).toMatchObject({ extendedContext: false, loop: null });
+
+		// clear-context (TUI `/clear` parity): succeeds on the empty session and
+		// the session survives — later commands still answer. droppedCount is the
+		// SDK's dropped-message count (0 on a fresh session).
+		const cleared = await cmd("c_ops10", { cmd: "clear-context" });
+		expect(cleared.ok).toBe(true);
+		expect(cleared.data).toMatchObject({ droppedCount: expect.any(Number) });
+		const afterClear = await cmd("c_ops11", { cmd: "get-state" });
+		expect(afterClear.ok).toBe(true);
+		expect(afterClear.data).toMatchObject({ extendedContext: false, loop: null });
 	} finally {
 		await supervisor.stopAll("ops test done");
 		relay.stop(true);

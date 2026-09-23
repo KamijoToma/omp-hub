@@ -448,6 +448,20 @@ export async function postRetry(id: string): Promise<void> {
 	await api<{ ok: true; started: boolean }>(`/api/sessions/${encodeURIComponent(id)}/retry`, { method: "POST" });
 }
 
+/**
+ * Clear the conversation context in place (agent `clear-context`, TUI `/clear`
+ * parity) and return the number of dropped messages. The session itself
+ * continues. The hub answers 409 with the agent's message while a response is
+ * still streaming.
+ */
+export async function postClearContext(id: string): Promise<number> {
+	const reply = await api<{ ok: true; droppedCount: number }>(
+		`/api/sessions/${encodeURIComponent(id)}/clear-context`,
+		{ method: "POST" },
+	);
+	return reply.droppedCount;
+}
+
 export type LoopAction = "enable" | "disable" | "pause" | "resume" | "status";
 
 /**

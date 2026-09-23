@@ -99,7 +99,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 ```ts
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "navigate-tree"
-     | "compact" | "retry" | "loop" | "goal" | "set-extended-context",
+     | "compact" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -205,6 +205,12 @@ interface LoopStatus {
   (number or absent = clear). SDK precondition errors surface as `cmd-result` errors.
 - `set-extended-context {enabled?}` → `data: { extendedContext: boolean }`; omitted `enabled`
   toggles. Affects model resolution for subsequent turns.
+- `clear-context` → `data: { droppedCount: number }`; drops the conversation in place (TUI
+  `/clear` parity): messages, queued steers, checkpoint state, provider sessions rotate.
+  Session id, title, and transcript file survive. Refused while a turn streams, a user
+  bash/eval runs, or the session is mid-transition → `ok:false` (409 via the
+  "Wait for the current response…" mapping). Older omp builds without the SDK method answer
+  `ok:false, "clear-context is not supported by this omp build"` (500).
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -320,6 +326,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/loop` | `{action, prompt?, limit?, condition?}` → `{ ok: true, loop }` (§2 `loop`); 400 bad action/limit/condition |
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
+| `POST /api/sessions/:id/clear-context` | → `{ ok: true, droppedCount }` (§2 `clear-context`); 409 streaming guard |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -346,7 +353,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"navigate-tree"
-     |"compact"|"retry"|"loop"|"goal"|"set-extended-context",
+     |"compact"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -391,6 +398,8 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/thinking` | thinking-level picker (drives `…/agent-state`, `…/thinking`) |
 | `/rewind` | rewind picker: move the tree leaf to an earlier user message (drives `POST …/tree`) |
 | `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
+| `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
+| `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |
 | `/retry` | retry the last failed agent turn (drives `POST …/retry`) |
 | `/todo` | expand the docked todo panel (board derived client-side from the live transcript — no host traffic) |
 | `/goal` | goal mode modal: status card, set/replace objective + token budget, pause/resume/drop (drives `…/agent-state`, `POST …/goal`) |

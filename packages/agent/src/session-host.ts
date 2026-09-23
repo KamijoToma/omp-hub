@@ -351,6 +351,27 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			session.settings.set("extendedContext", next);
 			return { extendedContext: session.settings.get("extendedContext") === true };
 		}
+		case "clear-context": {
+			// TUI `/clear` parity (oh-my-pi `handleResetContextCommand`): settle an
+			// in-flight compaction, then drop the conversation in place. The SDK
+			// refuses while a response streams, a user bash/eval runs, or the
+			// session is mid-transition — its `undefined` answer surfaces below as
+			// a cmd-result error. Session id, title, and transcript file survive.
+			if (typeof session.resetSessionContext !== "function") {
+				throw new Error("clear-context is not supported by this omp build");
+			}
+			if (session.isCompacting) {
+				session.abortCompaction();
+				while (session.isCompacting) {
+					await Bun.sleep(10);
+				}
+			}
+			const result = await session.resetSessionContext();
+			if (!result) {
+				throw new Error("Wait for the current response to finish or abort it before clearing the context.");
+			}
+			return { droppedCount: result.droppedCount };
+		}
 		default:
 			throw new Error(`unknown command: ${String(frame.cmd)}`);
 	}

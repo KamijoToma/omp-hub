@@ -70,7 +70,8 @@ export type SessionCmdName =
 	| "retry"
 	| "loop"
 	| "goal"
-	| "set-extended-context";
+	| "set-extended-context"
+	| "clear-context";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";

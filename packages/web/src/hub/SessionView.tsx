@@ -27,7 +27,7 @@ import { useThemePreference } from "../lib/theme";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
 import type { SessionRecord } from "./api";
-import { errorText, postCompact, postExtendedContext, postRetry } from "./api";
+import { errorText, postClearContext, postCompact, postExtendedContext, postRetry, startSession } from "./api";
 import type { CommandContext, CompactRequest, ModalKind } from "./commands";
 import {
 	commandQuery,
@@ -175,6 +175,30 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		[sessionId, notify],
 	);
 
+	const clearContext = useCallback((): void => {
+		void postClearContext(sessionId).then(
+			dropped => notify("info", `context reset — ${dropped} message${dropped === 1 ? "" : "s"} dropped; session continues`),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
+	// `/new`: hub-level session orchestration (a session child cannot swap its
+	// own session file without tearing down the room/links identity), so the
+	// command re-starts from the current record and navigates to the new page.
+	const startNewSession = useCallback((): void => {
+		if (!record) {
+			notify("warning", "no hub record — start new sessions from the hub home");
+			return;
+		}
+		void startSession({ machineId: record.machineId, cwd: record.cwd, profile: record.profile }).then(
+			next => {
+				notify("info", "new session started");
+				navigate(`/s/${next.id}`);
+			},
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [record, notify]);
+
 	const retrySession = useCallback((): void => {
 		void postRetry(sessionId).then(
 			() => notify("info", "retrying last failed turn"),
@@ -208,6 +232,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		downloadDump,
 		notify,
 		compactSession,
+		clearContext,
+		startNewSession,
 		retrySession,
 		setExtendedContext,
 		showTodos,

@@ -31,6 +31,10 @@ export interface CommandContext {
 	notify(level: Notice["level"], message: string): void;
 	/** POST the compact command; `SessionView` reports the outcome as a notice. */
 	compactSession(request: CompactRequest): void;
+	/** POST the clear-context command; `SessionView` reports the dropped count as a notice. */
+	clearContext(): void;
+	/** Start a fresh session on the same machine and navigate to it; warns without a record. */
+	startNewSession(): void;
 	/** POST the retry command; `SessionView` reports the outcome as a notice. */
 	retrySession(): void;
 	/** POST the extended-context switch; `SessionView` reports the resulting state. */
@@ -143,6 +147,8 @@ export const COMMANDS: readonly CommandSpec[] = [
 			ctx.compactSession(parsed);
 		},
 	},
+	{ name: "clear", description: "clear the conversation context, keep the session", run: ctx => ctx.clearContext() },
+	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },
 	{ name: "retry", description: "retry the last failed turn", run: ctx => ctx.retrySession() },
 	{ name: "todo", description: "show the agent's todo list", run: ctx => ctx.showTodos() },
 	{ name: "goal", description: "session goal — set, pause, budget", run: ctx => ctx.openModal("goal") },

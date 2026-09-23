@@ -31,6 +31,7 @@ const RETRY_PATH_RE = /^\/api\/sessions\/([^/]+)\/retry$/;
 const LOOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/loop$/;
 const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
 const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
+const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
 const MACHINE_FS_PATH_RE = /^\/api\/machines\/([^/]+)\/fs$/;
 /** `/api/machines/:id/usage/<dashboard path>`; the rest is relayed verbatim. */
 const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
@@ -156,6 +157,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const extendedContext = EXTENDED_CONTEXT_PATH_RE.exec(route);
 	if (extendedContext && req.method === "POST") {
 		return setExtendedContext(decodeURIComponent(extendedContext[1]!), req, ctx);
+	}
+	const clearContext = CLEAR_CONTEXT_PATH_RE.exec(route);
+	if (clearContext && req.method === "POST") {
+		return clearSessionContext(decodeURIComponent(clearContext[1]!), ctx);
 	}
 
 	return json({ error: "not found" }, 404);
@@ -452,6 +457,17 @@ async function retrySession(id: string, ctx: ApiContext): Promise<Response> {
 	if (!outcome.ok) return outcome.response;
 	if (pick(outcome.data, "started") !== true) return json({ error: "Nothing to retry." }, 409);
 	return json({ ok: true, started: true });
+}
+
+/**
+ * Clear the conversation context in place (web `/clear`, TUI `/clear` parity).
+ * The host refuses while a turn streams — the agent's "Wait for the current
+ * response…" error maps to 409 in `cmdErrorStatus`.
+ */
+async function clearSessionContext(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "clear-context", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	return json({ ok: true, droppedCount: pick(outcome.data, "droppedCount") ?? 0 });
 }
 
 const LOOP_ACTIONS: Record<string, true> = { enable: true, disable: true, pause: true, resume: true, status: true };
