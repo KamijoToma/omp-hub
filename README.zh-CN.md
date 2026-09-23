@@ -106,6 +106,32 @@ HUB_TOKEN=dev-token bun run dev -- --hub ws://127.0.0.1:8080 --name dev-machine
 `oh-my-pi` 源码及其已安装的依赖。在 `packages/web` 执行 `bun run build` 可仅重建静态 UI，
 不启动 Hub。
 
+### 增量更新 Demo
+
+对于由 `omp ps` 以 `demohub`、`demoagent` 名称长期托管的 Demo，应从干净的工作区执行增量部署，
+不再为每个提交都重建并重启两个进程：
+
+```bash
+# 首次运行：指定当前实际运行版本对应的提交。
+bun packages/hub/src/deploy-demo.ts --from <当前部署提交> --dry-run
+bun packages/hub/src/deploy-demo.ts --from <当前部署提交>
+
+# 后续运行会读取 Git 公共目录中保存的分组件状态。
+bun packages/hub/src/deploy-demo.ts
+```
+
+部署脚本分别判断 Web、Hub 和 Agent 的变更。仅文档或测试变化时只推进部署状态，不重启进程。
+Web 资源先构建并校验到带版本的发布目录，再通过 `packages/web/dist` 切换；完成首次目录到符号链接
+的迁移后，仅 Web 更新为原子切换，不重启 Hub。Hub 和 Agent 仅在各自已加载代码发生变化时重启。
+
+执行任何破坏性操作前，脚本会查询 `/api/sessions`；存在 `starting` 或 `live` 会话时默认拒绝部署。
+`--force-active` 是显式维护覆盖，会终止这些会话。现有 `dist/` 的首次迁移也需要一次受保护的 Hub
+重启。`--rollback-web` 可切回上一个已验证的 Web 版本。仅当当前 `HEAD` 已经是实际运行版本时，
+才能使用 `--record-current`。
+
+脚本默认从受管 Hub 配置中私下读取本地地址和共享令牌；可用 `HUB_TOKEN` 和 `--hub-url` 覆盖。
+若进程名称或 `omp ps` 作用域不同，可使用 `--hub-service`、`--agent-service` 和 `--service-dir`。
+
 ## Docker（仅 Hub）
 
 本地部署时，把容器端口仅映射到宿主机的回环地址：

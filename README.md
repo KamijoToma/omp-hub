@@ -114,6 +114,36 @@ For type checking, run `bun install --frozen-lockfile && bun run typecheck` in e
 `oh-my-pi` checkout and its installed dependencies. `bun run build` in `packages/web`
 rebuilds the static UI without starting the hub.
 
+### Incremental demo updates
+
+For a long-lived demo supervised by `omp ps` as `demohub` and `demoagent`, deploy from a clean
+checkout instead of rebuilding and restarting both processes after every commit:
+
+```bash
+# First run: name the commit that is currently serving the demo.
+bun packages/hub/src/deploy-demo.ts --from <deployed-commit> --dry-run
+bun packages/hub/src/deploy-demo.ts --from <deployed-commit>
+
+# Later runs use the per-component state saved in the Git common directory.
+bun packages/hub/src/deploy-demo.ts
+```
+
+The deployer classifies changes independently for Web, Hub, and Agent. Documentation and test-only
+commits advance deployment state without restarting anything. Web assets are built and validated in
+a versioned release directory, then switched through `packages/web/dist`; after the one-time
+directory-to-symlink migration, Web-only updates are atomic and do not restart the Hub. Hub and
+Agent processes restart only when their loaded code changed.
+
+Before any disruptive action, the deployer queries `/api/sessions` and refuses to continue while a
+session is `starting` or `live`. `--force-active` is an explicit maintenance override and will
+terminate those sessions. The first migration of an existing `dist/` also needs one guarded Hub
+restart. `--rollback-web` switches back to the previous validated Web release. Use
+`--record-current` only when the checked-out `HEAD` is already the code actually running.
+
+The script reads the local URL and shared token privately from the supervised Hub specification;
+`HUB_TOKEN` and `--hub-url` override those values. Different process names or an alternate `omp ps`
+scope can be selected with `--hub-service`, `--agent-service`, and `--service-dir`.
+
 ## Docker (hub only)
 
 For a local-only deployment, build the hub image and bind it to loopback:
