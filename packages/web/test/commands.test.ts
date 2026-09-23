@@ -146,6 +146,31 @@ describe("composer routing", () => {
 		expect(routeComposerText("  /model", ctx)).toBe("ran");
 	});
 
+	test("the TUI continue shortcut ('.' or 'c') retries instead of prompting", () => {
+		const dot = makeContext();
+		expect(routeComposerText(".", dot.ctx)).toBe("ran");
+		expect(dot.trace.retries).toBe(1);
+
+		const c = makeContext();
+		expect(routeComposerText("c", c.ctx)).toBe("ran");
+		expect(c.trace.retries).toBe(1);
+
+		// The Composer trims before routing; padded input still shortcuts.
+		const padded = makeContext();
+		expect(routeComposerText(" . ", padded.ctx)).toBe("ran");
+		expect(padded.trace.retries).toBe(1);
+	});
+
+	test("the retry shortcut is exact — lookalikes stay plain prompts", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("C", ctx)).toBe("passthrough");
+		expect(routeComposerText("cat", ctx)).toBe("passthrough");
+		expect(routeComposerText("sure.", ctx)).toBe("passthrough");
+
+		expect(trace.retries).toBe(0);
+	});
+
 	test("the table covers exactly the §6 commands", () => {
 		expect(COMMANDS.map(cmd => cmd.name)).toEqual([
 			"model",

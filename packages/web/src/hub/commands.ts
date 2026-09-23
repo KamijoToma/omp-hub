@@ -309,10 +309,25 @@ export function matchCommands(query: string | null): readonly CommandSpec[] {
 export type ComposerRoute = "passthrough" | "ran" | "unknown" | "ignored";
 
 /**
+ * Exact composer texts that mirror the TUI's continue shortcut (oh-my-pi
+ * `input-controller`: submitting `.` or `c` resumes the agent). The collab
+ * prompt path has no hidden continue directive, so the hub routes them to the
+ * closest surface — `/retry` — instead of prompting the model with a literal
+ * dot. Case-sensitive, matching the TUI.
+ */
+const RETRY_SHORTCUT_TEXTS: readonly string[] = [".", "c"];
+
+/**
  * Resolve one composer submission. `"passthrough"` means the caller must send
  * the text to the agent; every other outcome consumed it locally.
  */
 export function routeComposerText(text: string, ctx: CommandContext): ComposerRoute {
+	// `.` / `c` mirror the TUI continue shortcut: consumed as a local retry,
+	// never sent to the model verbatim.
+	if (RETRY_SHORTCUT_TEXTS.includes(text.trim())) {
+		ctx.retrySession();
+		return "ran";
+	}
 	if (slashWord(text) === null) return "passthrough";
 	const parsed = parseCommand(text);
 	// A bare `/` is a draft in progress, not a command: neither sent nor noticed.
