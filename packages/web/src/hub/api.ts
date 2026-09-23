@@ -298,6 +298,34 @@ export async function setThinking(id: string, level: string): Promise<{ thinking
 	return { thinkingLevel: reply.thinkingLevel };
 }
 
+/** One browsable child directory of a machine listing (protocol §2 `DirListing`). */
+export interface DirEntry {
+	name: string;
+	path: string;
+}
+
+/** Machine directory listing behind the start-form picker (protocol §2 "Machine commands"). */
+export interface DirListing {
+	path: string;
+	parent: string | null;
+	entries: DirEntry[];
+	truncated: boolean;
+}
+
+/**
+ * Browsable directory children of `dirPath` on an agent machine; omit `dirPath`
+ * to start at the agent user's home. The hub answers 404 (unknown machine),
+ * 502 (agent offline), 504 (cmd timed out), 400 (bad path) — all
+ * {@link HubApiError}.
+ */
+export async function listMachineDirectories(machineId: string, dirPath?: string): Promise<DirListing> {
+	const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : "";
+	const reply = await api<{ ok: true; listing: DirListing }>(
+		`/api/machines/${encodeURIComponent(machineId)}/fs${query}`,
+	);
+	return reply.listing;
+}
+
 /** Human-readable message for an unknown thrown value. */
 export function errorText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);

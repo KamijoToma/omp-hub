@@ -620,6 +620,87 @@
 	color: var(--accent);
 }
 
+/* ---- directory picker (start form) ---- */
+.hb-cwd-row {
+	display: flex;
+	gap: 8px;
+}
+
+.hb-cwd-row .sh-input {
+	flex: 1;
+	min-width: 0;
+}
+
+.hb-cwd-row .sh-btn {
+	flex: none;
+}
+
+.hb-dirbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.hb-dir-crumbs {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	white-space: nowrap;
+}
+
+.hb-crumb {
+	flex: none;
+	padding: 3px 5px;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+}
+
+.hb-crumb:hover:not(:disabled) {
+	color: var(--accent);
+	background: var(--bg-overlay);
+}
+
+.hb-crumb:disabled {
+	color: var(--fg);
+	cursor: default;
+}
+
+/* separator belongs to each step after the first crumb */
+.hb-crumb + .hb-crumb::before {
+	content: "/";
+	margin-right: 2px;
+	color: var(--fg-faint);
+}
+
+.hb-dir-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.hb-dir-row .hb-pick-row {
+	flex: 1;
+	min-width: 0;
+}
+
+.hb-dir-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.hb-dir-note {
+	font-size: 12px;
+	color: var(--fg-muted);
+}
+
 .hb-busy {
 	display: flex;
 	align-items: center;

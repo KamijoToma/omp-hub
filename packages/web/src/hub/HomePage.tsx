@@ -5,7 +5,7 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Copy, LogOut, Play, Square } from "lucide-react";
+import { Copy, FolderOpen, LogOut, Play, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
@@ -13,6 +13,7 @@ import { relTime } from "../lib/format";
 import type { MachineRecord, SessionRecord, SessionStatus } from "./api";
 import { errorText, getMachines, getSessions, startSession, stopSession } from "./api";
 import { copyText } from "./clipboard";
+import { DirectoryPicker } from "./DirectoryPicker";
 import { navigate } from "./router";
 
 const POLL_MS = 2000;
@@ -38,6 +39,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [prompt, setPrompt] = useState("");
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [pickerOpen, setPickerOpen] = useState(false);
 	const [flash, setFlash] = useState<{ key: string; ok: boolean } | null>(null);
 
 	useEffect(() => {
@@ -182,18 +184,30 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									))}
 								</select>
 							</label>
-							<label className="sh-field">
+							<div className="sh-field">
 								<span className="sh-field-label">working directory</span>
-								<input
-									className="sh-input sh-input-mono"
-									type="text"
-									value={cwd}
-									onChange={e => setCwd(e.target.value)}
-									placeholder="/home/me/project"
-									spellCheck={false}
-									autoComplete="off"
-								/>
-							</label>
+								<div className="hb-cwd-row">
+									<input
+										className="sh-input sh-input-mono"
+										type="text"
+										value={cwd}
+										onChange={e => setCwd(e.target.value)}
+										placeholder="/home/me/project"
+										spellCheck={false}
+										autoComplete="off"
+									/>
+									<button
+										type="button"
+										className="sh-btn"
+										onClick={() => setPickerOpen(true)}
+										disabled={!machineId}
+										title="browse directories on the selected machine"
+									>
+										<FolderOpen size={14} aria-hidden="true" />
+										<span className="sh-btn-label">Browse</span>
+									</button>
+								</div>
+							</div>
 							<label className="sh-field">
 								<span className="sh-field-label">name (optional)</span>
 								<input
@@ -306,6 +320,17 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 					</section>
 				</div>
 			</div>
+			{pickerOpen && machineId && (
+				<DirectoryPicker
+					machineId={machineId}
+					initialPath={cwd.trim() || undefined}
+					onClose={() => setPickerOpen(false)}
+					onSelect={path => {
+						setCwd(path);
+						setPickerOpen(false);
+					}}
+				/>
+			)}
 		</div>
 	);
 }
