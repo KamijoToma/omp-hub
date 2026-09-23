@@ -113,6 +113,28 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 		const afterClear = await cmd("c_ops11", { cmd: "get-state" });
 		expect(afterClear.ok).toBe(true);
 		expect(afterClear.data).toMatchObject({ extendedContext: false, loop: null });
+
+		// shake (TUI `/shake` parity): local, model-free — the counts answer
+		// inline. A fresh session has nothing to shake; mode validation is the
+		// agent's, and an unknown mode fails the command instead of the session.
+		const shaken = await cmd("c_ops12", { cmd: "shake", mode: "images" });
+		expect(shaken.ok).toBe(true);
+		expect(shaken.data).toMatchObject({ mode: "images", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 });
+		const bareShake = await cmd("c_ops13", { cmd: "shake" });
+		expect(bareShake.ok).toBe(true);
+		expect(bareShake.data).toMatchObject({ mode: "elide" });
+		const badShake = await cmd("c_ops14", { cmd: "shake", mode: "explode" });
+		expect(badShake.ok).toBe(false);
+		expect(badShake.error).toContain("unknown shake mode");
+
+		// handoff (TUI `/handoff` parity): background dispatch — the reply only
+		// confirms the start (the run itself needs a model and logs its failure).
+		const handoff = await cmd("c_ops15", { cmd: "handoff", instructions: "keep the ops context" });
+		expect(handoff.ok).toBe(true);
+		expect(handoff.data).toEqual({ started: true });
+		// The host survives the backgrounded model-less handoff.
+		const afterHandoff = await cmd("c_ops16", { cmd: "get-state" });
+		expect(afterHandoff.ok).toBe(true);
 	} finally {
 		await supervisor.stopAll("ops test done");
 		relay.stop(true);

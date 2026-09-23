@@ -816,4 +816,79 @@ describe("session commands", () => {
 		expect(badEnabled.status).toBe(400);
 		expect(await badEnabled.json()).toEqual({ error: "enabled must be a boolean" });
 	});
+
+	test("shake replies with the agent's counts result", async () => {
+		const agent = await connectAgent(main, "m-shake", "shake-machine");
+		const session = await liveSession(main, agent, "m-shake", "/srv/shake");
+
+		const counts = { mode: "elide", toolResultsDropped: 2, blocksDropped: 1, tokensFreed: 8_400 };
+		const response = api(main, `/api/sessions/${session.id}/shake`, {
+			method: "POST",
+			body: JSON.stringify({ mode: "elide" }),
+		});
+		const frame = await answerCmd(agent, "shake", { ok: true, data: counts });
+		expect(frame).toMatchObject({ t: "cmd", id: session.id, cmd: "shake", mode: "elide" });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, result: counts });
+
+		// No `mode` key: the agent applies its default diet.
+		const bare = api(main, `/api/sessions/${session.id}/shake`, { method: "POST", body: JSON.stringify({}) });
+		const bareFrame = await answerCmd(agent, "shake", {
+			ok: true,
+			data: { mode: "images", toolResultsDropped: 0, blocksDropped: 0, imagesDropped: 3, tokensFreed: 0 },
+		});
+		expect("mode" in bareFrame).toBe(false);
+		expect(await (await bare).json()).toEqual({
+			ok: true,
+			result: { mode: "images", toolResultsDropped: 0, blocksDropped: 0, imagesDropped: 3, tokensFreed: 0 },
+		});
+
+		const badMode = await api(main, `/api/sessions/${session.id}/shake`, {
+			method: "POST",
+			body: JSON.stringify({ mode: 7 }),
+		});
+		expect(badMode.status).toBe(400);
+		expect(await badMode.json()).toEqual({ error: "mode must be a string" });
+	});
+
+	test("handoff confirms the background dispatch and maps guards to 409", async () => {
+		const agent = await connectAgent(main, "m-handoff", "handoff-machine");
+		const session = await liveSession(main, agent, "m-handoff", "/srv/handoff");
+
+		const response = api(main, `/api/sessions/${session.id}/handoff`, {
+			method: "POST",
+			body: JSON.stringify({ instructions: "preserve the failing-test state" }),
+		});
+		const frame = await answerCmd(agent, "handoff", { ok: true, data: { started: true } });
+		expect(frame).toMatchObject({
+			t: "cmd",
+			id: session.id,
+			cmd: "handoff",
+			instructions: "preserve the failing-test state",
+		});
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true });
+
+		const streaming = api(main, `/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({}) });
+		await answerCmd(agent, "handoff", {
+			ok: false,
+			error: "Wait for the current response to finish or abort it before handing off.",
+		});
+		expect((await streaming).status).toBe(409);
+
+		const generating = api(main, `/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({}) });
+		await answerCmd(agent, "handoff", { ok: false, error: "Handoff generation is already in progress." });
+		expect((await generating).status).toBe(409);
+
+		const badInstructions = await api(main, `/api/sessions/${session.id}/handoff`, {
+			method: "POST",
+			body: JSON.stringify({ instructions: 9 }),
+		});
+		expect(badInstructions.status).toBe(400);
+		expect(await badInstructions.json()).toEqual({ error: "instructions must be a string" });
+	});
 });

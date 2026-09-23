@@ -17,6 +17,7 @@ import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
 import type { computeSessionContextBreakdown } from "@oh-my-pi/pi-coding-agent/session/context-usage-runtime";
+import type { ShakeMode } from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import type { SessionEntry as StoredSessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -59,9 +60,9 @@ type CommandFrame = {
 	entryId?: string;
 	/** `navigate-tree`: build a branch summary (default false). */
 	summarize?: boolean;
-	/** `compact`: directed-summary instructions (optional). */
+	/** `compact`/`handoff`: directed-summary instructions (optional). */
 	instructions?: string;
-	/** `compact`: forced one-off compaction mode (`COMPACT_MODES` name). */
+	/** `compact`/`shake`: one-off mode name (`COMPACT_MODES` / `elide|images|thinking`). */
 	mode?: string;
 	/** `loop`/`goal`: action selector. */
 	action?: string;
@@ -491,6 +492,35 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			void session
 				.compact(instructions, modeDef === undefined ? undefined : { mode: modeDef.name })
 				.catch((err: unknown) => deps.log.error(`compact failed: ${errorMessage(err)}`));
+			return { started: true };
+		}
+		case "shake": {
+			// TUI `/shake` parity (oh-my-pi `builtin-lifecycle`): a local, model-free
+			// context diet — elide strips tool results + large blocks, images drops
+			// image blocks (including old snapcompact archive frames), thinking
+			// drops thinking blocks. Settles inside the cmd budget; the counts reply
+			// verbatim so the caller can format its own summary.
+			const mode = typeof frame.mode === "string" && frame.mode.trim() ? frame.mode.trim().toLowerCase() : "elide";
+			if (mode !== "elide" && mode !== "images" && mode !== "thinking") {
+				throw new Error(`unknown shake mode: ${mode} (known: elide, images, thinking)`);
+			}
+			return session.shake(mode);
+		}
+		case "handoff": {
+			// TUI `/handoff` parity: summarize the session into a handoff document
+			// and compact in place. A model call, so — like `compact` — caller-input
+			// failures are validated here and the run dispatches in the background;
+			// progress and the outcome arrive through the transcript stream.
+			const instructions = typeof frame.instructions === "string" && frame.instructions.trim() ? frame.instructions : undefined;
+			if (session.isStreaming) {
+				throw new Error("Wait for the current response to finish or abort it before handing off.");
+			}
+			if (session.isGeneratingHandoff) {
+				throw new Error("Handoff generation is already in progress.");
+			}
+			void session
+				.handoff(instructions)
+				.catch((err: unknown) => deps.log.error(`handoff failed: ${errorMessage(err)}`));
 			return { started: true };
 		}
 		case "retry": {

@@ -43,6 +43,10 @@ export interface CommandContext {
 	notify(level: Notice["level"], message: string): void;
 	/** POST the compact command; `SessionView` reports the outcome as a notice. */
 	compactSession(request: CompactRequest): void;
+	/** POST the shake command; `SessionView` reports the counts as a notice. */
+	shakeSession(mode: string): void;
+	/** POST the handoff command; `SessionView` reports the dispatch as a notice. */
+	handoffSession(instructions?: string): void;
 	/** POST the clear-context command; `SessionView` reports the dropped count as a notice. */
 	clearContext(): void;
 	/** Start a fresh session on the same machine and navigate to it; warns without a record. */
@@ -96,6 +100,24 @@ export function parseCompactArgs(args: string): CompactRequest | { error: string
 	if (!COMPACT_MODES.includes(first)) return { instructions: trimmed };
 	if (first === "snapcompact" && rest) return { error: "snapcompact takes no instructions" };
 	return rest ? { mode: first, instructions: rest } : { mode: first };
+}
+
+/**
+ * `/shake` modes (oh-my-pi `ShakeMode`). Only these three diets exist; the
+ * agent re-validates whatever the hub forwards.
+ */
+const SHAKE_MODES: readonly string[] = ["elide", "images", "thinking"];
+
+/**
+ * Parse `/shake [elide|images|thinking]`: a bare call takes the default
+ * `elide` diet (TUI `parseShakeMode` parity); anything beyond one mode word
+ * is a local error — the caller shows it instead of sending the request.
+ */
+export function parseShakeArgs(args: string): string | { error: string } {
+	const verb = args.trim().toLowerCase();
+	if (verb === "" || verb === "elide") return "elide";
+	if (SHAKE_MODES.includes(verb)) return verb;
+	return { error: `Unknown /shake mode "${verb}". Use elide, images, or thinking.` };
 }
 
 /** `/extended-context` argument polarity: `"on"` forces on, `"off"` forces off, anything else toggles. */
@@ -193,6 +215,20 @@ export const COMMANDS: readonly CommandSpec[] = [
 			}
 			ctx.compactSession(parsed);
 		},
+	},
+	{
+		name: "shake",
+		description: "drop heavy content — [elide|images|thinking]",
+		run: (ctx, args) => {
+			const mode = parseShakeArgs(args);
+			if (typeof mode === "string") ctx.shakeSession(mode);
+			else ctx.notify("warning", mode.error);
+		},
+	},
+	{
+		name: "handoff",
+		description: "summarize into a handoff document and compact — [instructions]",
+		run: (ctx, args) => ctx.handoffSession(args.trim() || undefined),
 	},
 	{ name: "clear", description: "clear the conversation context, keep the session", run: ctx => ctx.clearContext() },
 	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },

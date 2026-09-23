@@ -29,11 +29,14 @@ import type { ToolRenderHost } from "../tool-render";
 import type { MachineSession, SessionRecord } from "./api";
 import {
 	errorText,
+	formatShakeSummary,
 	getMachineSessions,
 	postClearContext,
 	postCompact,
 	postExtendedContext,
+	postHandoff,
 	postRetry,
+	postShake,
 	startSession,
 	uploadSessionFile,
 } from "./api";
@@ -238,11 +241,32 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
 	}, [record?.name, snap.header?.title, snap.state?.sessionName, snap.entries]);
 
-	// `/compact`, `/retry`, `/extended-context`: fire the hub command, toast the outcome.
+	// `/compact`, `/shake`, `/handoff`, `/retry`, `/extended-context`: fire the
+	// hub command, toast the outcome.
 	const compactSession = useCallback(
 		(request: CompactRequest): void => {
 			void postCompact(sessionId, request).then(
 				() => notify("info", "compaction started"),
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify],
+	);
+
+	const shakeSession = useCallback(
+		(mode: string): void => {
+			void postShake(sessionId, mode).then(
+				result => notify("info", formatShakeSummary(result)),
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify],
+	);
+
+	const handoffSession = useCallback(
+		(instructions?: string): void => {
+			void postHandoff(sessionId, instructions).then(
+				() => notify("info", "handoff started — the document lands in the transcript"),
 				(err: unknown) => notify("error", errorText(err)),
 			);
 		},
@@ -379,6 +403,8 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		downloadDump,
 		notify,
 		compactSession,
+		shakeSession,
+		handoffSession,
 		clearContext,
 		startNewSession,
 		resumeSession,

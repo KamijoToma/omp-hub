@@ -9,18 +9,21 @@ import {
 	getMachines,
 	HubApiError,
 	listMachineDirectories,
+	formatShakeSummary,
 	listMachineProfiles,
 	navigateTree,
 	postCompact,
 	postExtendedContext,
 	postGoal,
+	postHandoff,
 	postLoop,
 	postRetry,
+	postShake,
 	setModel,
 	setToken,
 	startSession,
 } from "../src/hub/api";
-import type { GoalModeState, SessionRecord } from "../src/hub/api";
+import type { GoalModeState, SessionRecord, ShakeResult } from "../src/hub/api";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; init: RequestInit | undefined }[] = [];
@@ -277,6 +280,76 @@ describe("hub api", () => {
 		await postCompact("s1");
 
 		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+	});
+
+	test("postShake posts the mode and returns the agent's counts", async () => {
+		setToken("t0k3n");
+		const counts: ShakeResult = { mode: "elide", toolResultsDropped: 4, blocksDropped: 0, tokensFreed: 12_000 };
+		stubFetch(() => json({ ok: true, result: counts }));
+
+		const result = await postShake("s1", "elide");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/shake");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ mode: "elide" });
+		expect(result).toEqual(counts);
+	});
+
+	test("postShake sends an empty body object when no mode is given", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, result: { mode: "elide", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 } }));
+
+		await postShake("s1");
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+	});
+
+	test("postHandoff posts focus instructions and resolves on ok", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true }));
+
+		await postHandoff("s1", "preserve the migration plan");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/handoff");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ instructions: "preserve the migration plan" });
+	});
+
+	test("postHandoff sends an empty body object and surfaces 409 as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "Handoff generation is already in progress." }, 409));
+
+		const err = await postHandoff("s1").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(409);
+	});
+
+	test("formatShakeSummary mirrors the TUI operator lines", () => {
+		expect(formatShakeSummary({ mode: "elide", toolResultsDropped: 2, blocksDropped: 1, tokensFreed: 900 })).toBe(
+			"Shook 2 tool results + 1 block (~900 tokens freed).",
+		);
+		expect(formatShakeSummary({ mode: "elide", toolResultsDropped: 1, blocksDropped: 0, tokensFreed: 10 })).toBe(
+			"Shook 1 tool result (~10 tokens freed).",
+		);
+		expect(formatShakeSummary({ mode: "elide", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 })).toBe(
+			"Nothing to shake.",
+		);
+		expect(formatShakeSummary({ mode: "images", toolResultsDropped: 0, blocksDropped: 0, imagesDropped: 3, tokensFreed: 0 })).toBe(
+			"Dropped 3 images from this session.",
+		);
+		expect(formatShakeSummary({ mode: "images", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 })).toBe(
+			"No images found in this session.",
+		);
+		expect(
+			formatShakeSummary({ mode: "thinking", toolResultsDropped: 0, blocksDropped: 0, thinkingBlocksDropped: 7, tokensFreed: 2_100 }),
+		).toBe("Dropped 7 thinking blocks from this session (~2100 tokens freed).");
+		expect(formatShakeSummary({ mode: "thinking", toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 })).toBe(
+			"No thinking blocks found in this session.",
+		);
 	});
 
 	test("postRetry posts to the retry route", async () => {
