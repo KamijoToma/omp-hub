@@ -428,6 +428,90 @@
 	white-space: nowrap;
 }
 
+/* ---- todo panel docked above the composer (state: hub/todo-board.ts) ---- */
+.hb-todo {
+	/* Same --tv-* bridge as .tv-card in tool-render.css so the reused
+	   tv-todo/tv-task classes resolve outside a tool card. */
+	--tv-fg: var(--fg, var(--text, oklch(0.92 0.01 307)));
+	--tv-muted: var(--fg-muted, var(--muted, oklch(0.71 0.016 307)));
+	--tv-faint: var(--fg-faint, var(--dim, oklch(0.53 0.018 307)));
+	--tv-accent: var(--accent, oklch(0.674 0.23 341));
+	--tv-ok: var(--ok, var(--success, oklch(0.76 0.14 150)));
+	--tv-border: var(--border, oklch(1 0 0 / 9%));
+	--tv-mono: var(--font-mono, ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace);
+
+	max-width: 880px;
+	margin: 0 auto 6px;
+	overflow: hidden;
+	color: var(--tv-fg);
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	font-family: var(--tv-mono);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.hb-todo-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 10px;
+	text-align: left;
+	color: var(--fg-muted);
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+.hb-todo-head:hover {
+	background: color-mix(in oklch, var(--tv-fg) 4%, transparent);
+}
+
+.hb-todo-head:focus-visible {
+	outline: 2px solid var(--ring, oklch(0.817 0.112 205 / 70%));
+	outline-offset: -2px;
+}
+
+.hb-todo-label {
+	flex: none;
+	font: 500 10.5px / 1.5 var(--tv-mono);
+	letter-spacing: 0.08em;
+	color: var(--tv-accent);
+}
+
+.hb-todo-progress {
+	flex: none;
+	color: var(--tv-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-todo-current {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+	color: var(--tv-fg);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-todo-chevron {
+	flex: none;
+	margin-left: auto;
+	color: var(--fg-faint, var(--dim, oklch(0.53 0.018 307)));
+}
+
+.hb-todo-body {
+	max-height: min(240px, 30vh);
+	padding: 4px 10px 8px;
+	overflow-y: auto;
+	border-top: 1px solid var(--border);
+}
+
 /* ---- slash commands: dialogs ---- */
 .hb-modal-backdrop {
 	position: fixed;
@@ -978,6 +1062,11 @@
 		border-right: 0;
 		border-bottom: 0;
 		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+	}
+
+	.hb-todo {
+		max-width: none;
+		margin: 0 8px 6px;
 	}
 
 	.hb-palette-row {
