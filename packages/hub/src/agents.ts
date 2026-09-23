@@ -72,7 +72,8 @@ export type SessionCmdName =
 	| "loop"
 	| "goal"
 	| "set-extended-context"
-	| "clear-context";
+	| "clear-context"
+	| "upload-file";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
@@ -98,6 +99,10 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
+	/** `upload-file` client-supplied file name; the child sanitizes before writing (protocol §2). */
+	name?: string;
+	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
+	dataB64?: string;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */

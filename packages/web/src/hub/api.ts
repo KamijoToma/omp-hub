@@ -224,6 +224,24 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	return (await res.json()) as T;
 }
 
+/**
+ * Upload one binary attachment for a live session (protocol §3 `POST /api/sessions/:id/files`).
+ * Resolves with the machine-absolute path to reference (`@path`) in prompts; throws
+ * {@link HubApiError} on 400/404/409/413/502/504.
+ */
+export async function uploadSessionFile(id: string, file: File): Promise<{ path: string; bytes: number }> {
+	return api<{ ok: true; path: string; bytes: number }>(`/api/sessions/${encodeURIComponent(id)}/files`, {
+		method: "POST",
+		headers: {
+			// api() only defaults Content-Type when unset; keep the raw-body marker.
+			"Content-Type": "application/octet-stream",
+			// Header values are latin-1: percent-encode so non-ASCII names survive.
+			"X-Filename": encodeURIComponent(file.name),
+		},
+		body: file,
+	});
+}
+
 export async function getMachines(): Promise<MachineRecord[]> {
 	return (await api<{ machines: MachineRecord[] }>("/api/machines")).machines;
 }

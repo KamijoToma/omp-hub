@@ -35,6 +35,7 @@ import {
 	postExtendedContext,
 	postRetry,
 	startSession,
+	uploadSessionFile,
 } from "./api";
 import type { CommandContext, CompactRequest, ModalKind } from "./commands";
 import {
@@ -608,7 +609,11 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			>
 				<TodoPanel entries={snap.entries} open={todoOpen} onToggle={() => setTodoOpen(prev => !prev)} />
 				<SteeringQueueBar pending={steering.pending} extraQueued={steering.extraQueued} onFlush={flushSteering} />
-				<Composer client={composerClient} snapshot={snap} />
+				<Composer
+					client={composerClient}
+					snapshot={snap}
+					uploadFile={file => uploadSessionFile(sessionId, file)}
+				/>
 				{paletteOpen && (
 					<SlashPalette
 						commands={matches}
