@@ -54,15 +54,17 @@ or by attaching a real omp client (`omp join "<link>"`) to a live session.
 
 ## Quick start (local development, single machine)
 
-Prereqs: Bun ≥ 1.3.14, an omp auth store (`~/.omp`) with a working provider (or provider API keys
-in the environment), and the source checkout of the compatible omp SDK. The agent resolves SDK
-imports from a sibling `../oh-my-pi` checkout; it is not a standalone npm package. From the
-`omp-hub` repository root, if you do not already have that checkout:
+Prereqs: Bun ≥ 1.3.14, Rust/Cargo and the native build toolchain, an omp auth store (`~/.omp`)
+with a working provider (or provider API keys in the environment), and the source checkout of
+the compatible omp SDK. The agent resolves SDK imports from a sibling `../oh-my-pi` checkout;
+it is not a standalone npm package. From the `omp-hub` repository root, if you do not already
+have that checkout:
 
 ```bash
 git clone https://github.com/KamijoToma/oh-my-pi.git ../oh-my-pi
 git -C ../oh-my-pi checkout 7ae76f8e4daca0c8f409f61bcd514260cd522365
 bun --cwd=../oh-my-pi install --frozen-lockfile
+bun --cwd=../oh-my-pi run build:native
 mkdir -p /tmp/omp-hub-demo
 ```
 
