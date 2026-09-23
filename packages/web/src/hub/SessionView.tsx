@@ -43,12 +43,13 @@ import { HelpModal } from "./HelpModal";
 import { LinksModal } from "./LinksModal";
 import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
-import { RewindPicker } from "./RewindPicker";
+import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
 import { SteeringQueueBar } from "./SteeringQueueBar";
 import { ThinkingPicker } from "./ThinkingPicker";
+import { TreePicker } from "./TreePicker";
 import { useSteeringQueue } from "./steering-queue";
 import { TodoPanel, TODO_COLLAPSE_KEY } from "./TodoPanel";
 
@@ -219,6 +220,22 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		);
 	}, [sessionId, notify]);
 
+	// Per-turn "rewind here": the transcript rows carry the target prompt; the
+	// shared core (same flow as the /rewind picker) moves the host leaf and
+	// truncates the replica. Latest snapshot entries ride a ref so the callback
+	// identity stays stable for the memoized transcript rows.
+	const entriesRef = useRef(snap.entries);
+	entriesRef.current = snap.entries;
+	const rewindHere = useCallback(
+		(entryId: string): void => {
+			if (busyRef.current) notify("warning", "rewinding interrupts the running turn");
+			void rewindToEntry(sessionId, client, entriesRef.current, entryId).then(outcome => {
+				notify(outcome.kind === "moved" ? "info" : outcome.kind === "error" ? "error" : "warning", outcome.message);
+			});
+		},
+		[sessionId, client, notify],
+	);
+
 	const setExtendedContext = useCallback(
 		(enabled?: boolean): void => {
 			void postExtendedContext(sessionId, { enabled }).then(
@@ -377,6 +394,12 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 
 	const subCount = useMemo(() => snap.agents.filter(a => a.kind === "sub").length, [snap.agents]);
 
+	// Read-only links never offer the per-turn rewind affordance.
+	const rewind = useMemo(() => {
+		if (snap.readOnly) return undefined;
+		return { targets: rewindTargetMap(snap.entries), onRewind: rewindHere };
+	}, [snap.readOnly, snap.entries, rewindHere]);
+
 	// Task-card agent chips drill into the same drawer the rail uses.
 	const agentIds = useMemo(() => new Set(snap.agents.map(a => a.id)), [snap.agents]);
 	const toolHost = useMemo<ToolRenderHost>(
@@ -431,6 +454,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 							activeTools={snap.activeTools}
 							working={snap.working}
 							host={toolHost}
+							rewind={rewind}
 						/>
 					</div>
 				</section>
@@ -495,6 +519,9 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 					notify={notify}
 					onClose={closeModal}
 				/>
+			)}
+			{modal === "tree" && (
+				<TreePicker sessionId={sessionId} onResync={onRejoin} notify={notify} onClose={closeModal} />
 			)}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}

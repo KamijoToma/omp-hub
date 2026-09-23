@@ -13,10 +13,20 @@ import type { LoopLimit } from "./api";
 
 /**
  * Dialog a command opens; `SessionView` maps each kind to a component.
- * `"rewind"` opens from the slash table; `"context"` is the exception: the
- * header gauge opens it, no command does.
+ * `"rewind"` and `"tree"` open from the slash table; `"context"` is the
+ * exception: the header gauge opens it, no command does.
  */
-export type ModalKind = "model" | "thinking" | "rewind" | "goal" | "loop" | "settings" | "links" | "help" | "context";
+export type ModalKind =
+	| "model"
+	| "thinking"
+	| "rewind"
+	| "tree"
+	| "goal"
+	| "loop"
+	| "settings"
+	| "links"
+	| "help"
+	| "context";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
@@ -135,6 +145,12 @@ export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "model", description: "switch the session model", run: ctx => ctx.openModal("model") },
 	{ name: "thinking", description: "set the thinking level", run: ctx => ctx.openModal("thinking") },
 	{ name: "rewind", description: "rewind to an earlier message", run: ctx => ctx.openModal("rewind") },
+	{
+		name: "branch",
+		description: "rewind, keeping the old path as a branch (TUI /branch)",
+		run: ctx => ctx.openModal("rewind"),
+	},
+	{ name: "tree", description: "browse the session tree — switch branches", run: ctx => ctx.openModal("tree") },
 	{
 		name: "compact",
 		description: "compact the context — [mode] [instructions]",

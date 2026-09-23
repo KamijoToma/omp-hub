@@ -22,6 +22,7 @@
 /* ---- rows ---- */
 
 .tr-row {
+	position: relative;
 	display: grid;
 	grid-template-columns: 72px minmax(0, 1fr);
 	gap: 0 12px;
@@ -55,6 +56,42 @@
 .tr-body > .tr-md,
 .tr-body > .tr-text {
 	align-self: stretch;
+}
+
+/* ---- per-turn rewind affordance ---- */
+
+.tr-rewind {
+	position: absolute;
+	top: 3px;
+	right: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	color: var(--fg-muted);
+	background: var(--bg-overlay);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	opacity: 0;
+	transition: opacity 0.12s ease;
+}
+
+.tr-row:hover > .tr-rewind,
+.tr-rewind:focus-visible {
+	opacity: 1;
+}
+
+.tr-rewind:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+/* Touch has no hover: keep the affordance reachable. */
+@media (hover: none) {
+	.tr-rewind {
+		opacity: 1;
+	}
 }
 
 .tr-text {

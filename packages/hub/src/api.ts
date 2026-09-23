@@ -135,6 +135,9 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 		return setThinking(decodeURIComponent(thinking[1]!), req, ctx);
 	}
 	const tree = TREE_PATH_RE.exec(route);
+	if (tree && req.method === "GET") {
+		return sessionTree(decodeURIComponent(tree[1]!), ctx);
+	}
 	if (tree && req.method === "POST") {
 		return navigateTree(decodeURIComponent(tree[1]!), req, ctx);
 	}
@@ -392,6 +395,23 @@ async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<R
 
 	const outcome = await dispatchCmd(id, "set-thinking", { level }, ctx);
 	return outcome.ok ? json({ ok: true, thinkingLevel: pick(outcome.data, "thinkingLevel") }) : outcome.response;
+}
+
+/**
+ * Browsable session tree for the web `/tree` picker (agent `get-tree`): the
+ * host's full entry tree reduced to one-line previews, with the active leaf
+ * path marked. Read-only — switching leaves goes through `navigateTree`.
+ */
+async function sessionTree(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "get-tree", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({
+		ok: true,
+		leafId: pick(data, "leafId") ?? null,
+		truncated: pick(data, "truncated") ?? false,
+		nodes: Array.isArray(data["nodes"]) ? data["nodes"] : [],
+	});
 }
 
 /**
