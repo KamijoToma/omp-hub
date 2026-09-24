@@ -1566,20 +1566,245 @@
 	}
 }
 
-/* ---- session sidebar (switch sessions without leaving the page) ---- */
-.hb-nav {
-	width: 280px;
+/* ---- session frame: persistent rail + surface column ----
+ * The frame outlives session switches (only the keyed surface remounts);
+ * the rail is the two-state session drawer: a 44px always-visible icon
+ * strip with live status dots, expanding to the full 280px picker. */
+.hb-frame {
+	display: flex;
+	height: 100%;
+	min-height: 0;
+	background: var(--bg);
+}
+
+.hb-frame-main {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+}
+
+.hb-rail {
+	width: 44px;
 	flex: none;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
+	overflow: hidden;
 	border-right: 1px solid var(--border);
 	background: var(--bg);
+	transition: width 150ms ease-out;
 }
 
-.hb-nav-backdrop {
+.hb-rail-open {
+	width: 280px;
+}
+
+.hb-rail-toggle {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 32px;
+	margin: 8px 6px 2px;
+	color: var(--fg-muted);
+	background: none;
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+}
+
+.hb-rail-toggle:hover {
+	color: var(--fg);
+	background: var(--bg-raised);
+	border-color: var(--border);
+}
+
+.hb-rail-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	list-style: none;
+	margin: 0;
+	padding: 4px 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.hb-rail-row {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	aspect-ratio: 1;
+	padding: 0;
+	background: none;
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+}
+
+.hb-rail-row:hover {
+	background: var(--bg-raised);
+	border-color: var(--border);
+}
+
+.hb-rail-row.hb-rail-current,
+.hb-rail-row.hb-rail-current:hover {
+	background: var(--accent-muted);
+	border-color: var(--border-strong);
+}
+
+.hb-rail-glyph {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 8px;
+	color: var(--accent-fg);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.hb-rail-dot {
+	position: absolute;
+	right: 4px;
+	bottom: 4px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--fg-faint);
+	box-shadow: 0 0 0 2px var(--bg);
+}
+
+.hb-rail-dot-live {
+	background: var(--ok);
+}
+
+.hb-rail-dot-working,
+.hb-rail-dot-starting {
+	background: var(--accent);
+	animation: hb-pulse 1.2s ease-in-out infinite;
+}
+
+.hb-rail-dot-input {
+	background: var(--warn);
+	animation: hb-pulse 1s ease-in-out infinite;
+}
+
+.hb-rail-dot-failed {
+	background: var(--err);
+}
+
+.hb-rail-skel {
+	display: block;
+	width: 26px;
+	height: 26px;
+	margin: 0 auto;
+	border-radius: 8px;
+	background: var(--bg-raised);
+	animation: hb-pulse 1.2s ease-in-out infinite;
+}
+
+.hb-rail-home {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 32px;
+	margin: 4px 6px 8px;
+	color: var(--fg-muted);
+	background: none;
+	border: 0;
+	border-radius: var(--radius);
+}
+
+.hb-rail-home:hover {
+	color: var(--fg);
+	background: var(--bg-raised);
+}
+
+.hb-rail-backdrop {
 	display: none;
 }
+
+@keyframes hb-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-rail {
+		transition: none;
+	}
+
+	.hb-rail-dot-working,
+	.hb-rail-dot-starting,
+	.hb-rail-dot-input,
+	.hb-rail-skel,
+	.hb-skel {
+		animation: none;
+	}
+}
+
+/* ---- in-place session status (loading / starting / failed / exited) ---- */
+.hb-frame-status {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 16px;
+	overflow-y: auto;
+}
+
+.hb-status-card {
+	width: 100%;
+	max-width: 380px;
+	align-items: center;
+	text-align: center;
+}
+
+.hb-status-back {
+	margin-top: 4px;
+}
+
+.hb-status-skel {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 100%;
+	margin-top: 8px;
+}
+
+.hb-skel {
+	display: block;
+	height: 12px;
+	border-radius: var(--radius-sm);
+	background: var(--bg-raised);
+	animation: hb-pulse 1.2s ease-in-out infinite;
+}
+
+.hb-skel-short {
+	width: 60%;
+}
+
+.hb-status-id {
+	position: absolute;
+	right: 12px;
+	bottom: 10px;
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+/* ---- expanded rail picker body (reuses the hb-nav-* row styles below) ---- */
 
 .hb-nav-head {
 	display: flex;
@@ -1745,25 +1970,24 @@
 }
 
 @media (max-width: 768px) {
-	/* Overlay drawer over the transcript; `.sh-main` is positioned by shell.css
-	 * at this width, and the layering mirrors the agents rail. */
-	.sh-main {
+	/* The collapsed icon strip stays docked; the expanded picker overlays the
+	 * surface with a backdrop, mirroring the agents rail. */
+	.hb-frame {
 		position: relative;
 	}
 
-	.hb-nav {
+	.hb-rail-open {
 		position: absolute;
 		left: 0;
 		top: 0;
 		bottom: 0;
 		z-index: 30;
-		width: 280px;
 		max-width: 85vw;
 		border-right: 1px solid var(--border-strong);
 		box-shadow: var(--rail-mobile-shadow);
 	}
 
-	.hb-nav-backdrop {
+	.hb-rail-backdrop {
 		display: block;
 		position: absolute;
 		inset: 0;

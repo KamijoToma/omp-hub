@@ -9,7 +9,7 @@
  * editor sends `abort`, which interrupts the turn immediately and lets the
  * host's post-abort drain deliver the queued messages.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { GuestSnapshot } from "../lib/client";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type SessionEntry } from "../lib/wire";
 
@@ -73,19 +73,66 @@ export interface SteeringQueue {
 	recordQueued(text: string): void;
 }
 
-export function useSteeringQueue(snap: GuestSnapshot): SteeringQueue {
-	const [recorded, setRecorded] = useState<readonly PendingSteer[]>([]);
+// Recorded-but-undelivered steers, keyed by hub session id. Module-level so
+// the queue bar survives surface remounts: switching sessions keeps the
+// browser-local texts visible on return (the collab client itself stays warm
+// in the pool), instead of silently forgetting them at unmount.
+const recordedBySession = new Map<string, readonly PendingSteer[]>();
+const listenersBySession = new Map<string, Set<() => void>>();
+const EMPTY_PENDING: readonly PendingSteer[] = [];
+
+function getRecorded(sessionId: string): readonly PendingSteer[] {
+	return recordedBySession.get(sessionId) ?? EMPTY_PENDING;
+}
+
+function setRecorded(sessionId: string, next: readonly PendingSteer[]): void {
+	if (next === getRecorded(sessionId)) return;
+	recordedBySession.set(sessionId, next);
+	const listeners = listenersBySession.get(sessionId);
+	if (listeners) for (const listener of listeners) listener();
+}
+
+/** Number of recorded steers for a session (settling lags one effect tick at most). */
+export function steerPendingCount(sessionId: string): number {
+	return getRecorded(sessionId).length;
+}
+
+export function useSteeringQueue(sessionId: string, snap: GuestSnapshot): SteeringQueue {
+	const recorded = useSyncExternalStore(
+		listener => {
+			let listeners = listenersBySession.get(sessionId);
+			if (!listeners) {
+				listeners = new Set();
+				listenersBySession.set(sessionId, listeners);
+			}
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		() => getRecorded(sessionId),
+		() => getRecorded(sessionId),
+	);
+
+	const pending = useMemo(() => settlePendingSteers(recorded, snap), [recorded, snap]);
+	// Persist the settled list so delivery-drops and phase exits survive remounts.
+	useEffect(() => {
+		setRecorded(sessionId, pending);
+	}, [sessionId, pending]);
+
 	// Latest transcript length; read at record time so delivery matching only
 	// scans entries appended after the steer was queued.
 	const cursorRef = useRef(0);
 	cursorRef.current = snap.entries.length;
 
-	const pending = useMemo(() => settlePendingSteers(recorded, snap), [recorded, snap]);
-	const extraQueued = Math.max(0, (snap.state?.queuedMessageCount ?? 0) - pending.length);
+	const recordQueued = useCallback(
+		(text: string): void => {
+			setRecorded(sessionId, [...getRecorded(sessionId), { text, cursor: cursorRef.current }]);
+		},
+		[sessionId],
+	);
 
-	const recordQueued = useCallback((text: string): void => {
-		setRecorded(prev => [...prev, { text, cursor: cursorRef.current }]);
-	}, []);
+	const extraQueued = Math.max(0, (snap.state?.queuedMessageCount ?? 0) - pending.length);
 
 	return { pending, extraQueued, recordQueued };
 }

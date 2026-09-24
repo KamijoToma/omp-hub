@@ -61,7 +61,7 @@ function Shell(): ReactNode {
 	if (route.kind === "unknown") return null;
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
-	if (route.kind === "session") return <SessionPage key={route.id} id={route.id} />;
+	if (route.kind === "session") return <SessionPage id={route.id} />;
 	if (route.kind === "usage") return <UsagePage machineId={route.machineId} />;
 	return <HomePage onLogout={logout} />;
 }

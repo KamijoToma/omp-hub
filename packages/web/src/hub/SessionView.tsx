@@ -2,11 +2,14 @@
  * Live session surface for `/s/<id>`.
  *
  * This is the hub-side adaptation of the vendored `Session` component
- * (`src/guest/app.tsx`): it owns the `GuestClient` lifecycle for one collab
- * link and renders the same shell leaves — HeaderBar, Transcript, agents rail,
- * Composer, AgentDrawer, Banners, Toasts.
+ * (`src/guest/app.tsx`): it renders the shell leaves — HeaderBar, Transcript,
+ * agents rail, Composer, AgentDrawer, Banners, Toasts — for one session. The
+ * `GuestClient` itself is owned by the shared pool (`client-pool.ts`), so the
+ * surface can remount per switch while the replica (and its transcript) stays
+ * warm; page-level chrome (session rail, switcher dialog, shortcuts) lives in
+ * `SessionPage`.
  *
- * On top of that shell it hosts the web slash commands (docs/protocol.md §6).
+ * On top of the shell it hosts the web slash commands (docs/protocol.md §6).
  * The vendored `Composer` stays untouched: it receives a wrapped client whose
  * `sendPrompt` routes leading-slash text through `commands.ts` instead of the
  * relay, the composer wrapper (a plain `div` around `Composer`) mirrors the
@@ -21,8 +24,7 @@ import { Composer, isImeComposing } from "../components/shell/Composer";
 import { HeaderBar } from "../components/shell/HeaderBar";
 import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
-import { GuestClient } from "../lib/client";
-import type { Notice } from "../lib/client";
+import type { GuestClient } from "../lib/client";
 import { useThemePreference } from "../lib/theme";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
@@ -31,7 +33,6 @@ import {
 	errorText,
 	formatShakeSummary,
 	getMachineSessions,
-	getSessions,
 	postClearContext,
 	postCompact,
 	postExtendedContext,
@@ -52,6 +53,7 @@ import {
 	routeComposerText,
 	transcriptJsonl,
 } from "./commands";
+import { usePoolClient } from "./client-pool";
 import { ContextModal } from "./ContextModal";
 import { GoalModal } from "./GoalModal";
 import { HelpModal } from "./HelpModal";
@@ -60,31 +62,16 @@ import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
 import { ResumePicker } from "./ResumePicker";
 import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
-import { SessionSidebar, SessionSwitcherModal } from "./SessionSidebar";
 import { navigate } from "./router";
 import { SettingsModal } from "./SettingsModal";
-import {
-	alertText,
-	alertsEnabled,
-	deliverSystemAlerts,
-	diffSessionAlerts,
-	requestAlertPermission,
-	setAlertsEnabled,
-	startTitleFlash,
-	stopTitleFlash,
-	ALERT_POLL_MS,
-} from "./session-alerts";
 import { SlashPalette } from "./SlashPalette";
 import { SteeringQueueBar } from "./SteeringQueueBar";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { TreePicker } from "./TreePicker";
 import { useSteeringQueue } from "./steering-queue";
+import { pushToast, useLocalToasts } from "./toasts";
 import { TodoPanel, TODO_COLLAPSE_KEY } from "./TodoPanel";
 
-/** Local notices never collide with the client's sequence (which starts at 1). */
-const LOCAL_NOTICE_BASE = 1_000_000;
-/** Local notices kept around; `Toasts` shows at most the newest four. */
-const MAX_LOCAL_NOTICES = 20;
 /** Grace period before releasing the dump blob URL (some browsers start late). */
 const BLOB_URL_TTL_MS = 10_000;
 
@@ -97,29 +84,12 @@ export interface SessionViewProps {
 	record: SessionRecord | null;
 	displayName: string;
 	onLeave(): void;
+	/** Opens the page-level quick switcher (the `/sessions` slash command path). */
+	onOpenSwitcher(): void;
 }
 
-export function SessionView({ sessionId, link, record, displayName, onLeave }: SessionViewProps): ReactNode {
-	const [client, setClient] = useState<GuestClient | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	// Bumping re-mints the client for the same link (the Banners "Rejoin" action).
-	const [attempt, setAttempt] = useState(0);
-
-	useEffect(() => {
-		let next: GuestClient;
-		try {
-			next = new GuestClient(link, displayName);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			return;
-		}
-		next.connect();
-		setClient(next);
-		setError(null);
-		return () => next.close();
-	}, [link, displayName, attempt]);
-
-	const rejoin = useCallback(() => setAttempt(n => n + 1), []);
+export function SessionView({ sessionId, link, record, displayName, onLeave, onOpenSwitcher }: SessionViewProps): ReactNode {
+	const { client, error, rejoin } = usePoolClient(sessionId, link, displayName);
 
 	if (error) {
 		return (
@@ -137,7 +107,16 @@ export function SessionView({ sessionId, link, record, displayName, onLeave }: S
 		);
 	}
 	if (!client) return null;
-	return <Session client={client} sessionId={sessionId} record={record} onLeave={onLeave} onRejoin={rejoin} />;
+	return (
+		<Session
+			client={client}
+			sessionId={sessionId}
+			record={record}
+			onLeave={onLeave}
+			onRejoin={rejoin}
+			onOpenSwitcher={onOpenSwitcher}
+		/>
+	);
 }
 
 interface SessionProps {
@@ -146,14 +125,16 @@ interface SessionProps {
 	record: SessionRecord | null;
 	onLeave(): void;
 	onRejoin(): void;
+	onOpenSwitcher(): void;
 }
 
-function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps): ReactNode {
+function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
 	// Steering messages (TUI input-controller parity): a prompt submitted while
 	// the host agent streams queues host-side and stays visible here until it
 	// is delivered; an empty-editor Enter aborts so the queue delivers now.
-	const steering = useSteeringQueue(snap);
+	// Recorded texts live in the session-keyed store, so they survive switches.
+	const steering = useSteeringQueue(sessionId, snap);
 	const busy = snap.working || (snap.state?.isStreaming ?? false);
 	const hostQueued = snap.state?.queuedMessageCount ?? 0;
 	// Latest busy/steering state for the memoized composer intercept below.
@@ -162,8 +143,6 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	const steeringRef = useRef(steering);
 	steeringRef.current = steering;
 	const [railOpen, setRailOpen] = useState(false);
-	// Session switcher drawer (HeaderBar button / Esc / pick-the-current closes).
-	const [navOpen, setNavOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
 	// Composer text mirrored from the vendored textarea (which owns the draft state).
@@ -171,8 +150,6 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 	const [paletteIndex, setPaletteIndex] = useState(0);
 	// Set by Esc/blur/command-run; the next keystroke brings the palette back.
 	const [paletteDismissed, setPaletteDismissed] = useState(false);
-	const [localNotices, setLocalNotices] = useState<readonly Notice[]>([]);
-	const noticeSeqRef = useRef(0);
 	const autoOpenedRef = useRef(false);
 	const {
 		preference: themePreference,
@@ -180,109 +157,13 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 		setPreference: setThemePreference,
 	} = useThemePreference();
 
-	/** Toast: local notices ride the vendored `Toasts` list, newest last. */
-	const notify = useCallback((level: Notice["level"], message: string): void => {
-		noticeSeqRef.current += 1;
-		const notice: Notice = { id: LOCAL_NOTICE_BASE + noticeSeqRef.current, level, message, at: Date.now() };
-		setLocalNotices(prev => {
-			const next = [...prev, notice];
-			return next.length > MAX_LOCAL_NOTICES ? next.slice(-MAX_LOCAL_NOTICES) : next;
-		});
-	}, []);
+	// Local notices ride the module toast store (survives surface remounts)
+	// merged with the client's own notices in the vendored `Toasts` list.
+	const notify = pushToast;
 
 	const toggleTheme = useCallback((): void => {
 		setThemePreference(themeResolved === "dark" ? "light" : "dark");
 	}, [themeResolved, setThemePreference]);
-
-	// Ctrl+K (Cmd+K on macOS): the `/sessions` quick switcher, from anywhere on
-	// the page. Capture phase keeps it predictable against the composer palette.
-	useEffect(() => {
-		const onKeyDown = (e: KeyboardEvent): void => {
-			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
-				e.preventDefault();
-				e.stopPropagation();
-				setModal("sessions");
-			}
-		};
-		document.addEventListener("keydown", onKeyDown, true);
-		return () => document.removeEventListener("keydown", onKeyDown, true);
-	}, []);
-
-	// Esc closes the switcher drawer — unless a command dialog is open above,
-	// which owns the key through its own handler.
-	useEffect(() => {
-		if (!navOpen) return;
-		const onKeyDown = (e: KeyboardEvent): void => {
-			if (e.key !== "Escape" || modal !== null) return;
-			e.preventDefault();
-			e.stopPropagation();
-			setNavOpen(false);
-		};
-		document.addEventListener("keydown", onKeyDown, true);
-		return () => document.removeEventListener("keydown", onKeyDown, true);
-	}, [navOpen, modal]);
-
-	/**
-	 * Switch sessions in place: plain `navigate`, so the keyed SessionPage
-	 * remounts — the old collab client closes, the agent-side session keeps
-	 * running. Undelivered steering messages are browser-local and would be
-	 * lost, so say so before leaving.
-	 */
-	const switchSession = useCallback(
-		(nextId: string): void => {
-			if (nextId === sessionId) return;
-			if (steeringRef.current.pending.length > 0) {
-				notify("warning", "switching away drops queued steering messages");
-			}
-			setNavOpen(false);
-			navigate(`/s/${nextId}`);
-		},
-		[sessionId, notify],
-	);
-
-	// Cross-session alerts (drawer bell): a lightweight side poll of the hub
-	// listing that never touches React state — transitions surface as system
-	// notifications, or as toasts + a flashing title when permission is missing.
-	const [alertsOn, setAlertsOn] = useState(alertsEnabled);
-	const toggleAlerts = useCallback((): void => {
-		const next = !alertsOn;
-		setAlertsEnabled(next);
-		setAlertsOn(next);
-		if (!next) {
-			stopTitleFlash();
-			return;
-		}
-		void requestAlertPermission().then(permission => {
-			if (permission === "granted") notify("info", "session alerts on");
-			else if (permission === "unsupported") notify("warning", "alerts on — no notification support here, using toasts");
-			else notify("warning", "alerts on — notifications blocked, using toasts and the tab title");
-		});
-	}, [alertsOn, notify]);
-
-	useEffect(() => {
-		if (!alertsOn) return;
-		let cancelled = false;
-		let prev: SessionRecord[] | null = null;
-		const tick = (): void => {
-			getSessions().then(
-				next => {
-					if (cancelled) return;
-					const alerts = diffSessionAlerts(prev ?? next, next);
-					prev = next;
-					const remaining = deliverSystemAlerts(alerts, sessionId);
-					for (const alert of remaining) notify(alert.kind === "input" ? "warning" : "info", alertText(alert).title);
-					if (remaining.length > 0 && document.hidden) startTitleFlash(alertText(remaining[0]!).title);
-				},
-				() => {}, // registry errors stay silent; the drawer surfaces them
-			);
-		};
-		void tick();
-		const timer = setInterval(tick, ALERT_POLL_MS);
-		return () => {
-			cancelled = true;
-			clearInterval(timer);
-		};
-	}, [alertsOn, sessionId, notify]);
 
 	// `/dump`: the transcript snapshot as JSONL, handed to the browser as a download.
 	const downloadDump = useCallback((): void => {
@@ -466,7 +347,9 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 
 	// Latest command context, so the long-lived composer wrapper never sees a stale one.
 	const ctx: CommandContext = {
-		openModal: setModal,
+		// The `/sessions` command opens the page-level switcher; every other
+		// dialog is surface-local state.
+		openModal: kind => (kind === "sessions" ? onOpenSwitcher() : setModal(kind)),
 		toggleTheme,
 		navigate,
 		downloadDump,
@@ -641,9 +524,10 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 
 	const drawerAgent = selectedId != null ? snap.agents.find(a => a.id === selectedId) : undefined;
 	const closeModal = useCallback(() => setModal(null), []);
+	const localToasts = useLocalToasts();
 	const toasts = useMemo(
-		() => (localNotices.length === 0 ? snap.notices : [...snap.notices, ...localNotices]),
-		[snap.notices, localNotices],
+		() => (localToasts.length === 0 ? snap.notices : [...snap.notices, ...localToasts]),
+		[snap.notices, localToasts],
 	);
 
 	return (
@@ -654,23 +538,12 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 				railOpen={railOpen}
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
-				onOpenSessions={() => setNavOpen(true)}
 				onOpenModel={() => setModal("model")}
 				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
 			/>
 			<main className="sh-main">
-				{navOpen && (
-					<SessionSidebar
-						currentId={sessionId}
-						onHome={onLeave}
-						onClose={() => setNavOpen(false)}
-						onSwitch={switchSession}
-						alertsOn={alertsOn}
-						onToggleAlerts={toggleAlerts}
-					/>
-				)}
-				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
+				<section className="sh-content">
 					<div className="sh-transcript">
 						<Transcript
 							entries={snap.entries}
@@ -754,9 +627,6 @@ function Session({ client, sessionId, record, onLeave, onRejoin }: SessionProps)
 			)}
 			{modal === "resume" && record && (
 				<ResumePicker machineId={record.machineId} onResume={resumeEntry} onClose={closeModal} />
-			)}
-			{modal === "sessions" && (
-				<SessionSwitcherModal currentId={sessionId} onSwitch={switchSession} onClose={closeModal} />
 			)}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}

@@ -7,8 +7,11 @@
  * in-page toast (the caller's `notify`) plus a flashing document title while
  * the tab is hidden.
  */
+import { useEffect, useRef } from "react";
+import type { Notice } from "../lib/client";
 import type { SessionRecord } from "./api";
 import { navigate } from "./router";
+import { useSessions } from "./sessions-store";
 
 export type SessionAlertKind = "input" | "exited";
 
@@ -28,8 +31,7 @@ export const ALERTS_ENABLED_KEY = "omp-hub.notify";
  */
 let alertsMemory: boolean | null = null;
 
-/** Side-poll cadence for the alert watcher (slower than the drawer's list poll). */
-export const ALERT_POLL_MS = 5000;
+/** Registry updates arrive via the shared sessions store; no side poller. */
 
 export function alertsEnabled(): boolean {
 	if (alertsMemory !== null) return alertsMemory;
@@ -169,4 +171,42 @@ export function stopTitleFlash(): void {
 	clearInterval(flashInterval);
 	flashInterval = null;
 	document.title = flashBase;
+}
+
+// ---- store-driven watcher ----
+
+export interface SessionAlertsOptions {
+	/** Bell toggle; resets the diff baseline while off. */
+	enabled: boolean;
+	/** The session on screen — it never system-notifies (already visible). */
+	currentId: string;
+	/** Toast sink for alerts that could not become system notifications. */
+	notify(level: Notice["level"], message: string): void;
+}
+
+/**
+ * Runs the alert diff off the shared sessions store's updates (one registry
+ * poll serves rail dots, record gate, and alerts). Mirrors the old side-poll
+ * effect: the first sight of a listing is the baseline, not an alarm.
+ */
+export function useSessionAlerts({ enabled, currentId, notify }: SessionAlertsOptions): void {
+	const sessions = useSessions().sessions;
+	const prevRef = useRef<readonly SessionRecord[] | null>(null);
+	const notifyRef = useRef(notify);
+	notifyRef.current = notify;
+
+	useEffect(() => {
+		if (!enabled) {
+			prevRef.current = null;
+			return;
+		}
+		if (!sessions) return;
+		const alerts = diffSessionAlerts(prevRef.current ?? sessions, sessions);
+		prevRef.current = sessions;
+		const remaining = deliverSystemAlerts(alerts, currentId);
+		for (const alert of remaining) {
+			notifyRef.current(alert.kind === "input" ? "warning" : "info", alertText(alert).title);
+		}
+		if (remaining.length > 0 && document.hidden) startTitleFlash(alertText(remaining[0]!).title);
+	}, [enabled, sessions, currentId]);
 }
