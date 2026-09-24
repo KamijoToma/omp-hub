@@ -434,6 +434,23 @@ export function firstText(content: string | ReadonlyArray<{ type: string; text?:
 	return content?.find(part => part.type === "text")?.text;
 }
 
+/**
+ * First user-authored text in the conversation: a user-role message, or the
+ * first text-bearing custom message. Collab prompts enter sessions as
+ * `custom` messages (`collab-prompt`), never as user-role messages, so a
+ * collab-only conversation has no `user` message to find (exported for tests).
+ */
+export function firstUserText(
+	messages: ReadonlyArray<{ role: string; content?: string | ReadonlyArray<{ type: string; text?: string }> }>,
+): string | undefined {
+	for (const message of messages) {
+		if (message.role !== "user" && message.role !== "custom") continue;
+		const text = firstText(message.content);
+		if (text?.trim()) return text;
+	}
+	return undefined;
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
 async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
@@ -646,8 +663,7 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// the conversation into a title with the title model, then pin it as a
 			// user rename so later auto-titles cannot replace it. A model call, so
 			// errors surface as `cmd-result` failures (web maps them to a toast).
-			const firstUser = session.messages.find(message => message.role === "user");
-			const text = firstUser === undefined ? undefined : firstText(firstUser.content);
+			const text = firstUserText(session.messages);
 			if (!text?.trim()) throw new Error("no user input to generate a session title from");
 			const title = await session.generateTitle(text);
 			if (!title) throw new Error("Could not generate a session title.");

@@ -4,7 +4,7 @@
  * `maybeStartTitleGeneration`/`generateTitle`, which need the first text.
  */
 import { describe, expect, test } from "bun:test";
-import { firstText } from "../src/session-host";
+import { firstText, firstUserText } from "../src/session-host";
 
 describe("firstText", () => {
 	// Typed const, not inline literal: the helper's structural param has no
@@ -24,5 +24,28 @@ describe("firstText", () => {
 	test("returns undefined for image-only payloads and absent content", () => {
 		expect(firstText([imageBlock])).toBeUndefined();
 		expect(firstText(undefined)).toBeUndefined();
+	});
+});
+
+describe("firstUserText", () => {
+	test("finds the first user-role message text", () => {
+		expect(
+			firstUserText([
+				{ role: "assistant", content: [{ type: "text", text: "hi there" }] },
+				{ role: "user", content: "fix the login bug" },
+			]),
+		).toBe("fix the login bug");
+	});
+
+	test("falls through to custom messages — collab prompts are never user-role", () => {
+		// Typed const: `customType` is real on custom messages but absent from
+		// the structural param, and fresh literals trip excess-property checks.
+		const collabPrompt: { role: string; content?: string } & { customType?: string } = {
+			role: "custom",
+			content: "collab prompt text",
+			customType: "collab-prompt",
+		};
+		expect(firstUserText([collabPrompt, { role: "assistant", content: "answer" }])).toBe("collab prompt text");
+		expect(firstUserText([{ role: "assistant", content: "only an answer" }])).toBeUndefined();
 	});
 });
