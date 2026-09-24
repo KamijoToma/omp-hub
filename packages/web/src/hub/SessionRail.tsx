@@ -218,6 +218,18 @@ function glyphHue(id: string): number {
 	return hash % 360;
 }
 
+/**
+ * Collapsed-strip identity letter: the session's title (hub registry name,
+ * auto-titled or user-set) wins so sessions in one repo stay distinguishable;
+ * the project directory is the fallback for unnamed records.
+ */
+export function railGlyphLabel(session: SessionRecord): string {
+	const name = session.name.trim();
+	if (name !== "") return (name[0] ?? "?").toUpperCase();
+	const base = session.cwd.split("/").filter(Boolean).pop();
+	return (base?.[0] ?? "?").toUpperCase();
+}
+
 /** Collapsed-strip dot state: live sessions refine to activity, others pass through. */
 function railDotState(session: SessionRecord): SessionStatus | "input" | "working" {
 	if (session.status !== "live") return session.status;
@@ -227,8 +239,7 @@ function railDotState(session: SessionRecord): SessionStatus | "input" | "workin
 }
 
 function RailRow({ session, current, onSwitch }: { session: SessionRecord; current: boolean; onSwitch(id: string): void }): ReactNode {
-	const base = session.cwd.split("/").filter(Boolean).pop() ?? session.name;
-	const label = (base[0] ?? "?").toUpperCase();
+	const label = railGlyphLabel(session);
 	const activity =
 		session.activity?.inputRequired === true ? " · needs input" : session.activity?.working === true ? " · working" : "";
 	return (
