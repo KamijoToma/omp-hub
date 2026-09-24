@@ -90,7 +90,7 @@ type CommandResultFrame =
 	| { t: "cmd-result"; reqId: string; ok: false; error: string };
 
 /** Child → parent activity sample, emitted only on change (protocol §4). */
-type ActivityFrame = { t: "activity"; working: boolean; inputRequired: boolean; name?: string };
+type ActivityFrame = { t: "activity"; working: boolean; inputRequired: boolean; name?: string; handoff?: boolean };
 
 /** Model identity triple (protocol §2). */
 interface AgentModelId {
@@ -521,7 +521,13 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// only — progress is visible in the transcript via collab events.
 			void session
 				.compact(instructions, modeDef === undefined ? undefined : { mode: modeDef.name })
-				.catch((err: unknown) => deps.log.error(`compact failed: ${errorMessage(err)}`));
+				.catch((err: unknown) => {
+					deps.log.error(`compact failed: ${errorMessage(err)}`);
+					// The dispatch is otherwise silent on the wire (the cmd already
+					// answered `started`): surface the failure to attached guests
+					// through the notice stream (web toasts it).
+					session.emitNotice("error", `compact failed: ${errorMessage(err)}`);
+				});
 			return { started: true };
 		}
 		case "shake": {
@@ -550,7 +556,18 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			}
 			void session
 				.handoff(instructions)
-				.catch((err: unknown) => deps.log.error(`handoff failed: ${errorMessage(err)}`));
+				.then(result => {
+					// SDK contract: `null` is a genuine cancellation, not a failure —
+					// mirror the TUI's "Handoff cancelled" line for attached guests.
+					if (result === null) session.emitNotice("info", "handoff cancelled");
+				})
+				.catch((err: unknown) => {
+					deps.log.error(`handoff failed: ${errorMessage(err)}`);
+					// The cmd already answered `{started:true}`, so a failure would
+					// otherwise be child-log-only: surface it to attached guests
+					// through the notice stream (web toasts it).
+					session.emitNotice("error", `handoff failed: ${errorMessage(err)}`);
+				});
 			return { started: true };
 		}
 		case "retry": {
@@ -949,11 +966,16 @@ async function run(): Promise<void> {
 			// registry label follows without a hub-side rename call. `undefined`
 			// drops out of the JSON frame; the hub treats absence as "untouched".
 			name: session.sessionManager.getSessionName(),
+			// §4 `handoff`: true while the SDK generates the handoff document — a
+			// model call during which `isStreaming` stays false, so without this
+			// bit the session looks idle to every non-attached consumer.
+			handoff: session.isGeneratingHandoff || undefined,
 		};
 		if (
 			lastActivity?.working === next.working &&
 			lastActivity?.inputRequired === next.inputRequired &&
-			lastActivity?.name === next.name
+			lastActivity?.name === next.name &&
+			lastActivity?.handoff === next.handoff
 		)
 			return;
 		lastActivity = next;

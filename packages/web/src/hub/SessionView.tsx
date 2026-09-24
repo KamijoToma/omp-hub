@@ -45,6 +45,7 @@ import {
 	uploadSessionFile,
 } from "./api";
 import type { CommandContext, CompactRequest, ModalKind } from "./commands";
+import { useSessionRecord } from "./sessions-store";
 import {
 	commandQuery,
 	createComposerClient,
@@ -139,6 +140,11 @@ interface SessionProps {
 
 function Session({ client, sessionId, record, displayName, registryLive, onLeave, onRejoin, onOpenSwitcher }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
+	// Handoff progress rides the registry mirror (protocol §3) through the
+	// shared store's poll: the page's attach latch deliberately freezes the
+	// `record` prop, so transient activity must be read from the store itself.
+	const { record: mirrored } = useSessionRecord(sessionId);
+	const handoffRunning = mirrored?.activity?.handoff === true;
 	// Steering messages (TUI input-controller parity): a prompt submitted while
 	// the host agent streams queues host-side and stays visible here until it
 	// is delivered; an empty-editor Enter aborts so the queue delivers now.
@@ -581,6 +587,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
 				onRename={renameSession}
+				handoffRunning={handoffRunning}
 			/>
 			<main className="sh-main">
 				<section className="sh-content">

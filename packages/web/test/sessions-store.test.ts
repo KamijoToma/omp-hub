@@ -36,6 +36,32 @@ async function until(condition: () => boolean, label: string): Promise<void> {
 }
 
 describe("sessions store", () => {
+	test("forget drops an id from the listing and the detail cache", async () => {
+		const first = record({});
+		const second = record({ id: "ses_b" });
+		const store: SessionsStore = createSessionsStore({
+			pollMs: 60_000,
+			fetchSessions: async () => [first, second],
+			fetchSession: async () => first,
+		});
+		// The poll loop only runs with a subscriber attached (as in the app).
+		const unsubscribe = store.subscribe(() => {});
+		await until(() => store.getSnapshot().sessions !== null, "first poll");
+		await store.refreshSession(first.id);
+		expect(store.record(first.id)).not.toBeNull();
+
+		store.forget(first.id);
+
+		const snapshot = store.getSnapshot();
+		expect(snapshot.sessions?.map(entry => entry.id)).toEqual(["ses_b"]);
+		expect(store.record(first.id)).toBeNull();
+		// An unknown id is a quiet no-op: nothing to drop, nobody to notify.
+		const version = snapshot.version;
+		store.forget("ses_missing");
+		expect(store.getSnapshot().version).toBe(version);
+		unsubscribe();
+	});
+
 	test("polls while subscribed and exposes listing + record cache", async () => {
 		let polls = 0;
 		const store = createSessionsStore({

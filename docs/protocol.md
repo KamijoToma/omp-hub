@@ -43,9 +43,11 @@ daemon; use TLS/WSS outside loopback.
 { t: "session-error", id: string, error: string }                  // start failed before ready
 { t: "session-exit",  id: string, code: number | null, reason: string }
 { t: "session-activity", id: string, working: boolean,
-  inputRequired: boolean, name?: string }                          // on every change (0.5.0+; optional for consumers);
+  inputRequired: boolean, name?: string, handoff?: boolean }       // on every change (0.5.0+; optional for consumers);
                                                                    // `name` mirrors the SDK session name when set
-                                                                   // (auto-titles included) — the registry label follows it
+                                                                   // (auto-titles included) — the registry label follows it;
+                                                                   // `handoff` is true while the child generates a handoff
+                                                                   // document (0.7.0+; absent clears it)
 { t: "pong", ts: number }
 { t: "usage-res", reqId: string, ok: true, status: number,
   contentType?: string, bodyB64?: string }                         // answer to usage-req
@@ -88,10 +90,10 @@ Semantics:
   `failed`. `session-exit` flips to `exited` (idempotent).
 - `session-activity` mirrors the child's guest-visible state into the record's `activity`
   (`working` = the agent turn streams, `inputRequired` = a host dialog waits on a writable
-  guest — the same two signals a guest's footer shows). Sent only on change; malformed
-  samples are dropped; unknown ids and terminal records ignore it; `session-exit`/`-error`
-  clears the field. Older agents never send it, so `activity` stays absent — consumers must
-  treat it as optional.
+  guest, `handoff` = a handoff document is generating — a model call with `working` false).
+  Sent only on change; malformed samples are dropped; unknown ids and terminal records ignore
+  it; `session-exit`/`-error` clears the field. Older agents never send it, so `activity` stays
+  absent — consumers must treat it as optional (and `handoff` too: absent clears the bit).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
   reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
 - `usage-req` → `usage-res` relays one HTTP request to the machine's local omp stats dashboard
@@ -220,7 +222,9 @@ interface LoopStatus {
   session into a handoff document and compacts in place. Refuses while a turn streams (409 via the
   "Wait for the current response…" mapping) or a handoff is already generating ("Handoff
   generation is already in progress." → 409); otherwise background-dispatches `session.handoff`
-  like `compact` — the document and any failure arrive through the transcript, not this channel.
+  like `compact` — the document arrives through the transcript, a cancellation through an info
+  notice, and a failure (handoff and compact alike) through an error notice entry, not this
+  channel. While generating, the session's `activity.handoff` bit (§2/§3) is set.
 - `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
   to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
   The retried turn itself streams through the normal session channel.
@@ -346,9 +350,10 @@ interface SessionRecord {
   links?: { full: string; view: string; web: string; webView: string };
   sessionFile?: string;
   pid?: number;
-  activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
+  activity?: { working: boolean; inputRequired: boolean; handoff?: boolean; updatedAt: number };
   // ↑ last child `activity` sample (§2 session-activity); absent until the first
-  //   one arrives, cleared on exit; consumers must treat it as optional (≥0.5.0 agents only)
+  //   one arrives, cleared on exit; consumers must treat it as optional (≥0.5.0 agents only,
+  //   `handoff` ≥0.7.0 and absent on older agents)
 }
 
 interface MachineRecord {
@@ -371,6 +376,7 @@ interface MachineRecord {
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
+| `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
 | `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
 | `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
@@ -406,10 +412,11 @@ child → parent (stdout, one JSON object per line; non-JSON lines are logs):
   links: { full: string; view: string; web: string; webView: string } }
 { t: "error", message: string }        // fatal before ready; child exits non-zero after sending
 { t: "log", level: "debug"|"info"|"warn"|"error", message: string }
-{ t: "activity", working: boolean, inputRequired: boolean, name?: string }
+{ t: "activity", working: boolean, inputRequired: boolean, name?: string, handoff?: boolean }
                                        // sampled 1/s after ready, emitted only on change;
                                        // malformed samples are dropped by the supervisor;
-                                       // `name` mirrors the SDK session name (absent until set)
+                                       // `name` mirrors the SDK session name (absent until set);
+                                       // `handoff` is true while the handoff document generates
 { t: "cmd-result", reqId: string, ok: boolean, data?: unknown, error?: string }
 ```
 
@@ -467,7 +474,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/tree` | session-tree picker: browse the host's full entry tree (previews only, `GET …/tree`) and move the leaf to any node (`POST …/tree`); success resyncs the transcript via reconnect. Every message row also carries a hover/tap "rewind here" button targeting its turn prompt |
 | `/compact` | background compaction; optional `[mode] [instructions…]` args (drives `POST …/compact`; progress arrives via transcript) |
 | `/shake` | shake heavy content out of the context — bare or `elide` strips tool results + large blocks, `images` drops image blocks, `thinking` drops thinking blocks (drives `POST …/shake`; local notice reports the counts) |
-| `/handoff` | summarize the session into a handoff document and compact in place — `[instructions]` focuses the summary (drives `POST …/handoff`; the document lands via transcript) |
+| `/handoff` | summarize the session into a handoff document and compact in place — `[instructions]` focuses the summary (drives `POST …/handoff`; the document lands via transcript, a failure toasts via an error notice, and the header shows a running chip while it generates) |
 | `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
 | `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |
 | `/rename` | rename this session: `[name]` drives `POST …/rename` (§2 `rename` — the agent-side name is authoritative, the registry label and collab header follow); bare drives `POST …/title` (§2 `generate-title` — TUI bare `/rename`, regenerates from the conversation). The sidebar rows rename the same way (pencil / right-click), and the header title is click-to-rename on hub pages |

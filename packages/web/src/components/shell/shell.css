@@ -842,6 +842,15 @@
 	}
 }
 
+.sh-chip-handoff {
+	gap: 4px;
+	color: var(--accent);
+}
+
+.sh-chip-handoff-icon {
+	animation: sh-atchip-rotate 900ms linear infinite;
+}
+
 @keyframes sh-fade-in {
 	from {
 		opacity: 0;

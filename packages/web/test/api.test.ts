@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	clearToken,
+	deleteSession,
 	getMachineSessions,
 	getMachines,
 	HubApiError,
@@ -361,6 +362,16 @@ describe("hub api", () => {
 
 		expect(calls[0].url).toBe("/api/sessions/s1/retry");
 		expect(calls[0].init?.method).toBe("POST");
+	});
+
+	test("deleteSession issues DELETE on the session path", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true }));
+
+		await deleteSession("s1");
+
+		expect(calls[0].url).toBe("/api/sessions/s1");
+		expect(calls[0].init?.method).toBe("DELETE");
 	});
 
 	test("postRetry surfaces the 409 message as HubApiError", async () => {

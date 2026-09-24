@@ -17,6 +17,8 @@ export interface SessionLinks {
 export interface SessionActivity {
 	working: boolean;
 	inputRequired: boolean;
+	/** True while the child generates a handoff document; absent otherwise. */
+	handoff?: boolean;
 	/** Hub clock at the last changed sample; freshness bound for stale mirrors. */
 	updatedAt: number;
 }

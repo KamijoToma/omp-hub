@@ -12,15 +12,17 @@
  * live without opening the drawer. `SessionSwitcherModal` (the `/sessions`
  * slash command and Ctrl+K dialog) shares the picker body.
  */
-import { Bell, BellOff, Home, PanelLeftClose, PanelLeftOpen, Pencil } from "lucide-react";
+import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionRecord, SessionStatus } from "./api";
-import { errorText, postRename } from "./api";
+import { deleteSession, errorText, postRename } from "./api";
+import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
+import { pushToast } from "./toasts";
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
 	starting: "starting",
@@ -138,14 +140,50 @@ interface PickerBodyProps {
 	 * Left unset in the quick switcher, where renaming is out of scope.
 	 */
 	onRename?(session: SessionRecord): void;
+	/**
+	 * Fires after a row's delete succeeded and the store forgot the record;
+	 * owners close or navigate when the deleted row is the current session.
+	 */
+	onDeleted?(session: SessionRecord): void;
 }
 
 /** Filter input + session rows, shared by the expanded rail and the switcher dialog. */
-function PickerBody({ sessions, error, currentId, onPick, onRename }: PickerBodyProps): ReactNode {
+function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }: PickerBodyProps): ReactNode {
 	const [filter, setFilter] = useState("");
 	const completedSet = useCompletedSessions();
 	const filtered = useMemo(() => filterHubSessions(sessions ?? [], filter), [sessions, filter]);
+	const hidden = useHiddenSessions();
+	const [showHiddenRows, setShowHiddenRows] = useState(false);
+	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(filtered, hidden), [filtered, hidden]);
+	const rows = showHiddenRows ? hiddenRows : visible;
+	// Two-step delete: the first click arms the row, the second (within the
+	// arm window) confirms. No modal, no accidental deletes.
+	const [deleting, setDeleting] = useState<string | null>(null);
+	useEffect(() => {
+		if (deleting === null) return;
+		const timer = setTimeout(() => setDeleting(null), 3000);
+		return () => clearTimeout(timer);
+	}, [deleting]);
+	// Un-hiding (or deleting) the last hidden row would strand the picker on an
+	// empty hidden view with the toggle gone — drop back to the main list.
+	useEffect(() => {
+		if (showHiddenRows && hiddenRows.length === 0) setShowHiddenRows(false);
+	}, [showHiddenRows, hiddenRows.length]);
 	const renames = onRename !== undefined;
+	const deletes = onDeleted !== undefined;
+
+	const remove = useCallback(
+		(session: SessionRecord): void => {
+			void deleteSession(session.id).then(
+				() => {
+					sessionsStore.forget(session.id);
+					onDeleted?.(session);
+				},
+				(err: unknown) => pushToast("error", errorText(err)),
+			);
+		},
+		[onDeleted],
+	);
 
 	return (
 		<>
@@ -161,22 +199,38 @@ function PickerBody({ sessions, error, currentId, onPick, onRename }: PickerBody
 			{sessions === null && !error && <p className="hb-empty">loading…</p>}
 			{sessions === null && error && <p className="hb-empty">{error}</p>}
 			{sessions !== null && filtered.length === 0 && <p className="hb-empty">no matching sessions</p>}
-			{filtered.length > 0 && (
+			{hiddenRows.length > 0 && (
+				<button type="button" className="hb-hidden-toggle" onClick={() => setShowHiddenRows(value => !value)}>
+					{showHiddenRows ? `showing ${hiddenRows.length} hidden — back` : `${hiddenRows.length} hidden — show`}
+				</button>
+			)}
+			{rows.length > 0 && (
 				<ul className="hb-nav-list">
-					{filtered.map(session => {
+					{rows.map(session => {
 						const current = session.id === currentId;
+						const isHiddenRow = hidden.has(session.id);
 						const completed = completedSet.has(session.id);
 						const badge =
 							session.activity?.inputRequired === true
 								? "input"
-								: session.activity?.working === true
-									? "working"
-									: completed
-										? "done"
+								: session.activity?.handoff === true
+									? "handoff"
+									: session.activity?.working === true
+										? "working"
+										: completed
+											? "done"
 										: null;
 						return (
 							<li key={session.id}>
-								<div className={current ? "hb-nav-row-wrap hb-nav-current" : "hb-nav-row-wrap"}>
+								<div
+									className={
+										current
+											? "hb-nav-row-wrap hb-nav-current"
+											: isHiddenRow
+												? "hb-nav-row-wrap hb-nav-hidden"
+												: "hb-nav-row-wrap"
+									}
+								>
 									<button
 										type="button"
 										className="hb-nav-row"
@@ -212,11 +266,52 @@ function PickerBody({ sessions, error, currentId, onPick, onRename }: PickerBody
 									{renames && session.status === "live" && (
 										<button
 											type="button"
-											className="hb-nav-rename"
+											className="hb-nav-act"
 											onClick={() => onRename(session)}
 											title="rename session"
 										>
 											<Pencil size={12} aria-hidden="true" />
+										</button>
+									)}
+									{!current &&
+										(isHiddenRow ? (
+											<button
+												type="button"
+												className="hb-nav-act"
+												onClick={() => showSession(session.id)}
+												title="unhide session"
+											>
+												<Eye size={12} aria-hidden="true" />
+											</button>
+										) : (
+											<button
+												type="button"
+												className="hb-nav-act"
+												onClick={() => hideSession(session.id)}
+												title="hide session (this browser only)"
+											>
+												<EyeOff size={12} aria-hidden="true" />
+											</button>
+										))}
+									{deletes && (
+										<button
+											type="button"
+											className={deleting === session.id ? "hb-nav-act hb-nav-act-confirm" : "hb-nav-act"}
+											onClick={() => {
+												if (deleting !== session.id) {
+													setDeleting(session.id);
+													return;
+												}
+												setDeleting(null);
+												remove(session);
+											}}
+											title={
+												deleting === session.id
+													? "click again to delete"
+													: "delete from the hub list (live sessions are stopped)"
+											}
+										>
+											{deleting === session.id ? <span className="hb-nav-act-word">sure?</span> : <Trash2 size={12} aria-hidden="true" />}
 										</button>
 									)}
 								</div>
@@ -254,6 +349,8 @@ export function railGlyphLabel(session: SessionRecord): string {
 function railDotState(session: SessionRecord, completed: ReadonlySet<string>): RailDotState {
 	if (session.status !== "live") return session.status;
 	if (session.activity?.inputRequired === true) return "input";
+	// Handoff generation is a model call with `isStreaming` false — still busy.
+	if (session.activity?.handoff === true) return "working";
 	if (session.activity?.working === true) return "working";
 	if (completed.has(session.id)) return "done";
 	return "live";
@@ -266,10 +363,12 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 	const activity =
 		session.activity?.inputRequired === true
 			? " · needs input"
-			: session.activity?.working === true
-				? " · working"
-				: dot === "done"
-					? " · done"
+			: session.activity?.handoff === true
+				? " · handoff"
+				: session.activity?.working === true
+					? " · working"
+					: dot === "done"
+						? " · done"
 					: "";
 	return (
 		<li>
@@ -308,6 +407,10 @@ export interface SessionRailProps {
 /** The docked/overlay session drawer: collapsed icon strip or the full picker. */
 export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, alertsOn, onToggleAlerts }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
+	const hidden = useHiddenSessions();
+	// Hidden sessions (this browser) leave the collapsed strip entirely; the
+	// expanded picker still lists them behind the "hidden" toggle.
+	const listed = useMemo(() => (sessions ?? []).filter(session => !hidden.has(session.id)), [sessions, hidden]);
 	const [renaming, setRenaming] = useState<SessionRecord | null>(null);
 	// The rename dialog must survive list refreshes (the poll replaces record
 	// objects), so it re-reads the fresh record by id.
@@ -367,6 +470,10 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								currentId={currentId}
 								onPick={pick}
 								onRename={openRename}
+								onDeleted={session => {
+									// Deleting the session you are attached to leaves the page.
+									if (session.id === currentId) onHome();
+								}}
 							/>
 						</div>
 					</>
@@ -395,7 +502,7 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 									</li>
 								</>
 							)}
-							{(sessions ?? []).map(session => (
+							{listed.map(session => (
 								<RailRow key={session.id} session={session} current={session.id === currentId} onSwitch={onSwitch} />
 							))}
 						</ul>
@@ -420,10 +527,12 @@ export interface SessionSwitcherModalProps {
 	currentId: string;
 	onSwitch(sessionId: string): void;
 	onClose(): void;
+	/** Fires after a row delete succeeded; owners navigate when it was current. */
+	onDeleted?(session: SessionRecord): void;
 }
 
 /** The `/sessions` dialog (also Ctrl+K): same rows in the shared modal shell. */
-export function SessionSwitcherModal({ currentId, onSwitch, onClose }: SessionSwitcherModalProps): ReactNode {
+export function SessionSwitcherModal({ currentId, onSwitch, onClose, onDeleted }: SessionSwitcherModalProps): ReactNode {
 	const { sessions, error } = useSessions();
 
 	const pick = useCallback(
@@ -439,7 +548,7 @@ export function SessionSwitcherModal({ currentId, onSwitch, onClose }: SessionSw
 
 	return (
 		<Modal title="Switch session" onClose={onClose}>
-			<PickerBody sessions={sessions} error={error} currentId={currentId} onPick={pick} />
+			<PickerBody sessions={sessions} error={error} currentId={currentId} onPick={pick} onDeleted={onDeleted} />
 		</Modal>
 	);
 }

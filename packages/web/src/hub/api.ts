@@ -31,7 +31,7 @@ export interface SessionRecord {
 	sessionFile?: string;
 	pid?: number;
 	/** Last known working/input state mirrored from the agent; absent on older agents. */
-	activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
+	activity?: { working: boolean; inputRequired: boolean; handoff?: boolean; updatedAt: number };
 }
 
 export interface MachineRecord {
@@ -334,6 +334,14 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 
 export async function stopSession(id: string): Promise<void> {
 	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+
+/**
+ * Delete a session from the hub registry (a live session is stopped first).
+ * The machine-side omp session file stays; `/resume` can re-attach later.
+ */
+export async function deleteSession(id: string): Promise<void> {
+	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /**
