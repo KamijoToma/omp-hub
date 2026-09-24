@@ -44,6 +44,8 @@ export interface SessionsStore {
 	refreshSession(id: string): Promise<SessionRecord | null>;
 	/** Force an immediate listing poll (rename feedback). */
 	refresh(): void;
+	/** Drop an id from the listing and detail caches (post-delete); emits. */
+	forget(id: string): void;
 }
 
 export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsStore {
@@ -142,6 +144,15 @@ export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsSt
 		},
 		refresh() {
 			void poll();
+		},
+		forget(id) {
+			let dropped = records.delete(id);
+			dropped = detailErrors.delete(id) || dropped;
+			if (sessions?.some(record => record.id === id)) {
+				sessions = sessions.filter(record => record.id !== id);
+				dropped = true;
+			}
+			if (dropped) emit();
 		},
 	};
 }

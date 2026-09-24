@@ -64,6 +64,8 @@ export interface SessionActivity {
 	inputRequired: boolean;
 	/** SDK session name (auto-titles included); absent/blank leaves the label untouched. */
 	name?: string;
+	/** True while the child generates a handoff document; absent otherwise. */
+	handoff?: boolean;
 }
 
 /** Parent → child `cmd` payload (protocol §4); `reqId` correlates the reply.
@@ -377,6 +379,8 @@ export class Supervisor {
 					inputRequired: frame.inputRequired,
 					// Optional §4 `name`; older children never send it, blank is noise.
 					...(typeof frame.name === "string" && frame.name.trim() !== "" ? { name: frame.name } : {}),
+					// Optional §4 `handoff` bit; present only when the child says true.
+					...(frame.handoff === true ? { handoff: true } : {}),
 				});
 				return;
 			}

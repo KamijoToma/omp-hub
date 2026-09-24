@@ -233,7 +233,17 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 					<SessionStatusCard id={id} record={record} loadError={loadError} onHome={leave} />
 				)}
 			</div>
-			{switcherOpen && <SessionSwitcherModal currentId={id} onSwitch={switchSession} onClose={() => setSwitcherOpen(false)} />}
+			{switcherOpen && (
+				<SessionSwitcherModal
+					currentId={id}
+					onSwitch={switchSession}
+					onClose={() => setSwitcherOpen(false)}
+					onDeleted={session => {
+						// Deleting the attached session leaves the page.
+						if (session.id === id) leave();
+					}}
+				/>
+			)}
 		</div>
 	);
 }

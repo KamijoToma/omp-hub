@@ -23,7 +23,7 @@ interface SessionJson {
 	links?: { full: string; view: string; web: string; webView: string };
 	sessionFile?: string;
 	pid?: number;
-	activity?: { working: boolean; inputRequired: boolean; updatedAt: number };
+	activity?: { working: boolean; inputRequired: boolean; handoff?: boolean; updatedAt: number };
 }
 
 interface MachineJson {
@@ -263,6 +263,43 @@ describe("hub api", () => {
 		expect(missing.status).toBe(404);
 	});
 
+	test("DELETE drops the record and stops a live session first", async () => {
+		const { agent } = await connectAgent("m-del", "del-machine");
+		const session = await startSession("m-del", "/srv/del");
+		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		agent.ws.send(
+			JSON.stringify({ t: "session-ready", id: session.id, links: { full: "a", view: "b", web: "c", webView: "d" } }),
+		);
+		await waitForStatus(session.id, "live");
+
+		const deleted = await api(`/api/sessions/${session.id}`, { method: "DELETE" });
+		expect(deleted.status).toBe(200);
+		expect(await deleted.json()).toEqual({ ok: true });
+		expect(await agent.wait((frame) => (frame.t === "stop" ? frame : undefined), "stop frame")).toMatchObject({
+			id: session.id,
+			reason: "user delete",
+		});
+		expect((await api(`/api/sessions/${session.id}`)).status).toBe(404);
+		const listed = (await (await api("/api/sessions")).json()) as { sessions: SessionJson[] };
+		expect(listed.sessions.map((record) => record.id)).not.toContain(session.id);
+	});
+
+	test("DELETE on an exited session skips the stop frame; unknown ids are 404", async () => {
+		const { agent } = await connectAgent("m-del2", "del2-machine");
+		const session = await startSession("m-del2", "/srv/del2");
+		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+		await waitForStatus(session.id, "exited");
+
+		const deleted = await api(`/api/sessions/${session.id}`, { method: "DELETE" });
+		expect(deleted.status).toBe(200);
+		expect(agent.frames.some((frame) => frame.t === "stop")).toBe(false);
+		expect((await api(`/api/sessions/${session.id}`)).status).toBe(404);
+
+		const missing = await api("/api/sessions/s_0000000000", { method: "DELETE" });
+		expect(missing.status).toBe(404);
+	});
+
 	test("session-activity mirrors samples, drops malformed ones, and clears on exit", async () => {
 		const { agent } = await connectAgent("m-act", "act-machine");
 		const session = await startSession("m-act", "/srv/act");
@@ -306,6 +343,17 @@ describe("hub api", () => {
 		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: false }));
 		const unnamed = await waitFor((record) => record.activity?.working === false, "report working again");
 		expect(unnamed.name).toBe("Auth refactor");
+
+		// §2 `handoff`: the bit rides the sample while a handoff document
+		// generates, and the next sample without it clears it again.
+		agent.ws.send(
+			JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: false, handoff: true }),
+		);
+		const handing = await waitFor((record) => record.activity?.handoff === true, "report handoff");
+		expect(handing.activity?.working).toBe(false);
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: false }));
+		const doneHandoff = await waitFor((record) => record.activity?.handoff === undefined, "clear handoff");
+		expect(doneHandoff.activity?.working).toBe(false);
 
 		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "done" }));
 		const exited = await waitForStatus(session.id, "exited");

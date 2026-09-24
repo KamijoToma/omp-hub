@@ -308,7 +308,13 @@ export class AgentRegistry {
 				// Malformed samples are dropped, never guessed (protocol §2).
 				const id = str(frame.id);
 				if (!id || typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") return;
-				this.#sessions.setActivity(id, { working: frame.working, inputRequired: frame.inputRequired });
+				this.#sessions.setActivity(id, {
+					working: frame.working,
+					inputRequired: frame.inputRequired,
+					// §2 `handoff` bit; absent on older agents and cleared by the next
+					// sample once generation settles (each sample is the full truth).
+					...(frame.handoff === true ? { handoff: true } : {}),
+				});
 				// §2 `name`: the agent-side SDK session name (auto-titles included);
 				// the registry label follows it like a `rename`. Absent/blank leaves
 				// the label untouched — older agents never send the field.

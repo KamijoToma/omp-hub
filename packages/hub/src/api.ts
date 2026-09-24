@@ -113,6 +113,7 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 		const record = ctx.sessions.get(id);
 		if (!record) return json({ error: "session not found" }, 404);
 		if (req.method === "GET") return json({ session: record });
+		if (req.method === "DELETE") return deleteSession(id, ctx);
 	}
 
 	// Matched on the raw pathname: the relayed dashboard path must keep its exact shape.
@@ -263,6 +264,23 @@ function stopSession(id: string, ctx: ApiContext): Response {
 	}
 	// Best effort: the record flips when the agent reports session-exit.
 	ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user stop" });
+	return json({ ok: true });
+}
+
+/**
+ * Delete a session from the hub registry. A live/starting session is stopped
+ * first — the same fire-and-forget `stop` as POST /stop — then the record is
+ * dropped immediately, so the listing forgets it without waiting for the
+ * child to exit. The machine-side omp session file is untouched; `/resume`
+ * can still re-attach to the conversation.
+ */
+function deleteSession(id: string, ctx: ApiContext): Response {
+	const record = ctx.sessions.get(id);
+	if (!record) return json({ error: "session not found" }, 404);
+	if (record.status !== "exited" && record.status !== "failed") {
+		ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user delete" });
+	}
+	ctx.sessions.delete(id);
 	return json({ ok: true });
 }
 

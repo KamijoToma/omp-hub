@@ -1,4 +1,4 @@
-import { LogOut, PanelLeft, PanelRight } from "lucide-react";
+import { LoaderCircle, LogOut, PanelLeft, PanelRight } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { GuestSnapshot } from "../../lib/client";
@@ -39,6 +39,11 @@ export interface HeaderBarProps {
 	 * Enter). Left unset on `/join`, where the collab wire has no rename frame.
 	 */
 	onRename?(name: string): void;
+	/**
+	 * True while the agent generates a handoff document (registry `activity`
+	 * mirror, protocol §3); shows the running chip. Absent on `/join`.
+	 */
+	handoffRunning?: boolean;
 }
 
 /** Gauge track + percentage; shared by the read-only span and the hub button. */
@@ -64,6 +69,7 @@ export function HeaderBar({
 	onOpenThinking,
 	onOpenContext,
 	onRename,
+	handoffRunning,
 }: HeaderBarProps): ReactNode {
 	const { header, state, phase, readOnly } = snapshot;
 	const activeRole = activeModelRole(snapshot.entries, state?.model);
@@ -134,6 +140,15 @@ export function HeaderBar({
 				)}
 			</div>
 			<div className="sh-header-right">
+				{handoffRunning && (
+					<span
+						className="sh-chip sh-chip-handoff"
+						title="generating handoff document — the summary lands in the transcript"
+					>
+						<LoaderCircle size={11} className="sh-chip-handoff-icon" aria-hidden="true" />
+						handoff
+					</span>
+				)}
 				{readOnly && (
 					<span className="sh-chip" title="you joined with a read-only link — watching only">
 						read-only
