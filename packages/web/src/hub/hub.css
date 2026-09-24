@@ -1583,6 +1583,12 @@
 	min-height: 0;
 }
 
+/* Surface swap (keyed remount) and in-place status card get a soft fade;
+ * reuses the vendored shell's fade keyframes. */
+.hb-frame-main > * {
+	animation: sh-fade-in 120ms ease-out;
+}
+
 .hb-rail {
 	width: 44px;
 	flex: none;
@@ -1748,7 +1754,8 @@
 	.hb-rail-dot-starting,
 	.hb-rail-dot-input,
 	.hb-rail-skel,
-	.hb-skel {
+	.hb-skel,
+	.hb-frame-main > * {
 		animation: none;
 	}
 }
