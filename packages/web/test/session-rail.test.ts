@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { SessionRecord } from "../src/hub/api";
-import { filterHubSessions } from "../src/hub/SessionSidebar";
+import { filterHubSessions } from "../src/hub/SessionRail";
 import {
 	alertText,
 	alertsEnabled,
