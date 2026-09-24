@@ -66,15 +66,10 @@ export function TodoPanel({
 	const [openState, setOpenState] = useState(() => localStorage.getItem(TODO_COLLAPSE_KEY) !== "1");
 	const open = openProp ?? openState;
 	const toggle = (): void => {
-		if (onToggle) {
-			localStorage.setItem(TODO_COLLAPSE_KEY, open ? "0" : "1");
-			onToggle();
-			return;
-		}
-		setOpenState(prev => {
-			localStorage.setItem(TODO_COLLAPSE_KEY, prev ? "0" : "1");
-			return !prev;
-		});
+		const next = !open;
+		localStorage.setItem(TODO_COLLAPSE_KEY, next ? "0" : "1");
+		if (onToggle) onToggle();
+		else setOpenState(next);
 	};
 	if (board === null) return null;
 	return (
