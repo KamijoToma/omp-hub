@@ -211,6 +211,8 @@ export function HeaderBar({
 					</span>
 				)}
 				<span className={`sh-dot sh-dot-${phase}`} title={phase} />
+			</div>
+			<div className="sh-header-actions">
 				<ThemeToggle />
 				{onOpenSessions && (
 					<button

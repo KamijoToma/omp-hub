@@ -225,6 +225,16 @@
 	flex: none;
 }
 
+/* Window actions (theme, session switcher, agent rail, leave). Split from the
+ * status chips so phones can wrap the chip row onto its own line while the
+ * title and these icons keep one row. */
+.sh-header-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: none;
+}
+
 .sh-title {
 	font-size: 13px;
 	font-weight: 600;
@@ -842,10 +852,38 @@
 }
 
 @media (max-width: 640px) {
-	.sh-cwd {
+	/* Two-row header: title + window actions on top, status/control chips
+	 * (model, thinking, context, participants) on their own full-width row.
+	 * Nothing compresses — chips keep their intrinsic width and the row wraps
+	 * rather than clipping. */
+	.sh-header {
+		flex-wrap: wrap;
+		row-gap: 6px;
+	}
+	.sh-header-left {
+		flex: 1 1 auto;
+		order: 1;
+	}
+	.sh-header-actions {
+		margin-left: auto;
+		order: 2;
+	}
+	.sh-header-right {
+		flex: 1 1 100%;
+		order: 3;
+		flex-wrap: wrap;
+		justify-content: flex-start;
+		row-gap: 4px;
+	}
+	.sh-header-right > * {
+		flex: none;
+	}
+	/* Only display-only meta chips hide (role suffix, /join's plain model and
+	 * thinking spans); the interactive model/thinking buttons must survive. */
+	.sh-chip-meta:not(.sh-chip-btn) {
 		display: none;
 	}
-	.sh-chip-meta {
+	.sh-cwd {
 		display: none;
 	}
 	.sh-gauge-track {
