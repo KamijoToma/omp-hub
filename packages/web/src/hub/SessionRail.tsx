@@ -20,12 +20,23 @@ import type { SessionRecord, SessionStatus } from "./api";
 import { errorText, postRename } from "./api";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
+import { useCompletedSessions } from "./rail-completion";
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
 	starting: "starting",
 	live: "live",
 	exited: "exited",
 	failed: "failed",
+};
+
+/** Dot states beyond the registry status: activity refinements + local completion. */
+type RailDotState = SessionStatus | "input" | "working" | "done";
+
+const DOT_LABEL: Record<RailDotState, string> = {
+	...STATUS_LABEL,
+	input: "needs input",
+	working: "working",
+	done: "task completed",
 };
 
 /**
@@ -132,6 +143,7 @@ interface PickerBodyProps {
 /** Filter input + session rows, shared by the expanded rail and the switcher dialog. */
 function PickerBody({ sessions, error, currentId, onPick, onRename }: PickerBodyProps): ReactNode {
 	const [filter, setFilter] = useState("");
+	const completedSet = useCompletedSessions();
 	const filtered = useMemo(() => filterHubSessions(sessions ?? [], filter), [sessions, filter]);
 	const renames = onRename !== undefined;
 
@@ -153,7 +165,15 @@ function PickerBody({ sessions, error, currentId, onPick, onRename }: PickerBody
 				<ul className="hb-nav-list">
 					{filtered.map(session => {
 						const current = session.id === currentId;
-						const badge = session.activity?.inputRequired === true ? "input" : session.activity?.working === true ? "working" : null;
+						const completed = completedSet.has(session.id);
+						const badge =
+							session.activity?.inputRequired === true
+								? "input"
+								: session.activity?.working === true
+									? "working"
+									: completed
+										? "done"
+										: null;
 						return (
 							<li key={session.id}>
 								<div className={current ? "hb-nav-row-wrap hb-nav-current" : "hb-nav-row-wrap"}>
@@ -230,18 +250,27 @@ export function railGlyphLabel(session: SessionRecord): string {
 	return (base?.[0] ?? "?").toUpperCase();
 }
 
-/** Collapsed-strip dot state: live sessions refine to activity, others pass through. */
-function railDotState(session: SessionRecord): SessionStatus | "input" | "working" {
+/** Collapsed-strip dot state: live sessions refine to activity + local completion. */
+function railDotState(session: SessionRecord, completed: ReadonlySet<string>): RailDotState {
 	if (session.status !== "live") return session.status;
 	if (session.activity?.inputRequired === true) return "input";
 	if (session.activity?.working === true) return "working";
+	if (completed.has(session.id)) return "done";
 	return "live";
 }
 
 function RailRow({ session, current, onSwitch }: { session: SessionRecord; current: boolean; onSwitch(id: string): void }): ReactNode {
 	const label = railGlyphLabel(session);
+	const completed = useCompletedSessions();
+	const dot = railDotState(session, completed);
 	const activity =
-		session.activity?.inputRequired === true ? " · needs input" : session.activity?.working === true ? " · working" : "";
+		session.activity?.inputRequired === true
+			? " · needs input"
+			: session.activity?.working === true
+				? " · working"
+				: dot === "done"
+					? " · done"
+					: "";
 	return (
 		<li>
 			<button
@@ -254,7 +283,7 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 				<span className="hb-rail-glyph" style={{ background: `hsl(${glyphHue(session.id)} 42% 40%)` }} aria-hidden="true">
 					{label}
 				</span>
-				<span className={`hb-rail-dot hb-rail-dot-${railDotState(session)}`} aria-label={STATUS_LABEL[session.status]} />
+				<span className={`hb-rail-dot hb-rail-dot-${dot}`} aria-label={DOT_LABEL[dot]} />
 			</button>
 		</li>
 	);
