@@ -22,6 +22,7 @@ import {
 } from "./api";
 import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
+import { historyStatus } from "./history-status";
 import { navigate } from "./router";
 
 const POLL_MS = 2000;
@@ -497,33 +498,43 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 							<p className="hb-empty">no omp sessions on this machine yet</p>
 						) : (
 							<ul className="hb-history">
-								{filteredHistory.map(entry => (
-									<li key={entry.path} className="hb-history-item">
-										<button
-											type="button"
-											className="hb-history-open"
-											disabled={busy}
-											onClick={() => void resume(entry)}
-											title={`resume ${entry.path}`}
-										>
-											<span className="hb-history-title">
-												{entry.title || entry.firstMessage || entry.id}
-											</span>
-											<span className="hb-history-meta">
-												<span className="hb-mono" title={entry.cwd}>
-													{entry.cwd}
-												</span>
-												{entry.profile && (
-													<span className="hb-mono" title="omp profile">
-														{entry.profile}
+								{filteredHistory.map(entry => {
+									const status = historyStatus(entry, machineId, sessions);
+									return (
+										<li key={entry.path} className="hb-history-item">
+											<button
+												type="button"
+												className="hb-history-open"
+												disabled={busy}
+												onClick={() => void resume(entry)}
+												title={`resume ${entry.path}`}
+											>
+												<span className="hb-history-titlerow">
+													<span className="hb-history-title">
+														{entry.title || entry.firstMessage || entry.id}
 													</span>
-												)}
-												<span className="hb-mono">{relTime(Date.parse(entry.modified))}</span>
-												<span className="hb-mono">{entry.messageCount} msgs</span>
-											</span>
-										</button>
-									</li>
-								))}
+													{status && (
+														<span className={`hb-history-badge hb-history-badge-${status.kind}`}>
+															{status.kind}
+														</span>
+													)}
+												</span>
+												<span className="hb-history-meta">
+													<span className="hb-mono" title={entry.cwd}>
+														{entry.cwd}
+													</span>
+													{entry.profile && (
+														<span className="hb-mono" title="omp profile">
+															{entry.profile}
+														</span>
+													)}
+													<span className="hb-mono">{relTime(Date.parse(entry.modified))}</span>
+													<span className="hb-mono">{entry.messageCount} msgs</span>
+												</span>
+											</button>
+										</li>
+									);
+								})}
 							</ul>
 						)}
 						{historyTruncated && history !== null && history.length > 0 && (

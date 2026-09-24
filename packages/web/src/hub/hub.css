@@ -296,6 +296,37 @@
 	text-overflow: ellipsis;
 }
 
+.hb-history-titlerow {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.hb-history-badge {
+	flex: none;
+	padding: 1px 6px;
+	font-size: 10.5px;
+	line-height: 1.5;
+	border-radius: var(--radius-sm);
+}
+
+.hb-history-badge-working {
+	color: var(--accent);
+	background: var(--accent-muted);
+}
+
+.hb-history-badge-input {
+	color: var(--accent-fg);
+	background: var(--warn);
+	animation: sh-fade-in 150ms ease-out;
+}
+
+.hb-history-badge-idle {
+	color: var(--fg-muted);
+	border: 1px solid var(--border);
+}
+
 .hb-history-meta {
 	display: flex;
 	flex-wrap: wrap;
