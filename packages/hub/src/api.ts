@@ -35,6 +35,7 @@ const GOAL_PATH_RE = /^\/api\/sessions\/([^/]+)\/goal$/;
 const EXTENDED_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/extended-context$/;
 const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
 const RENAME_PATH_RE = /^\/api\/sessions\/([^/]+)\/rename$/;
+const TITLE_PATH_RE = /^\/api\/sessions\/([^/]+)\/title$/;
 const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
@@ -183,6 +184,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const rename = RENAME_PATH_RE.exec(route);
 	if (rename && req.method === "POST") {
 		return renameSession(decodeURIComponent(rename[1]!), req, ctx);
+	}
+	const title = TITLE_PATH_RE.exec(route);
+	if (title && req.method === "POST") {
+		return generateSessionTitle(decodeURIComponent(title[1]!), ctx);
 	}
 	const files = FILES_PATH_RE.exec(route);
 	if (files && req.method === "POST") {
@@ -568,6 +573,21 @@ async function renameSession(id: string, req: Request, ctx: ApiContext): Promise
 	const appliedName = typeof applied === "string" && applied.trim() !== "" ? applied : name;
 	const record = ctx.sessions.rename(id, appliedName);
 	return json({ ok: true, name: appliedName, session: record });
+}
+
+/**
+ * Generate a session title from the conversation (protocol §2 `generate-title`):
+ * the web's bare `/rename`, mirroring the TUI's bare `/rename`. The title model
+ * summarizes the first user turn, the result pins as a user rename, and the
+ * registry label follows like `rename` so `/api/sessions` reflects it.
+ */
+async function generateSessionTitle(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "generate-title", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const applied = pick(outcome.data, "name");
+	if (typeof applied !== "string" || applied.trim() === "") return json({ error: "agent returned no title" }, 502);
+	const record = ctx.sessions.rename(id, applied);
+	return json({ ok: true, name: applied, session: record });
 }
 
 const LOOP_ACTIONS: Record<string, true> = { enable: true, disable: true, pause: true, resume: true, status: true };

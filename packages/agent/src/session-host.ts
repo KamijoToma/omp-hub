@@ -90,7 +90,7 @@ type CommandResultFrame =
 	| { t: "cmd-result"; reqId: string; ok: false; error: string };
 
 /** Child → parent activity sample, emitted only on change (protocol §4). */
-type ActivityFrame = { t: "activity"; working: boolean; inputRequired: boolean };
+type ActivityFrame = { t: "activity"; working: boolean; inputRequired: boolean; name?: string };
 
 /** Model identity triple (protocol §2). */
 interface AgentModelId {
@@ -424,6 +424,16 @@ export async function sweepOldUploads(): Promise<void> {
 	}
 }
 
+/**
+ * First text of a prompt payload: a bare string, or the first text block.
+ * Covers collab prompt entries (`custom_message` content) and user messages
+ * alike; image-only payloads yield `undefined` (exported for tests).
+ */
+export function firstText(content: string | ReadonlyArray<{ type: string; text?: string }> | undefined): string | undefined {
+	if (typeof content === "string") return content;
+	return content?.find(part => part.type === "text")?.text;
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
 async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
@@ -630,6 +640,21 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			const changed = await session.sessionManager.setSessionName(name, "user");
 			if (!changed) throw new Error("rename was not applied (name unchanged)");
 			return { name: session.sessionManager.getSessionName() ?? name };
+		}
+		case "generate-title": {
+			// TUI bare `/rename` parity (oh-my-pi `generateRenameTitle`): summarize
+			// the conversation into a title with the title model, then pin it as a
+			// user rename so later auto-titles cannot replace it. A model call, so
+			// errors surface as `cmd-result` failures (web maps them to a toast).
+			const firstUser = session.messages.find(message => message.role === "user");
+			const text = firstUser === undefined ? undefined : firstText(firstUser.content);
+			if (!text?.trim()) throw new Error("no user input to generate a session title from");
+			const title = await session.generateTitle(text);
+			if (!title) throw new Error("Could not generate a session title.");
+			if (!(await session.sessionManager.setSessionName(title, "user"))) {
+				throw new Error("generated title was not applied");
+			}
+			return { name: session.sessionManager.getSessionName() ?? title };
 		}
 		default:
 			throw new Error(`unknown command: ${String(frame.cmd)}`);
@@ -858,6 +883,28 @@ async function run(): Promise<void> {
 	await host.start(config.relayUrl, config.webUrl);
 	ctx.collabHost = host;
 
+	// Session auto-titles (§2 `generate-title` context): the SDK starts title
+	// generation from interactive/CLI first inputs only — collab prompts and the
+	// host-injected initial prompt bypass `maybeStartTitleGeneration`, so a web
+	// session would never get a name. Mirror the TUI here: feed each user-authored
+	// collab prompt to the generator; its own guards (unnamed, not in flight, not
+	// low-signal) make later calls no-ops. Installed after `host.start()` because
+	// CollabHost owns the `onEntryAppended` seam for replication — this chains
+	// behind it, replication first. Drop the hook when upstream CollabHost titles
+	// collab prompts itself.
+	const replicateEntry = session.sessionManager.onEntryAppended;
+	session.sessionManager.onEntryAppended = (entry: StoredSessionEntry): void => {
+		replicateEntry?.(entry);
+		try {
+			if (entry.type !== "custom_message" || entry.customType !== "collab-prompt") return;
+			if (entry.attribution !== "user") return;
+			const text = firstText(entry.content);
+			if (text) session.maybeStartTitleGeneration(text);
+		} catch (err) {
+			log.warn(`auto-title failed: ${errorMessage(err)}`);
+		}
+	};
+
 	const sessionFile = session.sessionManager.getSessionFile() ?? "";
 	const ready: ReadyFrame = {
 		t: "ready",
@@ -882,8 +929,17 @@ async function run(): Promise<void> {
 			t: "activity",
 			working: session.isStreaming,
 			inputRequired: host.inputRequired,
+			// §4 `name`: the SDK session name (auto-titles included) so the hub
+			// registry label follows without a hub-side rename call. `undefined`
+			// drops out of the JSON frame; the hub treats absence as "untouched".
+			name: session.sessionManager.getSessionName(),
 		};
-		if (lastActivity?.working === next.working && lastActivity?.inputRequired === next.inputRequired) return;
+		if (
+			lastActivity?.working === next.working &&
+			lastActivity?.inputRequired === next.inputRequired &&
+			lastActivity?.name === next.name
+		)
+			return;
 		lastActivity = next;
 		rawStdoutWrite(`${JSON.stringify(next)}\n`);
 	};
@@ -924,6 +980,10 @@ async function run(): Promise<void> {
 	if (stopRequested !== undefined) shutdownRequest(stopRequested);
 
 	if (config.prompt) {
+		// Host-injected prompts skip the SDK's interactive title gate; start it
+		// here so sessions launched with a prompt name themselves too (guards
+		// inside make this a no-op once a name exists).
+		session.maybeStartTitleGeneration(config.prompt);
 		void session.prompt(config.prompt).catch(err => log.error(`initial prompt failed: ${errorMessage(err)}`));
 	}
 

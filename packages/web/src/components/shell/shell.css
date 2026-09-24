@@ -234,6 +234,34 @@
 	min-width: 0;
 }
 
+/* Click-to-rename affordance: same metrics as `.sh-title`, but a real button. */
+.sh-title-btn {
+	padding: 0;
+	border: none;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: text;
+}
+
+.sh-title-btn:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.sh-title-input {
+	width: min(220px, 40vw);
+	padding: 1px 5px;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 600;
+}
+
 .sh-cwd {
 	font: 400 11px / 1.5 var(--font-mono);
 	color: var(--fg-faint);

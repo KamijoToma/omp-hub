@@ -135,6 +135,13 @@ test("session host answers loop, extended-context, and state ops on a live sessi
 		// The host survives the backgrounded model-less handoff.
 		const afterHandoff = await cmd("c_ops16", { cmd: "get-state" });
 		expect(afterHandoff.ok).toBe(true);
+
+		// generate-title (TUI bare `/rename`): a model call, so a session with no
+		// user input refuses before reaching the title model.
+		const untitled = await cmd("c_ops17", { cmd: "generate-title" });
+		expect(untitled.ok).toBe(false);
+		expect(untitled.error).toContain("no user input");
+		expect(afterHandoff.ok).toBe(true);
 	} finally {
 		await supervisor.stopAll("ops test done");
 		relay.stop(true);

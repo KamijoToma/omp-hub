@@ -43,7 +43,9 @@ daemon; use TLS/WSS outside loopback.
 { t: "session-error", id: string, error: string }                  // start failed before ready
 { t: "session-exit",  id: string, code: number | null, reason: string }
 { t: "session-activity", id: string, working: boolean,
-  inputRequired: boolean }                                         // on every change (0.5.0+; optional for consumers)
+  inputRequired: boolean, name?: string }                          // on every change (0.5.0+; optional for consumers);
+                                                                   // `name` mirrors the SDK session name when set
+                                                                   // (auto-titles included) — the registry label follows it
 { t: "pong", ts: number }
 { t: "usage-res", reqId: string, ok: true, status: number,
   contentType?: string, bodyB64?: string }                         // answer to usage-req
@@ -108,7 +110,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
      | "compact" | "shake" | "handoff" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
-     | "rename",
+     | "rename" | "generate-title",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -117,7 +119,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // prompt, limit, condition → loop
                                                                 // enabled → set-extended-context
                                                                 // name, dataB64 → upload-file
-                                                                // name → rename
+                                                                // name → rename; no params → generate-title
 ```
 
 agent→hub:
@@ -246,6 +248,11 @@ interface LoopStatus {
   title-change entry, and updates the collab header guests snapshot. The hub mirrors the
   applied name into the registry record so `/api/sessions` reflects the rename. Refused for a
   blank name (`rename requires a non-empty name`, 400 is enforced hub-side before dispatch).
+- `generate-title` → `data: { name: string }`: the TUI's bare `/rename` — summarizes the
+  first user turn with the title model and pins the result as a `source: "user"` rename (a
+  later auto-title cannot replace it). A model call; failures surface as `ok:false`
+  ("no user input to generate a session title from", "Could not generate a session title.").
+  The hub mirrors the applied name into the registry record like `rename`.
 - `upload-file` → `data: { path: string, bytes: number }`: writes the base64-decoded payload to a
   fresh owner-only file under the machine's temp directory
   (`omp-hub-upload-<rand>-<sanitized name>`) and returns its absolute path, which callers
@@ -379,6 +386,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
 | `POST /api/sessions/:id/clear-context` | → `{ ok: true, droppedCount }` (§2 `clear-context`); 409 streaming guard |
 | `POST /api/sessions/:id/rename` | `{name}` → `{ ok: true, name, session }` (§2 `rename`; the registry record's label follows); 400 missing/blank/oversize (>200) `name`, 404 unknown/offline, 409 not live, 502/504 cmd plumbing |
+| `POST /api/sessions/:id/title` | → `{ ok: true, name, session }` (§2 `generate-title` — bare `/rename`; the registry record's label follows); 404 unknown/offline, 409 not live, 500 agent refusal (e.g. no user input), 502 no title in reply, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
@@ -398,9 +406,10 @@ child → parent (stdout, one JSON object per line; non-JSON lines are logs):
   links: { full: string; view: string; web: string; webView: string } }
 { t: "error", message: string }        // fatal before ready; child exits non-zero after sending
 { t: "log", level: "debug"|"info"|"warn"|"error", message: string }
-{ t: "activity", working: boolean, inputRequired: boolean }
+{ t: "activity", working: boolean, inputRequired: boolean, name?: string }
                                        // sampled 1/s after ready, emitted only on change;
-                                       // malformed samples are dropped by the supervisor
+                                       // malformed samples are dropped by the supervisor;
+                                       // `name` mirrors the SDK session name (absent until set)
 { t: "cmd-result", reqId: string, ok: boolean, data?: unknown, error?: string }
 ```
 
@@ -409,7 +418,7 @@ parent → child (stdin):
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename",
+     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -461,7 +470,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/handoff` | summarize the session into a handoff document and compact in place — `[instructions]` focuses the summary (drives `POST …/handoff`; the document lands via transcript) |
 | `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
 | `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |
-| `/rename` | rename this session: `[name]` drives `POST …/rename` (§2 `rename` — the agent-side name is authoritative, the registry label and collab header follow); bare prints usage. The sidebar rows rename the same way (pencil / right-click) |
+| `/rename` | rename this session: `[name]` drives `POST …/rename` (§2 `rename` — the agent-side name is authoritative, the registry label and collab header follow); bare drives `POST …/title` (§2 `generate-title` — TUI bare `/rename`, regenerates from the conversation). The sidebar rows rename the same way (pencil / right-click), and the header title is click-to-rename on hub pages |
 | `/resume` | resume another omp session on this machine and navigate to it: `[session id]` arg resolves against the machine's resumable sessions (§2 machine sessions; TUI `/resume` prefix match on session id/file name) and starts it via `POST /api/sessions` with `sessionFile` (plus the entry's cwd/title/profile); bare opens the machine session picker modal |
 | `/retry` | retry the last failed agent turn (drives `POST …/retry`) |
 | `/todo` | expand the docked todo panel (board derived client-side from the live transcript — no host traffic) |

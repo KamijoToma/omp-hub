@@ -17,11 +17,11 @@ function fixtureSupervisor(): {
 	supervisor: Supervisor;
 	ready: Promise<SessionReadyPayload>;
 	exitCode: Promise<number | null>;
-	activity: { id: string; working: boolean; inputRequired: boolean }[];
+	activity: { id: string; working: boolean; inputRequired: boolean; name?: string }[];
 	} {
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const exitCode = Promise.withResolvers<number | null>();
-	const activity: { id: string; working: boolean; inputRequired: boolean }[] = [];
+	const activity: { id: string; working: boolean; inputRequired: boolean; name?: string }[] = [];
 	const supervisor = new Supervisor(
 		{
 			onReady: (_id, payload) => ready.resolve(payload),
@@ -50,6 +50,28 @@ test("supervisor mirrors child activity samples into onActivity", async () => {
 	});
 	expect(ack.ok).toBe(true);
 	expect(activity).toEqual([{ id: "s_cmd_act", working: true, inputRequired: false }]);
+
+	// §4 `name`: carried when present, dropped when blank (the hub would treat
+	// blank as "leave the label untouched").
+	const named = await supervisor.cmd("s_cmd_act", {
+		reqId: "c_act2",
+		cmd: "emit-activity",
+		working: false,
+		inputRequired: true,
+		name: "Auth refactor",
+	});
+	expect(named.ok).toBe(true);
+	expect(activity[1]).toEqual({ id: "s_cmd_act", working: false, inputRequired: true, name: "Auth refactor" });
+
+	const blank = await supervisor.cmd("s_cmd_act", {
+		reqId: "c_act3",
+		cmd: "emit-activity",
+		working: false,
+		inputRequired: false,
+		name: "   ",
+	});
+	expect(blank.ok).toBe(true);
+	expect(activity[2]).toEqual({ id: "s_cmd_act", working: false, inputRequired: false });
 
 	await supervisor.stopAll("activity test done");
 });

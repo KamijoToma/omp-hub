@@ -26,6 +26,7 @@ function handleLine(line: string): void {
 		level?: string;
 		working?: boolean;
 		inputRequired?: boolean;
+		name?: string;
 		malformed?: boolean;
 	};
 	if (frame.t === "stop") {
@@ -38,11 +39,18 @@ function handleLine(line: string): void {
 	}
 	if (frame.cmd === "emit-activity") {
 		// Activity dispatch probe: emit the sample the parent should mirror,
-		// or a deliberately malformed one the parent must drop.
+		// or a deliberately malformed one the parent must drop. `name` passes
+		// through verbatim (blank included) so the parent's guard is what
+		// decides visibility.
 		write(
 			frame.malformed === true
 				? { t: "activity", working: "yes", inputRequired: frame.inputRequired }
-				: { t: "activity", working: frame.working === true, inputRequired: frame.inputRequired === true },
+				: {
+						t: "activity",
+						working: frame.working === true,
+						inputRequired: frame.inputRequired === true,
+						...(typeof frame.name === "string" ? { name: frame.name } : {}),
+					},
 		);
 		write({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { emitted: true } });
 		return;

@@ -36,6 +36,7 @@ import {
 	postClearContext,
 	postCompact,
 	postExtendedContext,
+	postGenerateTitle,
 	postHandoff,
 	postRename,
 	postRetry,
@@ -311,6 +312,15 @@ function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher 
 		[sessionId, notify],
 	);
 
+	// Bare `/rename`: generate a title from the conversation (TUI parity); the
+	// result pins as a user rename and the registry label follows.
+	const generateTitle = useCallback((): void => {
+		void postGenerateTitle(sessionId).then(
+			applied => notify("info", `session renamed to "${applied}"`),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
 	// Per-turn "rewind here": the transcript rows carry the target prompt; the
 	// shared core (same flow as the /rewind picker) moves the host leaf and
 	// truncates the replica. Latest snapshot entries ride a ref so the callback
@@ -362,6 +372,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher 
 		resumeSession,
 		retrySession,
 		renameSession,
+		generateTitle,
 		setExtendedContext,
 		showTodos,
 	};
@@ -541,6 +552,7 @@ function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher 
 				onOpenModel={() => setModal("model")}
 				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
+				onRename={renameSession}
 			/>
 			<main className="sh-main">
 				<section className="sh-content">

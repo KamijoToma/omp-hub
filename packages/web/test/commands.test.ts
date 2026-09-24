@@ -37,6 +37,7 @@ interface Trace {
 	clears: number;
 	news: number;
 	renames: string[];
+	titles: number;
 	resumes: string[];
 	retries: number;
 	extendedContext: (boolean | undefined)[];
@@ -56,6 +57,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		clears: 0,
 		news: 0,
 		renames: [],
+		titles: 0,
 		resumes: [],
 		retries: 0,
 		extendedContext: [],
@@ -84,6 +86,9 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			renameSession: name => {
 				trace.renames.push(name);
+			},
+			generateTitle: () => {
+				trace.titles += 1;
 			},
 			resumeSession: query => {
 				trace.resumes.push(query);
@@ -134,6 +139,7 @@ describe("composer routing", () => {
 			clears: 0,
 			news: 0,
 			renames: [],
+			titles: 0,
 			resumes: [],
 			retries: 0,
 			extendedContext: [],
@@ -310,13 +316,14 @@ describe("composer routing", () => {
 		expect(trace.notices).toEqual([]);
 	});
 
-	test("bare rename is a usage notice, never a dispatch", () => {
+	test("bare rename generates a title instead of printing usage", () => {
 		const { ctx, trace } = makeContext();
 
 		expect(routeComposerText("/rename", ctx)).toBe("ran");
 		expect(routeComposerText("/rename   ", ctx)).toBe("ran");
+		expect(trace.titles).toBe(2);
 		expect(trace.renames).toEqual([]);
-		expect(trace.notices).toEqual([{ level: "warning", message: "usage: /rename <new name>" }, { level: "warning", message: "usage: /rename <new name>" }]);
+		expect(trace.notices).toEqual([]);
 	});
 
 	test("extended-context accepts on/off and passes the rest through as a toggle", () => {

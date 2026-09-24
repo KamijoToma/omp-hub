@@ -76,6 +76,7 @@ export type SessionCmdName =
 	| "set-extended-context"
 	| "clear-context"
 	| "rename"
+	| "generate-title"
 	| "upload-file";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
@@ -308,6 +309,11 @@ export class AgentRegistry {
 				const id = str(frame.id);
 				if (!id || typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") return;
 				this.#sessions.setActivity(id, { working: frame.working, inputRequired: frame.inputRequired });
+				// §2 `name`: the agent-side SDK session name (auto-titles included);
+				// the registry label follows it like a `rename`. Absent/blank leaves
+				// the label untouched — older agents never send the field.
+				const name = str(frame.name);
+				if (name) this.#sessions.rename(id, name);
 				return;
 			}
 			case "cmd-result": {
