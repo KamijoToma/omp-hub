@@ -1719,6 +1719,14 @@
 	background: var(--ok);
 }
 
+/* Completed-but-unvisited: idle green plus a halo so it reads as "look here". */
+.hb-rail-dot-done {
+	background: var(--ok);
+	box-shadow:
+		0 0 0 2px var(--bg),
+		0 0 0 3.5px color-mix(in oklch, var(--ok) 55%, transparent);
+}
+
 .hb-rail-dot-working,
 .hb-rail-dot-starting {
 	background: var(--accent);
@@ -1951,6 +1959,12 @@
 .hb-nav-badge-working {
 	color: var(--accent);
 	background: var(--accent-muted);
+}
+
+.hb-nav-badge-done {
+	color: var(--ok);
+	background: color-mix(in oklch, var(--ok) 16%, transparent);
+	animation: sh-fade-in 150ms ease-out;
 }
 
 .hb-nav-badge-input {

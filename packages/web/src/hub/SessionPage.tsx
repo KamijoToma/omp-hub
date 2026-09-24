@@ -19,6 +19,7 @@ import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { steerPendingCount } from "./steering-queue";
 import { useSessionAlerts, alertsEnabled, requestAlertPermission, setAlertsEnabled } from "./session-alerts";
+import { clearCompletedSession, useCompletedSessionTracker } from "./rail-completion";
 import { SessionView } from "./SessionView";
 
 export interface SessionPageProps {
@@ -191,6 +192,11 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 		[id],
 	);
 	const leave = useCallback((): void => navigate("/"), []);
+
+	// Local "task completed" markers: track working→idle edges registry-wide,
+	// and treat the session on screen as visited (its marker resets to idle).
+	useCompletedSessionTracker(id);
+	useEffect(() => clearCompletedSession(id), [id]);
 
 	// Cross-session alerts off the shared registry poll (bell lives in the rail).
 	const [alertsOn, setAlertsOn] = useState(alertsEnabled);
