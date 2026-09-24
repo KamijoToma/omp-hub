@@ -158,6 +158,8 @@ export interface SessionActivityFrame {
 	id: string;
 	working: boolean;
 	inputRequired: boolean;
+	/** SDK session name (auto-titles included); absent/blank leaves the registry label untouched. */
+	name?: string;
 }
 
 export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | SessionActivityFrame | CmdResultFrame | UsageResultFrame;

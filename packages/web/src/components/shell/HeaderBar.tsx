@@ -1,9 +1,11 @@
 import { LogOut, PanelLeft, PanelRight } from "lucide-react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GuestSnapshot } from "../../lib/client";
 import { fmtPercent, fmtTokens, shortenPath } from "../../lib/format";
 import { activeModelRole } from "../../lib/model-role";
 import { contextPercent } from "../../lib/usage";
+import { isImeComposing } from "./Composer";
 import { ThemeToggle } from "./ThemeToggle";
 
 export interface HeaderBarProps {
@@ -32,6 +34,11 @@ export interface HeaderBarProps {
 	 * where the gauge stays display-only.
 	 */
 	onOpenContext?(): void;
+	/**
+	 * Hub-only (`/s/<id>`): rename the session from the title bar (click, then
+	 * Enter). Left unset on `/join`, where the collab wire has no rename frame.
+	 */
+	onRename?(name: string): void;
 }
 
 /** Gauge track + percentage; shared by the read-only span and the hub button. */
@@ -56,6 +63,7 @@ export function HeaderBar({
 	onOpenModel,
 	onOpenThinking,
 	onOpenContext,
+	onRename,
 }: HeaderBarProps): ReactNode {
 	const { header, state, phase, readOnly } = snapshot;
 	const activeRole = activeModelRole(snapshot.entries, state?.model);
@@ -68,12 +76,57 @@ export function HeaderBar({
 			? `${fmtTokens(usage.tokens)} / ${fmtTokens(usage.contextWindow)} · `
 			: "";
 
+	// Title-bar rename (hub pages): the span becomes an inline input; Enter or
+	// blur commits, Esc discards. Empty drafts and no-op renames close quietly.
+	const [renaming, setRenaming] = useState(false);
+	const [draft, setDraft] = useState("");
+	const inputRef = useRef<HTMLInputElement | null>(null);
+	useEffect(() => {
+		if (renaming) inputRef.current?.select();
+	}, [renaming]);
+	const startRename =
+		onRename && !readOnly
+			? () => {
+					setDraft(title === "session" ? "" : title);
+					setRenaming(true);
+				}
+			: undefined;
+	const commitRename = (): void => {
+		setRenaming(false);
+		const name = draft.trim();
+		if (name && name !== title) onRename?.(name);
+	};
+
 	return (
 		<header className="sh-header">
 			<div className="sh-header-left">
-				<span className="sh-title" title={title}>
-					{title}
-				</span>
+				{renaming ? (
+					<input
+						ref={inputRef}
+						className="sh-title-input"
+						value={draft}
+						maxLength={200}
+						spellCheck={false}
+						autoComplete="off"
+						aria-label="session name"
+						placeholder="session name"
+						onChange={e => setDraft(e.target.value)}
+						onBlur={commitRename}
+						onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
+							if (isImeComposing(e)) return;
+							if (e.key === "Enter") commitRename();
+							else if (e.key === "Escape") setRenaming(false);
+						}}
+					/>
+				) : startRename ? (
+					<button type="button" className="sh-title sh-title-btn" title={`${title} — click to rename`} onClick={startRename}>
+						{title}
+					</button>
+				) : (
+					<span className="sh-title" title={title}>
+						{title}
+					</span>
+				)}
 				{state?.cwd && (
 					<span className="sh-cwd" title={state.cwd}>
 						{shortenPath(state.cwd)}

@@ -656,6 +656,15 @@ export async function postRename(id: string, name: string): Promise<string> {
 	return reply.name;
 }
 
+/** Generates a title from the conversation (§2 `generate-title`); returns the applied name. */
+export async function postGenerateTitle(id: string): Promise<string> {
+	const reply = await api<{ ok: true; name: string; session: SessionRecord }>(
+		`/api/sessions/${encodeURIComponent(id)}/title`,
+		{ method: "POST" },
+	);
+	return reply.name;
+}
+
 /** One browsable child directory of a machine listing (protocol §2 `DirListing`). */
 export interface DirEntry {
 	name: string;

@@ -53,6 +53,8 @@ export interface CommandContext {
 	startNewSession(): void;
 	/** POST the rename command; `SessionView` reports the applied name as a notice. */
 	renameSession(name: string): void;
+	/** Generate a title from the conversation (bare `/rename`); `SessionView` reports the applied name. */
+	generateTitle(): void;
 	/**
 	 * Resume another machine session (TUI `/resume`): a query resolves against
 	 * the machine's resumable sessions and starts the first match; empty opens
@@ -236,13 +238,14 @@ export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "new", description: "start a new session on this machine", run: ctx => ctx.startNewSession() },
 	{
 		name: "rename",
-		description: "rename this session — [new name]",
+		description: "rename this session — [new name]; bare regenerates a title",
 		run: (ctx, args) => {
 			const name = args.trim();
-			// Bare `/rename` is a usage notice, not a prompt: the sidebar's row
-			// dialog owns pointer-driven renames, the composer takes the name inline.
+			// Bare `/rename` regenerates a title from the conversation (TUI parity);
+			// the sidebar's row dialog owns pointer-driven renames, the composer
+			// takes the name inline.
 			if (!name) {
-				ctx.notify("warning", "usage: /rename <new name>");
+				ctx.generateTitle();
 				return;
 			}
 			ctx.renameSession(name);

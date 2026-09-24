@@ -296,9 +296,60 @@ describe("hub api", () => {
 		const awaiting = await waitFor((record) => record.activity?.inputRequired === true, "report input required");
 		expect(awaiting.activity?.working).toBe(false);
 
+		// §2 `name`: a sample carrying the SDK session name updates the registry
+		// label; a later sample without one leaves the label alone.
+		agent.ws.send(
+			JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: true, name: "Auth refactor" }),
+		);
+		const named = await waitFor((record) => record.name === "Auth refactor", "apply activity name");
+		expect(named.activity?.inputRequired).toBe(true);
+		agent.ws.send(JSON.stringify({ t: "session-activity", id: session.id, working: false, inputRequired: false }));
+		const unnamed = await waitFor((record) => record.activity?.working === false, "report working again");
+		expect(unnamed.name).toBe("Auth refactor");
+
 		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "done" }));
 		const exited = await waitForStatus(session.id, "exited");
 		expect(exited.activity).toBeUndefined();
+	});
+
+	test("POST /title dispatches generate-title and mirrors the label", async () => {
+		const { agent } = await connectAgent("m-gentitle", "gentitle-machine");
+		const session = await startSession("m-gentitle", "/srv/gentitle");
+		agent.ws.send(
+			JSON.stringify({ t: "session-ready", id: session.id, links: { full: "a", view: "b", web: "c", webView: "d" } }),
+		);
+		await waitForStatus(session.id, "live");
+
+		const pending = api(`/api/sessions/${session.id}/title`, { method: "POST" });
+		const cmd = await agent.wait(
+			(frame) => (frame.t === "cmd" && frame.cmd === "generate-title" ? (frame.reqId as string) : undefined),
+			"generate-title cmd",
+		);
+		agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd, ok: true, data: { name: "Generated title" } }));
+		const response = await pending;
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ ok: true, name: "Generated title" });
+		expect((await sessionJson(session.id)).name).toBe("Generated title");
+
+		// An agent-side refusal maps to the cmd plumbing error, and the label stays.
+		const refused = api(`/api/sessions/${session.id}/title`, { method: "POST" });
+		const retry = await agent.wait(
+			(frame) => (frame.t === "cmd" && frame.cmd === "generate-title" ? (frame.reqId as string) : undefined),
+			"second generate-title cmd",
+		);
+		agent.ws.send(
+			JSON.stringify({ t: "cmd-result", reqId: retry, ok: false, error: "Could not generate a session title." }),
+		);
+		const failed = await refused;
+		expect(failed.status).toBe(500);
+		expect((await failed.json())).toEqual({ error: "Could not generate a session title." });
+		expect((await sessionJson(session.id)).name).toBe("Generated title");
+
+		// Not live → dispatch refuses before any cmd round trip.
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "done" }));
+		await waitForStatus(session.id, "exited");
+		const dead = await api(`/api/sessions/${session.id}/title`, { method: "POST" });
+		expect(dead.status).toBe(409);
 	});
 
 	test("session-error flips the record to failed with the error", async () => {
