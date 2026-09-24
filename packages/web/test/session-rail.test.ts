@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { SessionRecord } from "../src/hub/api";
-import { filterHubSessions } from "../src/hub/SessionRail";
+import { filterHubSessions, railGlyphLabel } from "../src/hub/SessionRail";
 import {
 	alertText,
 	alertsEnabled,
@@ -114,5 +114,20 @@ describe("alert delivery policy", () => {
 		expect(alertsEnabled()).toBe(true);
 		setAlertsEnabled(false);
 		expect(alertsEnabled()).toBe(false);
+	});
+});
+
+describe("railGlyphLabel", () => {
+	test("prefers the session title over the project directory", () => {
+		expect(railGlyphLabel(record({ name: "fix parser bug", cwd: "/srv/omp/api" }))).toBe("F");
+	});
+
+	test("trims whitespace before taking the initial", () => {
+		expect(railGlyphLabel(record({ name: "  flaky test hunt" }))).toBe("F");
+	});
+
+	test("falls back to the project directory for blank names", () => {
+		expect(railGlyphLabel(record({ name: "   ", cwd: "/srv/omp/api" }))).toBe("A");
+		expect(railGlyphLabel(record({ name: "", cwd: "/" }))).toBe("?");
 	});
 });
