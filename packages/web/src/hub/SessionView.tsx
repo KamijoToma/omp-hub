@@ -54,10 +54,12 @@ import {
 	routeComposerText,
 	transcriptJsonl,
 } from "./commands";
+import { rejoinDelayMs, shouldAutoRejoin } from "./auto-rejoin";
 import { usePoolClient } from "./client-pool";
 import { ContextModal } from "./ContextModal";
 import { GoalModal } from "./GoalModal";
 import { HelpModal } from "./HelpModal";
+import { isSelfJoinNotice } from "./join-notice";
 import { LinksModal } from "./LinksModal";
 import { LoopModal } from "./LoopModal";
 import { ModelPicker } from "./ModelPicker";
@@ -84,12 +86,14 @@ export interface SessionViewProps {
 	/** Hub record for this session — names, links, machine. */
 	record: SessionRecord | null;
 	displayName: string;
+	/** Polled registry status: true while the hub session is live, even if the room is mid-reconnect. */
+	registryLive: boolean;
 	onLeave(): void;
 	/** Opens the page-level quick switcher (the `/sessions` slash command path). */
 	onOpenSwitcher(): void;
 }
 
-export function SessionView({ sessionId, link, record, displayName, onLeave, onOpenSwitcher }: SessionViewProps): ReactNode {
+export function SessionView({ sessionId, link, record, displayName, registryLive, onLeave, onOpenSwitcher }: SessionViewProps): ReactNode {
 	const { client, error, rejoin } = usePoolClient(sessionId, link, displayName);
 
 	if (error) {
@@ -113,6 +117,8 @@ export function SessionView({ sessionId, link, record, displayName, onLeave, onO
 			client={client}
 			sessionId={sessionId}
 			record={record}
+			displayName={displayName}
+			registryLive={registryLive}
 			onLeave={onLeave}
 			onRejoin={rejoin}
 			onOpenSwitcher={onOpenSwitcher}
@@ -124,12 +130,14 @@ interface SessionProps {
 	client: GuestClient;
 	sessionId: string;
 	record: SessionRecord | null;
+	displayName: string;
+	registryLive: boolean;
 	onLeave(): void;
 	onRejoin(): void;
 	onOpenSwitcher(): void;
 }
 
-function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher }: SessionProps): ReactNode {
+function Session({ client, sessionId, record, displayName, registryLive, onLeave, onRejoin, onOpenSwitcher }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
 	// Steering messages (TUI input-controller parity): a prompt submitted while
 	// the host agent streams queues host-side and stays visible here until it
@@ -533,13 +541,33 @@ function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher 
 		document.title = `${title} · omp hub`;
 	}, [title]);
 
+	// Auto-rejoin while the registry still says live: a fatal-looking relay
+	// close ("no such room" right after a hub restart, host mid-reconnect) is
+	// transient in the hub — the room returns. Retry with backoff; a registry
+	// flip to exited/failed stops the loop and restores the end card.
+	const [rejoinAttempt, setRejoinAttempt] = useState(0);
+	useEffect(() => {
+		if (!shouldAutoRejoin(snap.phase, registryLive)) return;
+		const timer = setTimeout(() => {
+			setRejoinAttempt(attempt => attempt + 1);
+			onRejoin();
+		}, rejoinDelayMs(rejoinAttempt));
+		return () => clearTimeout(timer);
+	}, [snap.phase, registryLive, rejoinAttempt, onRejoin]);
+	useEffect(() => {
+		// Backoff resets only on a real reconnect (phase left the ended cycle).
+		if (snap.phase === "live") setRejoinAttempt(0);
+	}, [snap.phase]);
+
 	const drawerAgent = selectedId != null ? snap.agents.find(a => a.id === selectedId) : undefined;
 	const closeModal = useCallback(() => setModal(null), []);
 	const localToasts = useLocalToasts();
-	const toasts = useMemo(
-		() => (localToasts.length === 0 ? snap.notices : [...snap.notices, ...localToasts]),
-		[snap.notices, localToasts],
-	);
+	const toasts = useMemo(() => {
+		// The host echoes every guest join into the room; our own join is what
+		// switching to a session is, so it never surfaces as a toast.
+		const notices = snap.notices.filter(n => !isSelfJoinNotice(n.message, displayName));
+		return localToasts.length === 0 ? notices : [...notices, ...localToasts];
+	}, [snap.notices, localToasts, displayName]);
 
 	return (
 		<div className="sh-app">
@@ -619,7 +647,13 @@ function Session({ client, sessionId, record, onLeave, onRejoin, onOpenSwitcher 
 					/>
 				</>
 			)}
-			<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			{/* The registry still owns truth: ended + live reads as a reconnect, not an end. */}
+			<Banners
+				phase={shouldAutoRejoin(snap.phase, registryLive) ? "reconnecting" : snap.phase}
+				endedReason={snap.endedReason}
+				onRejoin={onRejoin}
+				onNewLink={onLeave}
+			/>
 			<Toasts notices={toasts} />
 			{modal === "model" && <ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "context" && <ContextModal sessionId={sessionId} onClose={closeModal} />}

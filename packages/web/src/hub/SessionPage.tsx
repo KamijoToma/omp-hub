@@ -232,6 +232,7 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 						link={live.links.full}
 						record={live}
 						displayName={displayName}
+						registryLive={record?.status === "live"}
 						onLeave={leave}
 						onOpenSwitcher={() => setSwitcherOpen(true)}
 					/>
