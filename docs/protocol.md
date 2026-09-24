@@ -2,10 +2,13 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.4.0** — reported by `hello.version` and `GET /api/health` — requires a
-`Bearer` authorization header on the agent WebSocket handshake. The legacy query-string token
-is rejected; upgrade the hub and agent together. Revision 0.3.0 added the machine-level usage
-relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`, §5
+Revision **0.5.0** — reported by `hello.version` and `GET /api/health` — adds the per-profile
+usage relay (§2 `usage-req.profile`, §3 `?profile=`, §5 `/usage/<machineId>` profile selector);
+upgrade the hub and agent together: hubs may send `profile` to any agent, but only ≥0.5.0
+agents honor it (older ones answer from the default profile's dashboard, so the hub gates the
+parameter on `hello.version`). Revision 0.4.0 requires a `Bearer` authorization header on the
+agent WebSocket handshake; the legacy query-string token is rejected. Revision 0.3.0 added the
+machine-level usage relay (§2 `usage-req`/`usage-res`, §3 `GET|HEAD|POST /api/machines/:id/usage/*`, §5
 `/usage/<machineId>`) and optional `hello.tmpdir` (§2). Revision 0.2.0 added the
 `get-context` session command (§2) and `GET /api/sessions/:id/context` (§3).
 
@@ -61,7 +64,9 @@ daemon; use TLS/WSS outside loopback.
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
 { t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
-  path: string, bodyB64?: string }                                 // machine-level stats relay
+  path: string, bodyB64?: string, profile?: string }              // machine-level stats relay;
+                                                                  // `profile` (0.5.0+) names the omp
+                                                                  // profile whose dashboard serves it
 ```
 
 Semantics:
@@ -94,10 +99,15 @@ Semantics:
   treat it as optional.
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
   reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
-- `usage-req` → `usage-res` relays one HTTP request to the machine's local omp stats dashboard
-  (`127.0.0.1:3847`; the agent starts it on demand and reuses a live one). `path` must be an
-  absolute path on that dashboard origin; `bodyB64` is POST-only. Machine-level: no session
-  required, answered even with zero sessions. The hub abandons the request after the same
+- `usage-req` → `usage-res` relays one HTTP request to a machine-local omp stats dashboard
+  (`127.0.0.1:3847` for the default profile; the agent starts it on demand and reuses a live
+  one). `path` must be an absolute path on that dashboard origin; `bodyB64` is POST-only.
+  `profile` (0.5.0+) selects the named omp profile's own stats database: the agent spawns a
+  loopback dashboard for that profile (`OMP_PROFILE`/`PI_PROFILE`, same env contract as
+  session hosts), caches it per profile, and validates the name with omp's profile rules —
+  invalid names answer `ok:false` `"invalid usage profile: …"`. Omitted, `""`, or `"default"`
+  means the default profile. Machine-level: no session required, answered even with zero
+  sessions. The hub abandons the request after the same
   15 s timeout as `cmd` (`usage timeout` → 504 to the caller).
 - Agent disconnect: sessions → `exited` reason `"agent disconnected"`; machine stays listed with
   `connected: false` until hub restart.
@@ -366,7 +376,7 @@ interface MachineRecord {
 | `GET /api/health` | → `{ ok: true, version }` (no auth) |
 | `GET /api/machines` | → `{ machines: MachineRecord[] }` |
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
-| `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to the machine's local omp stats dashboard; status/content-type/body replayed verbatim. 404 unknown machine, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
+| `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to a machine-local omp stats dashboard; status/content-type/body replayed verbatim. `?profile=<name>` (0.5.0+) selects the named omp profile's dashboard — consumed by the hub, never forwarded in `<path>`; `default`/empty mean the default profile. 404 unknown machine, 400 invalid profile name or agent <0.5.0, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
@@ -452,7 +462,8 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
 
 localStorage keys: `omp-hub.token`, `omp-hub.name` (display name, default `"guest"`),
-plus vendored `omp-collab-theme`, `omp.collab.name` (unused on hub pages).
+`omp-hub.usage.profile` (usage page profile selection), plus vendored `omp-collab-theme`,
+`omp.collab.name` (unused on hub pages).
 
 ## 6. Web slash commands (composer interception, §5 session page)
 

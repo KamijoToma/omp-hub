@@ -481,4 +481,79 @@ describe("hub api", () => {
 		const badJson = await api("/api/sessions", { method: "POST", body: "{" });
 		expect(badJson.status).toBe(400);
 	});
+
+	/** Registers the next usage-req wait; answers it with an empty JSON usage-res. */
+	async function answerUsageReq(
+		agent: FakeAgent,
+	): Promise<{ path: unknown; profile: unknown }> {
+		const pending = agent.wait((frame) => (frame.t === "usage-req" ? frame : undefined), "usage-req");
+		// Attach the reply eagerly so the hub's 15 s relay budget never matters.
+		void pending.then((frame) => {
+			agent.ws.send(JSON.stringify({
+				t: "usage-res",
+				reqId: frame.reqId,
+				ok: true,
+				status: 200,
+				contentType: "application/json",
+				bodyB64: Buffer.from("{}").toString("base64"),
+			}));
+		});
+		const frame = await pending;
+		return { path: frame.path, profile: frame.profile };
+	}
+
+	test("usage relay forwards profile on the frame and strips it from the dashboard path", async () => {
+		const { agent } = await connectAgent("m-usage-prof", "usage-prof-machine", { version: "0.5.0" });
+
+		const pending = api("/api/machines/m-usage-prof/usage/api/stats?range=24h&profile=fast");
+		const seen = await answerUsageReq(agent);
+		const response = await pending;
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({});
+		expect(seen).toEqual({ path: "/api/stats?range=24h", profile: "fast" });
+	});
+
+	test("usage relay treats default and empty profile as the default dashboard", async () => {
+		const { agent } = await connectAgent("m-usage-def", "usage-def-machine", { version: "0.5.0" });
+
+		const withDefault = api("/api/machines/m-usage-def/usage/api/stats?range=all&profile=default");
+		const first = await answerUsageReq(agent);
+		expect((await withDefault).status).toBe(200);
+		expect(first).toEqual({ path: "/api/stats?range=all", profile: undefined });
+
+		const omitted = api("/api/machines/m-usage-def/usage/api/stats");
+		const second = await answerUsageReq(agent);
+		expect((await omitted).status).toBe(200);
+		expect(second).toEqual({ path: "/api/stats", profile: undefined });
+	});
+
+	test("usage relay rejects invalid profile names with 400", async () => {
+		const { agent } = await connectAgent("m-usage-bad", "usage-bad-machine", { version: "0.5.0" });
+
+		const response = await api("/api/machines/m-usage-bad/usage/api/stats?range=24h&profile=../etc");
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "invalid profile name" });
+
+		await yieldLoop();
+		expect(agent.frames.some((frame) => frame.t === "usage-req")).toBe(false);
+	});
+
+	test("usage relay refuses profile requests for agents older than 0.5.0", async () => {
+		const { agent } = await connectAgent("m-usage-old", "usage-old-machine", { version: "0.4.0" });
+
+		const refused = await api("/api/machines/m-usage-old/usage/api/stats?range=24h&profile=fast");
+		expect(refused.status).toBe(400);
+		expect(await refused.json()).toEqual({
+			error: "agent 0.4.0 does not support profile usage relay (needs 0.5.0+)",
+		});
+		await yieldLoop();
+		expect(agent.frames.some((frame) => frame.t === "usage-req")).toBe(false);
+
+		// Without a profile the relay still works against the old agent.
+		const pending = api("/api/machines/m-usage-old/usage/api/stats?range=24h");
+		const seen = await answerUsageReq(agent);
+		expect((await pending).status).toBe(200);
+		expect(seen).toEqual({ path: "/api/stats?range=24h", profile: undefined });
+	});
 });

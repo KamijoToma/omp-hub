@@ -412,7 +412,7 @@ export class AgentRegistry {
 	 * stays silent for `cmdTimeoutMs`; never rejects. On success `data` is the
 	 * agent's `usage-res` frame (`status`, optional `contentType`/`bodyB64`).
 	 */
-	sendUsageRequest(machineId: string, method: "GET" | "HEAD" | "POST", path: string, bodyB64?: string): Promise<CmdResult> {
+	sendUsageRequest(machineId: string, method: "GET" | "HEAD" | "POST", path: string, bodyB64?: string, profile?: string): Promise<CmdResult> {
 		const conn = this.#connections.get(machineId);
 		if (!conn) return Promise.resolve({ ok: false, error: "agent offline" });
 		const reqId = newCmdReqId();
@@ -433,6 +433,7 @@ export class AgentRegistry {
 				method,
 				path,
 				...(bodyB64 === undefined ? {} : { bodyB64 }),
+				...(profile === undefined ? {} : { profile }),
 			} satisfies AgentCommand));
 		} catch (error) {
 			this.#pending.delete(reqId);
@@ -445,6 +446,11 @@ export class AgentRegistry {
 
 	getMachine(machineId: string): MachineRecord | undefined {
 		return this.#record(this.#machines.get(machineId));
+	}
+
+	/** Version reported by `hello` ("test" in tests, "unknown" for pre-0.2.0 agents); null when offline. */
+	agentVersion(machineId: string): string | null {
+		return this.#connections.get(machineId)?.version ?? null;
 	}
 
 	isOnline(machineId: string): boolean {

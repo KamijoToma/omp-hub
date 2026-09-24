@@ -67,6 +67,22 @@ describe("usage api", () => {
 		expect(result).toEqual({ processed: 2, files: 1, totalMessages: 9 });
 	});
 
+	test("profile selections ride the query string and default stays omitted", async () => {
+		stubFetch(() => json({ overall: {}, byModel: [], timeSeries: [] }));
+
+		await getMachineUsage("m-1", "7d", "fast");
+		expect(calls[0]!.url).toBe("/api/machines/m-1/usage/api/stats?range=7d&profile=fast");
+
+		await getMachineUsage("m-1", "7d", "default");
+		expect(calls[1]!.url).toBe("/api/machines/m-1/usage/api/stats?range=7d");
+
+		await syncMachineUsage("m-1", "thinking");
+		expect(calls[2]).toMatchObject({ url: "/api/machines/m-1/usage/api/sync?profile=thinking", init: { method: "POST" } });
+
+		await syncMachineUsage("m-1", "default");
+		expect(calls[3]!.url).toBe("/api/machines/m-1/usage/api/sync");
+	});
+
 	test("surfaces relay failures as HubApiError", async () => {
 		stubFetch(() => json({ error: "machine offline" }, 502));
 
