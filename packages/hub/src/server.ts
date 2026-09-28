@@ -185,12 +185,12 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 }
 
 /** `Bun.Server.reload` exists at runtime but is missing from the pinned types. */
-type ReloadableServer<SocketData> = Bun.Server<SocketData> & {
+export type ReloadableServer<SocketData> = Bun.Server<SocketData> & {
 	reload(options: { fetch: Bun.Server<SocketData>["fetch"]; websocket: Bun.WebSocketHandler<SocketData> }): void;
 };
 
 /** Assembles the public {@link Hub} view over a bound server and its current core. */
-function hubView(server: Bun.Server<HubSocketData>, core: HubCore): Hub {
+export function hubView(server: Bun.Server<HubSocketData>, core: HubCore): Hub {
 	const scheme = tlsConfigured(core.cfg) ? "https" : "http";
 	// A wildcard bind is not a navigable host: report the loopback name instead.
 	const host = core.cfg.hostname === "0.0.0.0" || core.cfg.hostname === "::" || core.cfg.hostname === "" ? "localhost" : core.cfg.hostname;
