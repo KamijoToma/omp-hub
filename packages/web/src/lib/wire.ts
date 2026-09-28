@@ -146,6 +146,14 @@ export interface CompactionEntry extends EntryBase {
 	shortSummary?: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/**
+	 * Method that produced this compaction and the projected context size after
+	 * the rewrite (display metadata). Not part of the pinned upstream skeleton —
+	 * the host's richer entry serializes them through; absent on legacy sessions
+	 * and extension-provided compactions.
+	 */
+	method?: string;
+	tokensAfter?: number;
 }
 
 export interface BranchSummaryEntry extends EntryBase {

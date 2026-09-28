@@ -426,26 +426,6 @@ export async function sweepOldUploads(): Promise<void> {
 }
 
 /**
- * Completion notice for a manual `/compact` (exported for tests): names the
- * compaction method and the before → after token counts. `method`/`tokensAfter`
- * ride the committed journal entry rather than the `CompactionResult`, and
- * extension-driven compactions omit both — every combination must read clean.
- */
-export function compactionNoticeText(
-	result: { tokensBefore: number },
-	entry?: { method?: unknown; tokensAfter?: unknown },
-): string {
-	const before = Math.max(0, Math.round(result.tokensBefore)).toLocaleString("en-US");
-	const after =
-		typeof entry?.tokensAfter === "number" && Number.isFinite(entry.tokensAfter)
-			? Math.max(0, Math.round(entry.tokensAfter)).toLocaleString("en-US")
-			: undefined;
-	const method = typeof entry?.method === "string" && entry.method.trim() ? entry.method : undefined;
-	const tokens = after === undefined ? before : `${before} → ${after}`;
-	return `context compacted${method ? ` (${method})` : ""} · ${tokens} tokens`;
-}
-
-/**
  * First text of a prompt payload: a bare string, or the first text block.
  * Covers collab prompt entries (`custom_message` content) and user messages
  * alike; image-only payloads yield `undefined` (exported for tests).
@@ -542,20 +522,6 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// only — progress is visible in the transcript via collab events.
 			void session
 				.compact(instructions, modeDef === undefined ? undefined : { mode: modeDef.name })
-				.then(result => {
-					// The result omits `method`/`tokensAfter`; the committed journal
-					// entry carries both. Match on the result's own fields so an
-					// interleaved entry can never mislabel the notice.
-					const entry = session.sessionManager
-						.getBranch()
-						.findLast(
-							(candidate): candidate is Extract<StoredSessionEntry, { type: "compaction" }> =>
-								candidate.type === "compaction" &&
-								candidate.tokensBefore === result.tokensBefore &&
-								candidate.firstKeptEntryId === result.firstKeptEntryId,
-						);
-					session.emitNotice("info", compactionNoticeText(result, entry));
-				})
 				.catch((err: unknown) => {
 					deps.log.error(`compact failed: ${errorMessage(err)}`);
 					// The dispatch is otherwise silent on the wire (the cmd already

@@ -515,7 +515,12 @@ const EntryRow = memo(function EntryRow({
 		case "compaction":
 			return (
 				<div className="tr-divider" title={entry.shortSummary ?? entry.summary}>
-					<span>context compacted · {fmtTokens(entry.tokensBefore)} tokens</span>
+					<span>
+						context compacted{entry.method ? ` (${entry.method})` : ""} ·{" "}
+						{entry.tokensAfter !== undefined
+							? `${fmtTokens(entry.tokensBefore)} → ${fmtTokens(entry.tokensAfter)} tokens`
+							: `${fmtTokens(entry.tokensBefore)} tokens`}
+					</span>
 				</div>
 			);
 		case "branch_summary":
