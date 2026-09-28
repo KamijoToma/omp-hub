@@ -6,6 +6,7 @@ import { Banners } from "../components/shell/Banners";
 import { Composer } from "../components/shell/Composer";
 import { ConnectScreen } from "../components/shell/ConnectScreen";
 import { HeaderBar } from "../components/shell/HeaderBar";
+import { StatsBar } from "../components/shell/StatsBar";
 import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
 import { GuestClient } from "../lib/client";
@@ -163,6 +164,7 @@ function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
 			/>
+			<StatsBar snapshot={snap} />
 			<main className="sh-main">
 				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
 					<div className="sh-transcript">
