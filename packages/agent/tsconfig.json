@@ -6,17 +6,9 @@
     "target": "ESNext",
     "strict": true,
     "skipLibCheck": true,
-    "types": ["bun", "assets"],
-    "typeRoots": ["./node_modules/@types", "../../../oh-my-pi/types"],
+    "types": ["bun"],
     "allowArbitraryExtensions": true,
-    "noEmit": true,
-    "paths": {
-      "@oh-my-pi/omp-stats": ["../../../oh-my-pi/packages/stats/src/index.ts"],
-      "@oh-my-pi/pi-ai": ["../../../oh-my-pi/packages/ai/src/index.ts"],
-      "@oh-my-pi/pi-coding-agent": ["../../../oh-my-pi/packages/coding-agent/src/index.ts"],
-      "@oh-my-pi/pi-coding-agent/*": ["../../../oh-my-pi/packages/coding-agent/src/*.ts"],
-      "@oh-my-pi/pi-tui/thinking": ["../../../oh-my-pi/packages/tui/src/thinking.ts"],
-      "@oh-my-pi/pi-utils": ["../../../oh-my-pi/packages/utils/src/index.ts"]
-    }
-  }
+    "noEmit": true
+  },
+  "include": ["src", "test", "types"]
 }

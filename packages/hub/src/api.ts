@@ -11,6 +11,8 @@ export interface ApiContext {
 	readonly cfg: Config;
 	readonly sessions: SessionStore;
 	readonly agents: AgentRegistry;
+	/** Set by the bound hub; absent in library/tests. Invoked before the reply returns. */
+	readonly restart?: () => void;
 }
 
 /** `cmd` parameters, minus the routing fields the hub fills in. */
@@ -93,6 +95,14 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 
 	if (req.method === "GET" && route === "/api/machines") {
 		return json({ machines: ctx.agents.listMachines() });
+	}
+	if (req.method === "POST" && route === "/api/hub/restart") {
+		// Upgrade restart (protocol §3): flush the snapshot, spawn a fresh hub
+		// process that waits for the port, answer, then release. `restart` is
+		// wired only by the real entry — the library keeps it unset.
+		if (ctx.restart === undefined) return json({ error: "restart is not available" }, 501);
+		ctx.restart();
+		return json({ ok: true });
 	}
 	const machineFs = MACHINE_FS_PATH_RE.exec(route);
 	if (machineFs && req.method === "GET") {

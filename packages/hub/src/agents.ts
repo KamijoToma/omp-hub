@@ -6,7 +6,7 @@
  */
 import { derivePublicBase, type Config } from "./config";
 import { log } from "./log";
-import { randomId, type SessionLinks, type SessionStore } from "./sessions";
+import { isTerminalStatus, randomId, type SessionLinks, type SessionStatus, type SessionStore } from "./sessions";
 
 export interface MachineRecord {
 	machineId: string;
@@ -178,6 +178,15 @@ interface Connection {
 	lastHb: number;
 }
 
+/** One live agent connection, handed over between hub cores on hot reload. */
+export interface AdoptedConnection {
+	ws: AgentSocket;
+	machineId: string;
+	version: string;
+	connectedAt: number;
+	lastHb: number;
+}
+
 /** One in-flight `cmd`, keyed by `reqId` until the agent answers or the timeout fires. */
 interface PendingCmd {
 	machineId: string;
@@ -192,6 +201,22 @@ interface MachineState {
 	connected: boolean;
 	/** Reported by `hello`; null until then and for pre-0.3.0 agents. */
 	tmpdir: string | null;
+}
+
+/** Tolerant `hb.sessions` parse: a malformed payload reads as "not reported". */
+function parseHbSessions(raw: unknown): Map<string, SessionStatus> | null {
+	if (!Array.isArray(raw)) return null;
+	const statuses = new Map<string, SessionStatus>();
+	for (const entry of raw) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const candidate = entry as { id?: unknown; status?: unknown };
+		if (typeof candidate.id !== "string" || candidate.id === "") continue;
+		if (candidate.status !== "starting" && candidate.status !== "live" && candidate.status !== "exited" && candidate.status !== "failed") {
+			continue;
+		}
+		statuses.set(candidate.id, candidate.status);
+	}
+	return statuses;
 }
 
 function asFrame(raw: string): Frame | null {
@@ -291,9 +316,11 @@ export class AgentRegistry {
 			return;
 		}
 		switch (frame.t) {
-			case "hb":
+			case "hb": {
 				conn.lastHb = Date.now();
+				this.#reconcileSessions(conn, frame.sessions);
 				return;
+			}
 			case "pong":
 				// Recorded for observability only: pong never replaces hb.
 				return;
@@ -498,6 +525,65 @@ export class AgentRegistry {
 			if (record) records.push(record);
 		}
 		return records;
+	}
+
+	/** Known machines with their live sockets removed — the hot-reload handover. */
+	drainMachines(): MachineRecord[] {
+		const machines = this.listMachines();
+		this.#machines.clear();
+		return machines;
+	}
+
+	/** Re-registers machines handed over by a previous hub core (hot reload). */
+	adoptMachines(records: readonly MachineRecord[]): void {
+		for (const record of records) {
+			this.#machines.set(record.machineId, {
+				machineId: record.machineId,
+				name: record.name,
+				connectedAt: record.connectedAt,
+				connected: record.connected,
+				tmpdir: record.tmpdir ?? null,
+			});
+		}
+	}
+
+	/** Live agent sockets, detached from this registry — the hot-reload handover. */
+	drainConnections(): AdoptedConnection[] {
+		const connections = [...this.#connections.values()];
+		this.#connections.clear();
+		return connections;
+	}
+
+	/** Re-registers connections drained from a previous hub core (hot reload). */
+	adoptConnections(connections: readonly AdoptedConnection[]): void {
+		for (const connection of connections) {
+			this.#connections.set(connection.machineId, { ...connection });
+		}
+	}
+
+	/**
+	 * Upgrade-restart reconcile (protocol §3): heartbeats carry the daemon's
+	 * child list, so snapshot-restored records the daemon no longer knows about
+	 * (its own restart, a lost child) flip to a terminal state instead of
+	 * staying `live` forever. Only records created before this agent connection
+	 * took part — anything started afterwards follows the normal flow, and an
+	 * absent id is only meaningful once this connection has children to report.
+	 */
+	#reconcileSessions(conn: Connection, reported: unknown): void {
+		const statuses = parseHbSessions(reported);
+		if (statuses === null) return;
+		for (const record of this.#sessions.list()) {
+			if (record.machineId !== conn.machineId || isTerminalStatus(record.status)) continue;
+			if (record.startedAt >= conn.connectedAt) continue;
+			const status = statuses.get(record.id);
+			if (status === undefined) {
+				this.#sessions.markExited(record.id, "agent heartbeat: no such child");
+			} else if (status === "exited") {
+				this.#sessions.markExited(record.id, "agent heartbeat");
+			} else if (status === "failed") {
+				this.#sessions.markFailed(record.id, "agent heartbeat");
+			}
+		}
 	}
 
 	#record(machine: MachineState | undefined): MachineRecord | undefined {

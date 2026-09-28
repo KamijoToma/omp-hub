@@ -11,6 +11,7 @@ import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
@@ -29,6 +30,7 @@ import type { ShakeMode } from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import type { SessionEntry as StoredSessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { cfgExtendedContext as CfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createLogger, errorMessage, type Logger } from "./log";
@@ -160,12 +162,6 @@ type McpClient = typeof import("@oh-my-pi/pi-coding-agent/mcp/client");
 type McpManagerClass = typeof MCPManager;
 /** User/project `mcp.json` path resolution (pi-utils, same resolver the SDK discovery uses). */
 type GetMCPConfigPathFn = typeof import("@oh-my-pi/pi-utils").getMCPConfigPath;
-/** Registered setting descriptors the command surface reads/writes (SDK typed-settings registry). */
-type SettingsDescriptors = {
-	extendedContext: typeof import("@oh-my-pi/pi-coding-agent/session/context-settings").cfgExtendedContext;
-	collabDisplayName: typeof import("@oh-my-pi/pi-coding-agent/collab/settings").cfgCollabDisplayName;
-	loopConditionTimeoutMs: typeof import("@oh-my-pi/pi-coding-agent/modes/settings").cfgLoopConditionTimeoutMs;
-};
 
 /**
  * SDK functions the command surface needs, loaded lazily in `run()` after the
@@ -187,8 +183,8 @@ interface CommandDeps {
 		manager: McpManagerClass;
 		configPath: GetMCPConfigPathFn;
 	};
-	/** Setting descriptors (SDK typed-settings registry): extendedContext, collab.displayName, loop.conditionTimeoutMs. */
-	cfg: SettingsDescriptors;
+	/** Typed `extendedContext` setting descriptor (SDK ≥ v18 descriptor registry; string keys are gone). */
+	cfgExtendedContext: typeof CfgExtendedContext;
 	/** Background dispatches (`compact`) can only log their failures. */
 	log: Logger;
 }
@@ -222,7 +218,7 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 			defaultThinkingLevel: entry.thinking?.defaultLevel ?? null,
 		})),
 		roles: agentRoles(session, available, deps),
-		extendedContext: deps.cfg.extendedContext.get(session.settings),
+		extendedContext: deps.cfgExtendedContext.get(session.settings),
 		goal: goalState(session),
 		loop,
 	};
@@ -467,26 +463,6 @@ export async function sweepOldUploads(): Promise<void> {
 	} catch {
 		// the sweep is opportunistic; tmp cleaner policies own the real reclamation
 	}
-}
-
-/**
- * Completion notice for a manual `/compact` (exported for tests): names the
- * compaction method and the before → after token counts. `method`/`tokensAfter`
- * ride the committed journal entry rather than the `CompactionResult`, and
- * extension-driven compactions omit both — every combination must read clean.
- */
-export function compactionNoticeText(
-	result: { tokensBefore: number },
-	entry?: { method?: unknown; tokensAfter?: unknown },
-): string {
-	const before = Math.max(0, Math.round(result.tokensBefore)).toLocaleString("en-US");
-	const after =
-		typeof entry?.tokensAfter === "number" && Number.isFinite(entry.tokensAfter)
-			? Math.max(0, Math.round(entry.tokensAfter)).toLocaleString("en-US")
-			: undefined;
-	const method = typeof entry?.method === "string" && entry.method.trim() ? entry.method : undefined;
-	const tokens = after === undefined ? before : `${before} → ${after}`;
-	return `context compacted${method ? ` (${method})` : ""} · ${tokens} tokens`;
 }
 
 /**
@@ -832,20 +808,6 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// only — progress is visible in the transcript via collab events.
 			void session
 				.compact(instructions, modeDef === undefined ? undefined : { mode: modeDef.name })
-				.then(result => {
-					// The result omits `method`/`tokensAfter`; the committed journal
-					// entry carries both. Match on the result's own fields so an
-					// interleaved entry can never mislabel the notice.
-					const entry = session.sessionManager
-						.getBranch()
-						.findLast(
-							(candidate): candidate is Extract<StoredSessionEntry, { type: "compaction" }> =>
-								candidate.type === "compaction" &&
-								candidate.tokensBefore === result.tokensBefore &&
-								candidate.firstKeptEntryId === result.firstKeptEntryId,
-						);
-					session.emitNotice("info", compactionNoticeText(result, entry));
-				})
 				.catch((err: unknown) => {
 					deps.log.error(`compact failed: ${errorMessage(err)}`);
 					// The dispatch is otherwise silent on the wire (the cmd already
@@ -1018,9 +980,9 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
 				throw new Error("set-extended-context requires a boolean enabled");
 			}
-			const next = frame.enabled ?? !deps.cfg.extendedContext.get(session.settings);
-			deps.cfg.extendedContext.set(session.settings, next);
-			return { extendedContext: deps.cfg.extendedContext.get(session.settings) };
+			const next = frame.enabled ?? !deps.cfgExtendedContext.get(session.settings);
+			deps.cfgExtendedContext.set(session.settings, next);
+			return { extendedContext: deps.cfgExtendedContext.get(session.settings) };
 		}
 		case "clear-context": {
 			// TUI `/clear` parity (oh-my-pi `handleResetContextCommand`): settle an
@@ -1209,9 +1171,9 @@ async function run(): Promise<void> {
 
 	// Static SDK imports run before stdout sealing and this catch boundary;
 	// load them here so native-binding failures still reach the supervisor as
-	// JSONL. Same for the role-model helpers and the compact/loop-condition
-	// modules: they transitively pull the SDK tree, which cannot load before
-	// this boundary in a broken-native install.
+	// JSONL. Same for the role-model helpers, the compact/loop-condition
+	// modules, and the settings descriptors: they transitively pull the SDK
+	// tree, which cannot load before this boundary in a broken-native install.
 	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
 	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
 	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
@@ -1228,7 +1190,7 @@ async function run(): Promise<void> {
 	const { cfgExtendedContext } = await import("@oh-my-pi/pi-coding-agent/session/context-settings");
 	const { cfgCollabDisplayName } = await import("@oh-my-pi/pi-coding-agent/collab/settings");
 	const { cfgLoopConditionTimeoutMs } = await import("@oh-my-pi/pi-coding-agent/modes/settings");
-	const { createStubUIContext } = await import("./ui-stub");
+	const { createCollabUiBridge } = await import("./ui-bridge");
 	const commandDeps: CommandDeps = {
 		parseThinkingLevel: parseConfiguredThinkingLevel,
 		modelRoles,
@@ -1237,7 +1199,7 @@ async function run(): Promise<void> {
 		compactModes: COMPACT_MODES,
 		evaluateLoopCondition,
 		mcp: { config: mcpConfig, client: mcpClient, manager: MCPManager, configPath: getMCPConfigPath },
-		cfg: { extendedContext: cfgExtendedContext, collabDisplayName: cfgCollabDisplayName, loopConditionTimeoutMs: cfgLoopConditionTimeoutMs },
+		cfgExtendedContext,
 		log,
 	};
 
@@ -1245,7 +1207,7 @@ async function run(): Promise<void> {
 	// one session, and the global would freeze the first cwd.
 	const settings = await Settings.loadIsolated({ cwd: config.cwd, agentDir: config.agentDir });
 	const displayName = config.name?.trim() || basename(config.cwd);
-	commandDeps.cfg.collabDisplayName.override(settings, displayName);
+	cfgCollabDisplayName.override(settings, displayName);
 
 	// Resume opens the recorded history (CLI `--resume` semantics: model,
 	// thinking level, and entries come back from the file); `initialCwd` keeps
@@ -1264,12 +1226,17 @@ async function run(): Promise<void> {
 		agentId: `hub-${config.id}`,
 		agentDisplayName: displayName,
 		hasUI: false,
+		interactivePrompts: true,
 		autoApprove: true,
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));
-	const ui = createStubUIContext();
-	setToolUIContext(ui, false);
+	// The bridge surfaces ask/select/editor dialogs to collab guests
+	// (docs/protocol.md §"Interactive ask bridging"); `interactivePrompts` is
+	// what registers the `ask` tool at all (SDK gates it on `canPromptUser`).
+	let collabHost: CollabHost | undefined;
+	const ui = createCollabUiBridge(() => collabHost);
+	setToolUIContext(ui, true);
 	await initializeExtensions(session, {
 		uiContext: ui,
 		reportSendError: () => {},
@@ -1293,13 +1260,19 @@ async function run(): Promise<void> {
 			subscribe: listener => session.subscribe(listener),
 			getCwd: () => session.sessionManager.getCwd(),
 			getSessionId: () => session.sessionManager.getSessionId(),
-			conditionTimeoutMs: () => commandDeps.cfg.loopConditionTimeoutMs.get(settings) ?? 120_000,
+			// Hub floor: SDK default is 30s; keep the hub's 120s unless the setting is
+			// explicitly configured (global/project config, env, or runtime override).
+			conditionTimeoutMs: () =>
+				settings.isConfigured(cfgLoopConditionTimeoutMs) ? cfgLoopConditionTimeoutMs.get(settings) : 120_000,
 		},
 		evaluate: evaluateLoopCondition,
 	});
 
 	const ctx = buildCollabCtx(session, eventBus);
 	const host = new CollabHost(ctx);
+	// Before start(): a session_start hook dialog raised during startup must
+	// reach the bridge even while the relay connection is still opening.
+	collabHost = host;
 	await host.start(config.relayUrl, config.webUrl);
 	ctx.collabHost = host;
 

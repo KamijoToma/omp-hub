@@ -21,6 +21,12 @@ export interface Config {
 	readonly version: string;
 	/** How long a `/api/sessions/:id/*` command waits for the agent's `cmd-result`. */
 	readonly cmdTimeoutMs: number;
+	/**
+	 * Registry snapshot file for upgrade restarts (docs/protocol.md §3): `null`
+	 * disables persistence. The library default is off; the real entry turns it
+	 * on (`hub-state.json` in the working directory, `HUB_STATE_FILE` to move it).
+	 */
+	readonly stateFile: string | null;
 }
 
 export interface PublicBase {
@@ -87,7 +93,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 		webDist: resolveWebDist(env.WEB_DIST),
 		version: typeof pkg.version === "string" ? pkg.version : "0.0.0",
 		cmdTimeoutMs: readCmdTimeout(env.HUB_CMD_TIMEOUT_MS),
+		stateFile: readStateFile(env.HUB_STATE_FILE),
 	};
+}
+
+/**
+ * `HUB_STATE_FILE` — the registry snapshot for upgrade restarts. Unset keeps
+ * persistence off (library/test default); a value (even relative) resolves
+ * against the process cwd; an explicitly empty value also stays off.
+ */
+function readStateFile(raw: string | undefined): string | null {
+	const value = raw?.trim();
+	if (!value) return null;
+	return path.resolve(value);
 }
 
 export function tlsConfigured(cfg: Config): boolean {

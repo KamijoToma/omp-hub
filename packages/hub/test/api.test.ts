@@ -6,6 +6,9 @@
  * duration), so the suite has no wall-clock latency of its own.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { startHub, type Hub } from "../src/server";
 
 interface SessionJson {
@@ -117,8 +120,9 @@ async function connectAgent(
 	machineId: string,
 	name: string,
 	extra: Record<string, unknown> = {},
+	target: { url: string } = { url: httpBase },
 ): Promise<{ agent: FakeAgent; welcome: Record<string, unknown> }> {
-	const ws = new WebSocket(`${wsBase}/agent`, { headers: { authorization: "Bearer t" } });
+	const ws = new WebSocket(`${target.url.replace(/^http/, "ws")}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
 	ws.addEventListener("message", (event: MessageEvent) => {
@@ -146,6 +150,27 @@ async function connectAgent(
 	ws.send(JSON.stringify({ t: "hello", name, machineId, version: "test", ...extra }));
 	const welcome = await wait((frame) => (frame.t === "welcome" ? frame : undefined), "welcome");
 	return { agent: { ws, frames, wait }, welcome };
+}
+
+/** Bearer-authed call against an explicit hub (the upgrade test uses a second instance). */
+function apiOn(hub: { url: string }, path: string, init?: RequestInit): Promise<Response> {
+	return fetch(`${hub.url}${path}`, {
+		...init,
+		headers: { authorization: "Bearer t", ...(init?.headers ?? {}) },
+	});
+}
+
+/** The session payload off a hub reply — one named boundary cast for the tests. */
+async function sessionOf(response: Response): Promise<SessionJson> {
+	// Trusted boundary: the hub's JSON contract is under test, not re-validated here.
+	const body = (await response.json()) as { session: SessionJson };
+	return body.session;
+}
+
+/** The machines listing off a hub reply — same trusted boundary. */
+async function machinesOf(response: Response): Promise<MachineJson[]> {
+	const body = (await response.json()) as { machines: MachineJson[] };
+	return body.machines;
 }
 
 async function startSession(machineId: string, cwd: string, extra: Record<string, unknown> = {}): Promise<SessionJson> {
@@ -282,6 +307,86 @@ describe("hub api", () => {
 		expect((await api(`/api/sessions/${session.id}`)).status).toBe(404);
 		const listed = (await (await api("/api/sessions")).json()) as { sessions: SessionJson[] };
 		expect(listed.sessions.map((record) => record.id)).not.toContain(session.id);
+	});
+
+	test("POST /api/hub/restart invokes the wired restart and 501s when unwired", async () => {
+		let restarts = 0;
+		hub.core.onRestart = () => {
+			restarts += 1;
+		};
+		const response = await api("/api/hub/restart", { method: "POST" });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+		expect(restarts).toBe(1);
+		hub.core.onRestart = null;
+
+		const unavailable = await api("/api/hub/restart", { method: "POST" });
+		expect(unavailable.status).toBe(501);
+	});
+
+	test("upgrade restart: snapshot restores records, heartbeats reconcile dead ones", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "hub-upgrade-"));
+		const file = path.join(dir, "state.json");
+		const first = startHub({ port: 0, hostname: "127.0.0.1", token: "t", stateFile: file });
+		let sessionId = "";
+		try {
+			const { agent } = await connectAgent("m-up", "up-machine", {}, first);
+			const created = await sessionOf(
+				await apiOn(first, "/api/sessions", {
+					method: "POST",
+					body: JSON.stringify({ machineId: "m-up", cwd: "/srv/up" }),
+				}),
+			);
+			sessionId = created.id;
+			expect(created.status).toBe("starting");
+			await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+			agent.ws.send(
+				JSON.stringify({ t: "session-ready", id: sessionId, links: { full: "a", view: "b", web: "c", webView: "d" } }),
+			);
+			const deadline = Date.now() + 4_000;
+			for (;;) {
+				const record = await sessionOf(await apiOn(first, `/api/sessions/${sessionId}`));
+				if (record.status === "live") {
+					expect(record.links).toEqual({ full: "a", view: "b", web: "c", webView: "d" });
+					break;
+				}
+				if (Date.now() > deadline) throw new Error(`session never went live: ${JSON.stringify(record)}`);
+				await yieldLoop();
+			}
+			// The fake agent dies with the hub: no session-exit frames are sent.
+		} finally {
+			// Graceful stop flushes first, exactly like the SIGTERM path.
+			await first.flushState();
+			first.stop();
+		}
+
+		const second = startHub({ port: 0, hostname: "127.0.0.1", token: "t", stateFile: file });
+		try {
+			// Restored before any agent reconnects: `live`, links intact, machine down.
+			const restored = await sessionOf(await apiOn(second, `/api/sessions/${sessionId}`));
+			expect(restored.status).toBe("live");
+			expect(restored.links).toEqual({ full: "a", view: "b", web: "c", webView: "d" });
+			const machines = await machinesOf(await apiOn(second, "/api/machines"));
+			expect(machines.map((machine) => machine.connected)).toEqual([false]);
+
+			// The daemon reconnects and its first heartbeat no longer reports the
+			// child (it died with the old hub) — the restored record must flip.
+			const { agent } = await connectAgent("m-up", "up-machine", {}, second);
+			agent.ws.send(JSON.stringify({ t: "hb", ts: Date.now(), sessions: [] }));
+			const deadline = Date.now() + 4_000;
+			for (;;) {
+				const record = await sessionOf(await apiOn(second, `/api/sessions/${sessionId}`));
+				if (record.status === "exited") {
+					expect(record.exitReason).toBe("agent heartbeat: no such child");
+					break;
+				}
+				if (Date.now() > deadline) throw new Error(`record never reconciled: ${JSON.stringify(record)}`);
+				await yieldLoop();
+			}
+		} finally {
+			second.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("DELETE on an exited session skips the stop frame; unknown ids are 404", async () => {
