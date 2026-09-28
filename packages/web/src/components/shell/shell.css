@@ -3,7 +3,8 @@
 /* ---- app frame ---- */
 .sh-app {
 	display: grid;
-	grid-template-rows: auto 1fr auto;
+	/* header · stats bar · main · composer */
+	grid-template-rows: auto auto minmax(0, 1fr) auto;
 	/* Single column pinned to the container width: an `auto` track sizes to its
 	 * items' min-content, so a long session title (or the fixed header controls)
 	 * would force every row — header, transcript, composer — wider than a narrow
@@ -359,6 +360,129 @@
 
 .sh-dot-ended {
 	background: var(--err);
+}
+
+/* ---- stats bar (customizable usage strip) ---- */
+.sh-stats {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 12px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
+}
+
+/* Zero-footprint placeholder: keeps the app grid's row assignment stable when
+ * the bar has no data or every metric is unchecked. */
+.sh-stats--empty {
+	padding: 0;
+	border-bottom: none;
+}
+
+.sh-stats-chips {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+	white-space: nowrap;
+}
+
+.sh-stats-chips::-webkit-scrollbar {
+	display: none;
+}
+
+.sh-stats-chip {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--fg-muted);
+	flex: none;
+}
+
+.sh-stats-chip--warn {
+	color: var(--warn);
+}
+
+.sh-stats-gear {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	flex: none;
+	margin-left: auto;
+	padding: 0;
+	border: none;
+	border-radius: var(--radius-sm);
+	background: none;
+	color: var(--fg-faint);
+	cursor: pointer;
+}
+
+.sh-stats-gear:hover,
+.sh-stats-gear[aria-expanded="true"] {
+	color: var(--fg);
+	background: var(--bg-raised);
+}
+
+.sh-stats-gear:focus-visible {
+	outline: 2px solid var(--ring);
+	outline-offset: 2px;
+}
+
+.sh-stats-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 40;
+}
+
+.sh-stats-menu {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 8px;
+	z-index: 41;
+	display: flex;
+	flex-direction: column;
+	min-width: 300px;
+	max-width: calc(100vw - 24px);
+	padding: 6px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius);
+	background: var(--bg-overlay);
+	box-shadow: var(--shadow-overlay);
+}
+
+.sh-stats-menu-row {
+	display: grid;
+	grid-template-columns: auto auto minmax(0, 1fr);
+	align-items: baseline;
+	gap: 8px;
+	padding: 5px 6px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+}
+
+.sh-stats-menu-row:hover {
+	background: var(--accent-muted);
+}
+
+.sh-stats-menu-row input {
+	accent-color: var(--accent);
+	margin: 0;
+}
+
+.sh-stats-menu-label {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--fg);
+}
+
+.sh-stats-menu-desc {
+	font-size: 11px;
+	color: var(--fg-faint);
 }
 
 /* ---- composer ---- */

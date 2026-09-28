@@ -22,6 +22,7 @@ import { AgentsPanel } from "../components/agents/AgentsPanel";
 import { Banners } from "../components/shell/Banners";
 import { Composer, isImeComposing } from "../components/shell/Composer";
 import { HeaderBar } from "../components/shell/HeaderBar";
+import { StatsBar } from "../components/shell/StatsBar";
 import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
 import type { GuestClient } from "../lib/client";
@@ -593,6 +594,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				onRename={renameSession}
 				handoffRunning={handoffRunning}
 			/>
+			<StatsBar snapshot={snap} />
 			<main className="sh-main">
 				<section className="sh-content">
 					<div className="sh-transcript">
