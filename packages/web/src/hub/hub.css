@@ -2022,6 +2022,20 @@
 	justify-content: center;
 }
 
+.hb-rename-row {
+	display: flex;
+	gap: 8px;
+}
+
+.hb-rename-row .sh-input {
+	flex: 1;
+	min-width: 0;
+}
+
+.hb-rename-row .sh-btn {
+	flex: none;
+}
+
 .hb-nav-row-head {
 	display: flex;
 	align-items: center;
