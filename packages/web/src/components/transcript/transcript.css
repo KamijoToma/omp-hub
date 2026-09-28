@@ -1,10 +1,16 @@
-/* Transcript — dense gutter-labeled rows, terminal heritage. tr-* namespace. */
+/* Transcript — clustered conversation turns rendered as cards: accent user
+ * bubbles on the right, raised full-width agent work cards on the left.
+ * tr-* namespace. */
 
 .tr-root {
 	height: 100%;
 	overflow-y: auto;
 	overflow-x: hidden;
-	padding: 12px 16px 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 14px 16px;
+	padding-bottom: max(24px, env(safe-area-inset-bottom));
 	font-family: var(--font-ui);
 	font-size: 13px;
 	line-height: 1.5;
@@ -19,50 +25,155 @@
 	font-size: 12px;
 }
 
-/* ---- rows ---- */
+/* ---- turn cards ---- */
 
-.tr-row {
+.tr-turn {
 	position: relative;
-	display: grid;
-	grid-template-columns: 72px minmax(0, 1fr);
-	gap: 0 12px;
-	padding: 5px 0;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 6px;
+	min-width: 0;
+	max-width: 100%;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--bg-raised);
 }
 
-.tr-gutter {
-	padding-top: 3px;
-	text-align: right;
+.tr-turn-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	min-height: 16px;
 	font-family: var(--font-mono);
 	font-size: 10px;
-	font-weight: 500;
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
 	color: var(--fg-faint);
 	user-select: none;
 }
 
-.tr-row--user .tr-gutter {
-	color: var(--accent);
+.tr-turn-dot {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--border-strong);
 }
 
-.tr-body {
-	min-width: 0;
+.tr-turn--live .tr-turn-dot {
+	background: var(--accent);
+	animation: tr-pulse 1.4s ease-in-out infinite;
+}
+
+.tr-turn-model {
+	color: var(--fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tr-turn-time {
+	margin-left: auto;
+	font-size: 9.5px;
+	color: var(--fg-faint);
+}
+
+.tr-turn-name,
+.tr-turn-tag {
+	display: inline-block;
+	padding: 0 6px;
+	border-radius: var(--radius-sm);
+	font-size: 10px;
+	line-height: 16px;
+}
+
+.tr-turn-name {
+	background: var(--accent-muted);
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.tr-turn-tag {
+	border: 1px solid var(--border);
+	background: var(--bg-inset);
+	color: var(--fg-faint);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+}
+
+/* User turns: right-aligned accent bubble; the clipped corner points home. */
+.tr-turn--user {
+	align-self: flex-end;
+	max-width: min(85%, 720px);
+	border-color: color-mix(in oklch, var(--accent) 30%, var(--border));
+	border-bottom-right-radius: var(--radius-sm);
+	background: var(--accent-muted);
+}
+
+/* Synthetic (system-injected) prompts read as second-class user input. */
+.tr-turn--synthetic {
+	border-style: dashed;
+	opacity: 0.75;
+}
+
+/* Agent turns: full-width work cards; live ones pulse their presence dot. */
+.tr-turn--agent {
+	align-self: stretch;
+}
+
+.tr-turn--live {
+	border-color: color-mix(in oklch, var(--accent) 26%, var(--border));
+}
+
+/* ---- message rows inside cards ---- */
+
+.tr-msg {
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
 	gap: 4px;
+	width: 100%;
+	min-width: 0;
 }
 
-.tr-body > .tr-md,
-.tr-body > .tr-text {
+.tr-msg > .tr-md,
+.tr-msg > .tr-text {
 	align-self: stretch;
 }
 
-/* ---- per-turn rewind affordance ---- */
+/* Hairline between successive assistant requests inside one agent turn. */
+.tr-msg--assistant + .tr-msg--assistant {
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid var(--border);
+}
+
+.tr-msg--synthetic {
+	color: var(--fg-muted);
+}
+
+/* Standalone meta rows (between cards, no card chrome). */
+.tr-msg--custom {
+	align-self: stretch;
+	padding: 8px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-inset);
+	color: var(--fg-muted);
+}
+
+.tr-msg--marker {
+	align-self: center;
+	width: auto;
+}
+
+/* ---- per-row rewind affordance ---- */
 
 .tr-rewind {
 	position: absolute;
-	top: 3px;
+	top: 0;
 	right: 0;
 	display: inline-flex;
 	align-items: center;
@@ -77,7 +188,7 @@
 	transition: opacity 0.12s ease;
 }
 
-.tr-row:hover > .tr-rewind,
+.tr-msg:hover > .tr-rewind,
 .tr-rewind:focus-visible {
 	opacity: 1;
 }
@@ -87,20 +198,20 @@
 	border-color: var(--accent);
 }
 
-/* Touch has no hover: keep the affordance reachable. */
+/* Touch has no hover: keep the affordance reachable and reserve its space. */
 @media (hover: none) {
 	.tr-rewind {
 		opacity: 1;
+	}
+
+	.tr-msg:has(> .tr-rewind) {
+		padding-right: 30px;
 	}
 }
 
 .tr-text {
 	white-space: pre-wrap;
 	word-break: break-word;
-}
-
-.tr-row--custom .tr-body {
-	color: var(--fg-muted);
 }
 
 .tr-custom {
@@ -117,20 +228,7 @@
 	border-radius: var(--radius-sm);
 }
 
-/* ---- chips & badges ---- */
-
-.tr-badge {
-	display: inline-block;
-	padding: 0 5px;
-	border-radius: var(--radius-sm);
-	background: var(--accent-muted);
-	color: var(--accent);
-	font-family: var(--font-mono);
-	font-size: 10px;
-	line-height: 16px;
-	text-transform: none;
-	letter-spacing: 0;
-}
+/* ---- chips ---- */
 
 .tr-chip {
 	display: inline-flex;
@@ -313,7 +411,7 @@
 	display: flex;
 	align-items: center;
 	gap: 10px;
-	margin: 10px 0;
+	margin: 2px 0;
 	color: var(--fg-faint);
 	font-family: var(--font-mono);
 	font-size: 10px;
@@ -344,11 +442,12 @@
 
 /* ---- tool cards ----
  * Cards themselves are rendered by src/tool-render (tv-* namespace);
- * only host-level layout lives here. */
+ * only host-level layout lives here. Tool cards sink into the agent card
+ * surface instead of stacking raised-on-raised. */
 
-.tr-body > .tv-card {
+.tr-msg > .tv-card {
 	align-self: stretch;
-	background: var(--bg-raised);
+	background: var(--bg-inset);
 }
 
 /* ---- markdown ---- */
@@ -435,6 +534,11 @@
 	font-size: 12px;
 }
 
+/* Code blocks keep raised contrast on the raised agent card. */
+.tr-turn--agent .tr-md pre {
+	background: var(--bg);
+}
+
 .tr-md pre {
 	margin: 8px 0;
 	padding: 8px 10px;
@@ -506,18 +610,25 @@
 /* ---- compact variant (agent drawer) ---- */
 
 .tr-root--compact {
+	gap: 8px;
 	padding: 8px 10px 16px;
 	font-size: 12px;
 }
 
-.tr-root--compact .tr-row {
-	grid-template-columns: 52px 1fr;
-	gap: 0 8px;
-	padding: 3px 0;
+.tr-root--compact .tr-turn {
+	gap: 4px;
+	padding: 8px 10px;
+	border-radius: var(--radius);
 }
 
-.tr-root--compact .tr-gutter {
-	font-size: 9px;
+/* Drawer chrome already names the agent; drop per-turn headers there. */
+.tr-root--compact .tr-turn-head {
+	display: none;
+}
+
+.tr-root--compact .tr-msg--assistant + .tr-msg--assistant {
+	margin-top: 6px;
+	padding-top: 6px;
 }
 
 .tr-root--compact .tv-pre {
@@ -537,21 +648,29 @@
 	}
 }
 
+@media (prefers-reduced-motion: reduce) {
+	.tr-shimmer,
+	.tr-turn--live .tr-turn-dot {
+		animation: none;
+	}
+
+	.tr-chev,
+	.tr-rewind {
+		transition: none;
+	}
+}
+
 /* ---- responsive mobile styles ---- */
 @media (max-width: 640px) {
-	.tr-row {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 8px 0;
+	.tr-root {
+		gap: 8px;
+		padding: 10px 10px 16px;
+		padding-bottom: max(16px, env(safe-area-inset-bottom));
 	}
-	.tr-gutter {
-		text-align: left;
-		padding-top: 0;
-		font-size: 10px;
-		margin-bottom: 2px;
+	.tr-turn {
+		padding: 8px 10px;
 	}
-	.tr-gutter:empty {
-		display: none;
+	.tr-turn--user {
+		max-width: 92%;
 	}
 }
