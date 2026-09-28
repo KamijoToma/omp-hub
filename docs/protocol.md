@@ -122,7 +122,8 @@ Generic request/response control channel for web-driven host commands. hub→age
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
      | "compact" | "shake" | "handoff" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
-     | "rename" | "generate-title",
+     | "rename" | "generate-title"
+     | "mcp-list" | "mcp-add" | "mcp-remove" | "mcp-set-enabled" | "mcp-test",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -132,6 +133,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // enabled → set-extended-context
                                                                 // name, dataB64 → upload-file
                                                                 // name → rename; no params → generate-title
+                                                                // name, scope, url, transport, token, command, args → mcp-*
 ```
 
 agent→hub:
@@ -278,6 +280,60 @@ interface LoopStatus {
   cap the hub enforces on the HTTP body, and maps caller-input failures to stable strings:
   `file too large` → 413, `invalid upload encoding` → 400. Each upload opportunistically prunes
   `omp-hub-upload-*` files older than 7 days; OS tmp cleaners are the backstop.
+- `mcp-list` (no parameters) → `data: { servers: McpServerRow[] }`: MCP management (web `/mcp`,
+  TUI `/mcp` ACP parity). Rows merge the session cwd's user and project `mcp.json` (user rows
+  first; a project entry shadows the same-name user entry and the shadow row carries
+  `shadowed: true` without claiming the live section), each folded with the user-level
+  `disabledServers` list into `enabled`:
+  ```ts
+interface McpServerRow {
+  name: string;
+  scope: "user" | "project";
+  type: string;                       // "stdio" | "http" | "sse"
+  enabled: boolean;
+  location: string | null;            // stdio command, or URL stripped of query + userinfo
+  envCount: number;                   // env var count — values never cross the wire
+  shadowed?: true;
+  args?: string[];                    // stdio args
+  health?: "connected" | "connecting" | "disconnected";   // live join, see below
+  implementationName?: string;        // serverInfo name/version
+  implementationVersion?: string;
+  instructions?: string;              // server instructions, when connected
+  toolsCount?: number;                // connected rows only
+  tools?: { name: string; description?: string }[];       // ≤ 50 rows, descriptions ≤ 200 chars
+  resourcesCount?: number;
+  promptsCount?: number;
+}
+  ```
+  Config rows are file truth; the live section joins the session's own MCPManager (the SDK pins
+  each top-level session's manager into a process-global the child reads back — one child hosts
+  exactly one session) and appears only for enabled, non-shadowed rows: `health`, server
+  identity, instructions, and bounded tool/resource/prompt counts. Config edits apply to NEW
+  sessions; the live section shows what this session mounted at start. Extension/provider
+  -discovered servers (Claude Code plugins etc.) are not listed — only user/project `mcp.json`
+  rows are. Secrets (env values, headers, tokens, URL queries) never cross the wire.
+- `mcp-add {name, scope?, url?, transport?, token?, command?, args?}` → `data: { name, scope }`:
+  adds to the scope's config file (`scope` omitted ⇒ `"project"`). Exactly one of `url`
+  (normalized to `https://` when scheme-less) or `command` is required — the hub enforces this
+  plus `transport ∈ {http, sse}` (default `http`), `token` only with `url` (folded into the
+  config's `Authorization: Bearer …` header), and `args` as a string array; `token` and env
+  values are never echoed in the reply. Duplicate names and the writer's name/config validation
+  fail the command (`Server "…" already exists in …` → 409, `Server name …` /
+  `Invalid server config: …` → 400).
+- `mcp-remove {name, scope?}` → `data: { name, scope }`: removes the entry from that scope's
+  config file; missing entries fail (`Server "…" not found in …` → 404).
+- `mcp-set-enabled {name, enabled}` → `data: { name, enabled, where: "project" | "user" |
+  "disabled-list" }`: TUI `/mcp enable|disable` semantics — the project entry wins, else the
+  user entry, else the user-level `disabledServers` list (covers discovered servers with no
+  writable config entry: disable adds, enable removes). A name in no config and not in the list
+  fails (`server "…" not found in user or project config` → 404).
+- `mcp-test {name}` → `data: { name, count, tools: { name, description? }[] }`: one temporary
+  connection to a configured, enabled server (project shadow wins) — the live session's manager
+  is untouched. OAuth-backed servers get the session's auth storage, so saved credentials
+  refresh exactly as at session start; the connection (and any stdio subprocess) is always torn
+  down before the reply. Unknown/disabled targets fail before any connection attempt
+  (`server "…" not found or disabled (see mcp-list)` → 404); connect failures bubble as
+  `ok:false` (500) and count against the same 15 s cmd budget.
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -406,6 +462,11 @@ interface MachineRecord {
 | `POST /api/sessions/:id/rename` | `{name}` → `{ ok: true, name, session }` (§2 `rename`; the registry record's label follows); 400 missing/blank/oversize (>200) `name`, 404 unknown/offline, 409 not live, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/title` | → `{ ok: true, name, session }` (§2 `generate-title` — bare `/rename`; the registry record's label follows); 404 unknown/offline, 409 not live, 500 agent refusal (e.g. no user input), 502 no title in reply, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
+| `GET /api/sessions/:id/mcp` | → `{ ok: true, servers: McpServerRow[] }` (§2 `mcp-list`); 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
+| `POST /api/sessions/:id/mcp/add` | `{name, scope?, url?, transport?, token?, command?, args?}` → `{ ok: true, name, scope }` (§2 `mcp-add`); 400 missing `name`, neither/both of `url`+`command`, bad `scope`/`transport`, blank `token`, `token` without `url`, or non-string `args`; 409 duplicate name; 404 unknown/offline, 409 not live, 500 writer validation, 502/504 cmd plumbing |
+| `POST /api/sessions/:id/mcp/remove` | `{name, scope?}` → `{ ok: true, name, scope }` (§2 `mcp-remove`); 400 missing/blank `name` or bad `scope`; 404 missing entry, unknown/offline; 409 not live; 502/504 cmd plumbing |
+| `POST /api/sessions/:id/mcp/enabled` | `{name, enabled}` → `{ ok: true, name, enabled, where }` (§2 `mcp-set-enabled`); 400 missing/blank `name` or non-boolean `enabled`; 404 name in no config and not listed, unknown/offline; 409 not live; 502/504 cmd plumbing |
+| `POST /api/sessions/:id/mcp/test` | `{name}` → `{ ok: true, name, count, tools }` (§2 `mcp-test`); 400 missing/blank `name`; 404 unknown/disabled target, unknown/offline; 409 not live; 500 connect failure; 502/504 cmd plumbing |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 
@@ -499,6 +560,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/extended-context` | toggle extended context windows; bare = toggle, `on`/`off` forces (drives `POST …/extended-context`) |
 | `/settings` | settings modal: model + thinking + links + theme + display name |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
+| `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |
 | `/theme` | toggle light/dark (vendored theme store) |
 | `/dump` | download the current transcript snapshot as `.jsonl` |
 | `/leave` | back to hub home |

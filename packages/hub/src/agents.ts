@@ -77,7 +77,12 @@ export type SessionCmdName =
 	| "clear-context"
 	| "rename"
 	| "generate-title"
-	| "upload-file";
+	| "upload-file"
+	| "mcp-list"
+	| "mcp-add"
+	| "mcp-remove"
+	| "mcp-set-enabled"
+	| "mcp-test";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
@@ -107,6 +112,18 @@ export interface CmdRequest {
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
 	dataB64?: string;
+	/** `mcp-add`/`mcp-remove` config scope; omitted means `"project"` (protocol §2). */
+	scope?: string;
+	/** `mcp-add` remote server URL (http/sse transport). */
+	url?: string;
+	/** `mcp-add` remote transport; omitted means `"http"`. */
+	transport?: string;
+	/** `mcp-add` bearer token folded into the config's Authorization header. */
+	token?: string;
+	/** `mcp-add` stdio command (exclusive with `url`). */
+	command?: string;
+	/** `mcp-add` stdio command arguments. */
+	args?: string[];
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */

@@ -678,6 +678,103 @@ export async function postGenerateTitle(id: string): Promise<string> {
 	return reply.name;
 }
 
+/** One configured MCP server on a listing (protocol §2 `mcp-list`): redacted config truth plus the live join. */
+export interface McpServerInfo {
+	name: string;
+	/** Config scope; extension-discovered servers are not listed. */
+	scope: "user" | "project";
+	/** stdio, http, or sse. */
+	type: string;
+	/** Config flag folded with the user-level disabled-servers list. */
+	enabled: boolean;
+	/** A same-name entry in the other scope shadows this row at load time. */
+	shadowed?: true;
+	/** Redacted: stdio command, or the remote URL without query/userinfo. */
+	location: string | null;
+	/** Env var count — values never leave the agent machine. */
+	envCount: number;
+	args?: string[];
+	/** Live section (enabled, non-shadowed, manager-connected rows only). */
+	health?: "connected" | "connecting" | "disconnected";
+	implementationName?: string;
+	implementationVersion?: string;
+	instructions?: string;
+	tools?: Array<{ name: string; description?: string }>;
+	toolsCount?: number;
+	resourcesCount?: number;
+	promptsCount?: number;
+}
+
+/** The session's configured MCP servers: config truth joined with the live session's view. */
+export async function getMcpServers(id: string): Promise<McpServerInfo[]> {
+	const reply = await api<{ ok: true; servers: McpServerInfo[] }>(`/api/sessions/${encodeURIComponent(id)}/mcp`);
+	return reply.servers;
+}
+
+/** Add request: stdio (`command`+`args`) or remote (`url`+`transport`, `token` → Authorization header). */
+export interface McpAddRequest {
+	name: string;
+	scope?: "user" | "project";
+	url?: string;
+	transport?: "http" | "sse";
+	token?: string;
+	command?: string;
+	args?: string[];
+}
+
+/** Adds a server to the session's project (default) or user `mcp.json`; applies to new sessions. */
+export async function postMcpAdd(id: string, request: McpAddRequest): Promise<{ name: string; scope: string }> {
+	const reply = await api<{ ok: true; name: string; scope: string }>(`/api/sessions/${encodeURIComponent(id)}/mcp/add`, {
+		method: "POST",
+		body: JSON.stringify(request),
+	});
+	return { name: reply.name, scope: reply.scope };
+}
+
+/** Removes a server from the given scope's config file; applies to new sessions. */
+export async function postMcpRemove(id: string, name: string, scope: "user" | "project"): Promise<void> {
+	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/mcp/remove`, {
+		method: "POST",
+		body: JSON.stringify({ name, scope }),
+	});
+}
+
+/**
+ * Enable/disable result; `where` names the file that changed — the project or
+ * user config entry, or the user-level disabled-servers list for servers with
+ * no writable config entry.
+ */
+export interface McpEnabledResult {
+	name: string;
+	enabled: boolean;
+	where: "project" | "user" | "disabled-list";
+}
+
+/** Enables or disables a server (TUI `/mcp enable|disable` semantics); applies to new sessions. */
+export async function postMcpEnabled(id: string, name: string, enabled: boolean): Promise<McpEnabledResult> {
+	const reply = await api<{ ok: true } & McpEnabledResult>(`/api/sessions/${encodeURIComponent(id)}/mcp/enabled`, {
+		method: "POST",
+		body: JSON.stringify({ name, enabled }),
+	});
+	return { name: reply.name, enabled: reply.enabled, where: reply.where };
+}
+
+/** Result of a one-shot test connection to a configured server; the live session is untouched. */
+export interface McpTestResult {
+	name: string;
+	count: number;
+	tools: Array<{ name: string; description?: string }>;
+}
+
+/** Opens one temporary connection to a configured, enabled server and lists its tools. */
+export async function postMcpTest(id: string, name: string): Promise<McpTestResult> {
+	const reply = await api<{ ok: true } & McpTestResult>(`/api/sessions/${encodeURIComponent(id)}/mcp/test`, {
+		method: "POST",
+		body: JSON.stringify({ name }),
+	});
+	return { name: reply.name, count: reply.count, tools: reply.tools };
+}
+
 /** One browsable child directory of a machine listing (protocol §2 `DirListing`). */
 export interface DirEntry {
 	name: string;

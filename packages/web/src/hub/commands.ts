@@ -28,7 +28,8 @@ export type ModalKind =
 	| "settings"
 	| "links"
 	| "help"
-	| "context";
+	| "context"
+	| "mcp";
 
 /** Local-only notice for a slash word that is not in the table. */
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
@@ -276,6 +277,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 		run: ctx => ctx.openModal("settings"),
 	},
 	{ name: "collab", description: "collab links — attach, view, web", run: ctx => ctx.openModal("links") },
+	{ name: "mcp", description: "manage MCP servers — list, add, test, enable", run: ctx => ctx.openModal("mcp") },
 	{ name: "theme", description: "toggle light / dark", run: ctx => ctx.toggleTheme() },
 	{ name: "dump", description: "download the transcript as .jsonl", run: ctx => ctx.downloadDump() },
 	{ name: "leave", description: "leave the session and return to the hub", run: ctx => ctx.navigate("/") },

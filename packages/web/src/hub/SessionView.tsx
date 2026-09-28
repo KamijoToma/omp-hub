@@ -65,6 +65,7 @@ import { HelpModal } from "./HelpModal";
 import { isSelfJoinNotice } from "./join-notice";
 import { LinksModal } from "./LinksModal";
 import { LoopModal } from "./LoopModal";
+import { McpModal } from "./McpModal";
 import { ModelPicker } from "./ModelPicker";
 import { ResumePicker } from "./ResumePicker";
 import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
@@ -688,6 +689,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				<ResumePicker machineId={record.machineId} onResume={resumeEntry} onClose={closeModal} />
 			)}
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
+			{modal === "mcp" && <McpModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "settings" && (
 				<SettingsModal

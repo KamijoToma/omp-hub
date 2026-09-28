@@ -37,6 +37,12 @@ const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
 const RENAME_PATH_RE = /^\/api\/sessions\/([^/]+)\/rename$/;
 const TITLE_PATH_RE = /^\/api\/sessions\/([^/]+)\/title$/;
 const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
+/** MCP management (protocol §2 `mcp-*`): one GET listing plus four POST verbs. */
+const MCP_LIST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp$/;
+const MCP_ADD_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/add$/;
+const MCP_REMOVE_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/remove$/;
+const MCP_ENABLED_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/enabled$/;
+const MCP_TEST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/test$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
 const MAX_FILENAME_CHARS = 200;
@@ -193,6 +199,27 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const files = FILES_PATH_RE.exec(route);
 	if (files && req.method === "POST") {
 		return uploadSessionFile(decodeURIComponent(files[1]!), req, ctx);
+	}
+
+	const mcpList = MCP_LIST_PATH_RE.exec(route);
+	if (mcpList && req.method === "GET") {
+		return listMcpServers(decodeURIComponent(mcpList[1]!), ctx);
+	}
+	const mcpAdd = MCP_ADD_PATH_RE.exec(route);
+	if (mcpAdd && req.method === "POST") {
+		return addMcpServer(decodeURIComponent(mcpAdd[1]!), req, ctx);
+	}
+	const mcpRemove = MCP_REMOVE_PATH_RE.exec(route);
+	if (mcpRemove && req.method === "POST") {
+		return removeMcpServer(decodeURIComponent(mcpRemove[1]!), req, ctx);
+	}
+	const mcpEnabled = MCP_ENABLED_PATH_RE.exec(route);
+	if (mcpEnabled && req.method === "POST") {
+		return setMcpServerEnabled(decodeURIComponent(mcpEnabled[1]!), req, ctx);
+	}
+	const mcpTest = MCP_TEST_PATH_RE.exec(route);
+	if (mcpTest && req.method === "POST") {
+		return testMcpServer(decodeURIComponent(mcpTest[1]!), req, ctx);
 	}
 
 	return json({ error: "not found" }, 404);
@@ -787,6 +814,127 @@ async function uploadSessionFile(id: string, req: Request, ctx: ApiContext): Pro
 	return json({ ok: true, path, bytes: typeof written === "number" ? written : bytes.byteLength });
 }
 
+/**
+ * MCP server listing for the web `/mcp` modal (agent `mcp-list`, protocol §2):
+ * config rows for the user and project `mcp.json` files, redacted (URL query
+ * and userinfo stripped, env values as `envCount` only), joined with the
+ * session's live manager view (health, catalogs) where it has the server.
+ * Config edits apply to new sessions; `health` shows what the live session
+ * actually loaded.
+ */
+async function listMcpServers(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "mcp-list", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({ ok: true, servers: Array.isArray(data["servers"]) ? data["servers"] : [] });
+}
+
+/** Validated `mcp-add` frame: stdio (`command`+`args`) or remote (`url`+`transport`, `token`), project default. */
+async function addMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	if (name.length > 100) return json({ error: "name is too long (max 100 characters)" }, 400);
+	const scope = field(body, "scope");
+	if (scope !== undefined && scope !== "project" && scope !== "user") {
+		return json({ error: "scope must be project or user" }, 400);
+	}
+	const url = field(body, "url");
+	const command = field(body, "command");
+	if ((url === undefined) === (command === undefined)) {
+		return json({ error: "exactly one of url or command is required" }, 400);
+	}
+	const transport = field(body, "transport");
+	if (transport !== undefined && transport !== "http" && transport !== "sse") {
+		return json({ error: "transport must be http or sse" }, 400);
+	}
+	const token = field(body, "token");
+	if (token !== undefined && token.trim() === "") return json({ error: "token must be a non-empty string" }, 400);
+	if (token !== undefined && url === undefined) return json({ error: "token requires url" }, 400);
+	const args = body["args"];
+	if (args !== undefined && (!Array.isArray(args) || args.some(entry => typeof entry !== "string"))) {
+		return json({ error: "args must be an array of strings" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "mcp-add", {
+		name: name.trim(),
+		...(scope === undefined ? {} : { scope }),
+		...(url === undefined ? {} : { url: url.trim() }),
+		...(command === undefined ? {} : { command: command.trim() }),
+		...(transport === undefined ? {} : { transport }),
+		...(token === undefined ? {} : { token }),
+		...(Array.isArray(args) && args.length > 0 ? { args } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "scope"]) }) : outcome.response;
+}
+
+/** Remove one configured server (agent `mcp-remove`); the agent errors when absent. */
+async function removeMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	const scope = field(body, "scope");
+	if (scope !== undefined && scope !== "project" && scope !== "user") {
+		return json({ error: "scope must be project or user" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "mcp-remove", {
+		name: name.trim(),
+		...(scope === undefined ? {} : { scope }),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "scope"]) }) : outcome.response;
+}
+
+/**
+ * Enable or disable a configured server (agent `mcp-set-enabled`, TUI
+ * `/mcp enable|disable` semantics): the project entry wins, else the user
+ * entry, else the user-level disabled-servers list. `where` in the reply
+ * names the file that changed.
+ */
+async function setMcpServerEnabled(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	const enabled = body["enabled"];
+	if (typeof enabled !== "boolean") return json({ error: "enabled must be a boolean" }, 400);
+
+	const outcome = await dispatchCmd(id, "mcp-set-enabled", { name: name.trim(), enabled }, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "enabled", "where"]) }) : outcome.response;
+}
+
+/**
+ * One temporary connection to a configured, enabled server (agent `mcp-test`):
+ * the reply carries the tool catalog, bounded by the agent. Connect failures
+ * surface as `cmd-result` errors; the live session is untouched.
+ */
+async function testMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "mcp-test", { name: name.trim() }, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({
+		ok: true,
+		name: pick(data, "name") ?? name.trim(),
+		count: typeof pick(data, "count") === "number" ? pick(data, "count") : 0,
+		tools: Array.isArray(data["tools"]) ? data["tools"] : [],
+	});
+}
+
+/** Named fields of the agent's `data` payload; malformed payloads degrade to undefined fields. */
+function pickRecord(data: unknown, keys: readonly string[]): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	if (data === null || typeof data !== "object") return out;
+	for (const key of keys) out[key] = (data as Record<string, unknown>)[key];
+	return out;
+}
+
 /** HTTP status for an agent-reported failure (protocol §3 session-command rows). */
 function cmdErrorStatus(error: string): number {
 	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
@@ -811,6 +959,12 @@ function cmdErrorStatus(error: string): number {
 		case "cmd timeout":
 			return 504;
 		default:
+			// `mcp-*` writer/test failures (protocol §2): the config writer's own
+			// message tells the caller which — duplicate add, missing remove,
+			// name/config validation, and the enable/disable not-found guard.
+			if (error.includes("already exists")) return 409;
+			if (error.includes("not found in") || error.includes("not found or disabled")) return 404;
+			if (error.startsWith("Server name") || error.startsWith("Invalid server config")) return 400;
 			return 500;
 	}
 }
