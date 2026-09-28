@@ -2,7 +2,7 @@
  * The omp collab host echoes every guest join into the room as a `notice`
  * (collab/host.ts `#handleHello`: "<name> joined the collab session[ (read-only)]").
  * In the hub, joining is what switching to a session is, so the echo fires on
- * every sidebar switch, reload, and reconnect and toasts bottom-right. The hub
+ * every sidebar switch, reload, and reconnect and toasts top-right. The hub
  * surface suppresses that echo for the local guest; other peers' joins still
  * surface.
  */
