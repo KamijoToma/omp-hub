@@ -8,7 +8,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { handleMachineCmd, listAllProfileSessions, listDirectories, listSessions } from "../src/machine-cmds";
+import { handleMachineCmd, listAllProfileSessions, listDirectories, listSessions, type SessionSearchResults } from "../src/machine-cmds";
 
 const NAME_ORDER = (a: string, b: string): number =>
 	a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
@@ -114,13 +114,15 @@ test("handleMachineCmd answers list-profiles with a profile array", async () => 
 });
 
 /** One project dir + a session dir holding handcrafted omp session files. */
-async function makeSessionFixtures(): Promise<{ project: string; sessionDir: string }> {
+async function makeSessionFixtures(): Promise<{ root: string; project: string; sessionDir: string }> {
 	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-list-sessions-"));
 	const project = path.join(root, "project");
-	const sessionDir = path.join(root, "sessions");
+	// Nested as `<root>/agent/sessions` so search-sessions' session-store path
+	// guard accepts the fixtures (docs/protocol.md §2).
+	const sessionDir = path.join(root, "agent", "sessions");
 	await mkdir(project);
-	await mkdir(sessionDir);
-	return { project, sessionDir };
+	await mkdir(sessionDir, { recursive: true });
+	return { root, project, sessionDir };
 }
 
 interface FixtureOptions {
@@ -133,6 +135,8 @@ interface FixtureOptions {
 	turns?: number;
 	/** Filler bytes appended to the first user prompt, pushing later entries past the SDK's 4 KB scan window. */
 	padBytes?: number;
+	/** Assistant reply of the final turn (default `"done"`). */
+	assistantMessage?: string;
 }
 
 /** Writes a resumable session file (session header + N user/assistant turns). */
@@ -149,12 +153,13 @@ async function writeSession(sessionDir: string, project: string, options: Fixtur
 		// Padding rides on EVERY prompt: the whole file must outgrow the SDK
 		// scan's 4096-byte window, not just its first entry.
 		const content = options.padBytes ? base + "x".repeat(options.padBytes) : base;
+		const reply = i === turns - 1 && options.assistantMessage !== undefined ? options.assistantMessage : "done";
 		lines.push(
 			JSON.stringify({
 				type: "message",
 				message: { role: "user", content: options.multiline && i === 0 ? `${content}\nsecond line` : content },
 			}),
-			JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
+			JSON.stringify({ type: "message", message: { role: "assistant", content: reply } }),
 		);
 	}
 	const file = path.join(sessionDir, `20260627_${options.id}.jsonl`);
@@ -359,6 +364,107 @@ test("listAllProfileSessions does not duplicate the daemon's own profile directo
 		// The named scan claims the directory first, so the row is stamped
 		// with the profile that owns it and never appears twice.
 		expect(listing.sessions.map(s => [s.id, s.profile ?? "default"])).toEqual([["selfa0001", "self"]]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("search-sessions matches user and assistant text case-insensitively with a snippet", async () => {
+	const { root, project, sessionDir } = await makeSessionFixtures();
+	try {
+		const promptHit = await writeSession(sessionDir, project, { id: "srcha00001", firstMessage: "Fork the repo" });
+		const assistantHit = await writeSession(sessionDir, project, {
+			id: "srchb0002",
+			firstMessage: "anything",
+			assistantMessage: "Deployed to production successfully",
+		});
+		const miss = await writeSession(sessionDir, project, { id: "srchc0003", firstMessage: "unrelated prompt" });
+
+		const prompts = await handleMachineCmd({ cmd: "search-sessions", paths: [promptHit, miss], query: "  FORK " });
+		expect(prompts.ok).toBe(true);
+		if (prompts.ok) {
+			const { results } = prompts.data as SessionSearchResults;
+			expect(results).toEqual([{ path: promptHit, count: 1, snippet: "Fork the repo" }]);
+		}
+
+		const assistant = await handleMachineCmd({ cmd: "search-sessions", paths: [promptHit, assistantHit], query: "PRODUCTION" });
+		expect(assistant.ok).toBe(true);
+		if (assistant.ok) {
+			const { results } = assistant.data as SessionSearchResults;
+			// Request order, and thinking/tool blocks never match.
+			expect(results).toEqual([{ path: assistantHit, count: 1, snippet: "Deployed to production successfully" }]);
+		}
+	} finally {
+		await rm(path.dirname(path.dirname(sessionDir)), { recursive: true, force: true });
+	}
+});
+
+test("search-sessions counts every matching message and flattens multiline snippets", async () => {
+	const { root, project, sessionDir } = await makeSessionFixtures();
+	try {
+		const file = await writeSession(sessionDir, project, {
+			id: "srchd0004",
+			firstMessage: "alpha",
+			multiline: true,
+			turns: 3,
+		});
+
+		const counted = await handleMachineCmd({ cmd: "search-sessions", paths: [file], query: "turn" });
+		expect(counted.ok).toBe(true);
+		if (counted.ok) {
+			const { results } = counted.data as SessionSearchResults;
+			// "turn 1" and "turn 2" both match; the first prompt does not.
+			expect(results).toHaveLength(1);
+			expect(results[0]?.count).toBe(2);
+		}
+
+		const flattened = await handleMachineCmd({ cmd: "search-sessions", paths: [file], query: "second line" });
+		expect(flattened.ok).toBe(true);
+		if (flattened.ok) {
+			const { results } = flattened.data as SessionSearchResults;
+			expect(results[0]?.snippet).toBe("alpha second line");
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("search-sessions validates input and skips paths outside an omp session store", async () => {
+	const { root, project, sessionDir } = await makeSessionFixtures();
+	try {
+		const inside = await writeSession(sessionDir, project, { id: "srche0005", firstMessage: "needle here" });
+		// A real, readable session-shaped file outside any `agent/sessions` store.
+		const outside = path.join(project, "escaped.jsonl");
+		await writeFile(outside, `${JSON.stringify({ type: "message", message: { role: "user", content: "needle here" } })}\n`);
+
+		expect((await handleMachineCmd({ cmd: "search-sessions", query: "needle" })).ok).toBe(false);
+		expect((await handleMachineCmd({ cmd: "search-sessions", query: "   " })).ok).toBe(false);
+		// The wire is untrusted despite the frame type: a non-string path entry.
+		const badFrame = { cmd: "search-sessions", query: "needle", paths: [inside, 42] } as unknown as Parameters<typeof handleMachineCmd>[0];
+		expect((await handleMachineCmd(badFrame)).ok).toBe(false);
+		expect(
+			(await handleMachineCmd({
+				cmd: "search-sessions",
+				query: "needle",
+				// Post-dedupe cap: the bound is on files scanned, not entries sent.
+				paths: Array.from({ length: 201 }, (_, i) => `/tmp/never/${i}.jsonl`),
+			})).ok,
+		).toBe(false);
+
+		// Unresolvable and non-store paths are skipped silently, never errors.
+		const skipped = await handleMachineCmd({ cmd: "search-sessions", paths: [outside, "/nonexistent/a.jsonl"], query: "needle" });
+		expect(skipped.ok).toBe(true);
+		if (skipped.ok) {
+			const { results } = skipped.data as SessionSearchResults;
+			expect(results).toEqual([]);
+		}
+
+		const hit = await handleMachineCmd({ cmd: "search-sessions", paths: [inside, outside], query: "needle" });
+		expect(hit.ok).toBe(true);
+		if (hit.ok) {
+			const { results } = hit.data as SessionSearchResults;
+			expect(results).toEqual([{ path: inside, count: 1, snippet: "needle here" }]);
+		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

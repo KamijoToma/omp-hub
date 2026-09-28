@@ -23,6 +23,7 @@ import {
 import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { historyStatus } from "./history-status";
+import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { navigate } from "./router";
 
 const POLL_MS = 2000;
@@ -142,7 +143,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 		void loadHistory(machineId);
 	}, [machineId, loadHistory]);
 
-	const filteredHistory = useMemo(() => {
+	const metadataHistory = useMemo(() => {
 		const needle = historyFilter.trim().toLowerCase();
 		const all = history ?? [];
 		if (!needle) return all;
@@ -155,6 +156,18 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				entry.firstMessage.toLowerCase().includes(needle),
 		);
 	}, [history, historyFilter]);
+
+	// Message-text search over this machine's listed history: rows matching
+	// only in prompt/assistant text trail the metadata matches (≥ 2 chars).
+	const searchGroups = useMemo(
+		() => (machineId ? groupSearchPaths(history ?? [], entry => ({ machineId, path: entry.path })) : []),
+		[machineId, history],
+	);
+	const msgMatches = useMessageMatches(searchGroups, historyFilter);
+	const filteredHistory = useMemo(
+		() => mergeMessageMatches(history ?? [], entry => entry.path, metadataHistory, msgMatches),
+		[history, metadataHistory, msgMatches],
+	);
 
 	/** Start a new hub session that resumes `entry`'s omp history. */
 	const resume = async (entry: MachineSession): Promise<void> => {
@@ -485,7 +498,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 								type="text"
 								value={historyFilter}
 								onChange={e => setHistoryFilter(e.target.value)}
-								placeholder="filter by title, directory, profile, or first message"
+								placeholder="filter by title, directory, profile, or messages"
 								spellCheck={false}
 								autoComplete="off"
 							/>
@@ -500,6 +513,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 							<ul className="hb-history">
 								{filteredHistory.map(entry => {
 									const status = historyStatus(entry, machineId, sessions);
+									const hit = msgMatches?.[entry.path];
 									return (
 										<li key={entry.path} className="hb-history-item">
 											<button
@@ -531,6 +545,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 													<span className="hb-mono">{relTime(Date.parse(entry.modified))}</span>
 													<span className="hb-mono">{entry.messageCount} msgs</span>
 												</span>
+												{hit !== undefined && (
+													<span className="hb-history-msg" title={hit.snippet ?? ""}>
+														{hit.snippet ?? `${hit.count} message matches`}
+													</span>
+												)}
 											</button>
 										</li>
 									);

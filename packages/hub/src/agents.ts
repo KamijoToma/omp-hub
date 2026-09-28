@@ -85,7 +85,7 @@ export type SessionCmdName =
 	| "mcp-test";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -108,6 +108,10 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
+	/** `search-sessions` candidate session files; omitted searches the machine's registry sessions (protocol §2). */
+	paths?: string[];
+	/** `search-sessions` needle; matched case-insensitively (protocol §2). */
+	query?: string;
 	/** `upload-file` client-supplied file name, or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */

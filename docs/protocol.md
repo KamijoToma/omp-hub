@@ -358,6 +358,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
 { t: "cmd", reqId: string, cmd: "list-profiles" }
 { t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
+{ t: "cmd", reqId: string, cmd: "search-sessions", query: string, paths?: string[] }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -402,6 +403,24 @@ interface SessionListing {
     profile?: string;          // owning omp profile in allProfiles mode; absent ⇒ default
   }[];
   truncated: boolean;          // sessions hit the 200 cap
+}
+```
+
+- `search-sessions` → `data: { results: SessionSearchHit[] }`: case-insensitive prompt/assistant
+  text search over session files, powering the hub web's session filter boxes. `query` is required
+  (trimmed, ≤ 256 chars) and matched against the text content of `user`/`assistant` message entries
+  only — thinking, tool-call, and image blocks never match; one matching message counts once.
+  `paths` lists absolute candidate session files (≤ 200 after deduplication); paths that do not
+  resolve to a `.jsonl` file inside an omp session store (`<…>/agent/sessions/…`) are skipped
+  silently — the cmd never becomes an arbitrary-file read. Files stream line-by-line, 8 at a time,
+  inside the 15 s cmd budget; unreadable files read as "no hit". Only matching files are reported,
+  in request order. Caller-input failures use deterministic strings the hub maps to 400:
+  `empty query` / `query too long` / `invalid paths` / `too many paths`.
+  ```ts
+interface SessionSearchHit {
+  path: string;                // absolute session file, echoed from the request
+  count: number;               // matching user/assistant messages in the file
+  snippet?: string;            // single-line window around the first match (≤ ~200 chars)
 }
 ```
 
@@ -454,6 +473,7 @@ interface MachineRecord {
 | `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to a machine-local omp stats dashboard; status/content-type/body replayed verbatim. `?profile=<name>` (0.5.0+) selects the named omp profile's dashboard — consumed by the hub, never forwarded in `<path>`; `default`/empty mean the default profile. 404 unknown machine, 400 invalid profile name or agent <0.5.0, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
+| `POST /api/machines/:machineId/sessions/search` | `{query, paths?}` → `{ ok: true, matches: SessionSearchHit[] }` (§2 `search-sessions`; `paths` omitted ⇒ every registry session's `sessionFile` on that machine, capped at 200 after deduplication; needle trimmed, ≤ 256 chars); 400 blank/oversize `query`, non-string-array/oversize `paths`, or mapped agent-reported input failures; error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |

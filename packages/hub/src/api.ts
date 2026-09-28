@@ -55,6 +55,11 @@ const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
 const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
 const MACHINE_SESSIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions$/;
+/** Message-text search over session files (protocol §2 `search-sessions`). */
+const MACHINE_SESSION_SEARCH_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions\/search$/;
+/** Cap on `search-sessions` paths per request, mirroring the agent's own cap. */
+const MAX_SEARCH_PATHS = 200;
+const MAX_SEARCH_QUERY_CHARS = 256;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -115,6 +120,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const machineSessions = MACHINE_SESSIONS_PATH_RE.exec(route);
 	if (machineSessions && req.method === "GET") {
 		return listMachineSessions(decodeURIComponent(machineSessions[1]!), ctx);
+	}
+	const machineSessionSearch = MACHINE_SESSION_SEARCH_PATH_RE.exec(route);
+	if (machineSessionSearch && req.method === "POST") {
+		return searchMachineSessions(decodeURIComponent(machineSessionSearch[1]!), req, ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -459,6 +468,56 @@ async function listMachineSessions(machineId: string, ctx: ApiContext): Promise<
 	});
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	return json({ ok: true, listing: result.data });
+}
+
+/**
+ * Message-text search over session files on one machine (protocol §2
+ * `search-sessions`): forwards the trimmed needle and the caller's candidate
+ * paths — defaulting to every registry session's `sessionFile` on that
+ * machine — and relays the agent's per-file hits keyed by path. Validation
+ * failures answer 400 without touching the agent; plumbing status codes mirror
+ * `listMachineSessions`.
+ */
+async function searchMachineSessions(machineId: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
+	const body = await jsonBody(req);
+	if (!body) return json({ error: "invalid JSON body" }, 400);
+	const query = body.query;
+	if (typeof query !== "string" || query.trim() === "") return json({ error: "query is required" }, 400);
+	if (query.trim().length > MAX_SEARCH_QUERY_CHARS) return json({ error: "query too long" }, 400);
+
+	let paths: string[];
+	if (body.paths === undefined) {
+		paths = [...new Set(ctx.sessions.list().filter(record => record.machineId === machineId && record.sessionFile).map(record => record.sessionFile!))];
+	} else {
+		if (!Array.isArray(body.paths)) return json({ error: "invalid paths" }, 400);
+		const requested: string[] = [];
+		for (const entry of body.paths) {
+			if (typeof entry !== "string") return json({ error: "invalid paths" }, 400);
+			requested.push(entry);
+		}
+		paths = [...new Set(requested)];
+	}
+	if (paths.length > MAX_SEARCH_PATHS) return json({ error: "too many paths" }, 400);
+
+	const result = await ctx.agents.sendCmd(machineId, {
+		reqId: newCmdReqId(),
+		cmd: "search-sessions",
+		query: query.trim(),
+		paths,
+	});
+	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
+	const results = pick(result.data, "results");
+	return json({ ok: true, matches: Array.isArray(results) ? results.filter(isSearchHit) : [] });
+}
+
+/** Narrows one relayed `search-sessions` hit; malformed entries are dropped. */
+function isSearchHit(entry: unknown): entry is { path: string; count: number; snippet?: string } {
+	if (typeof entry !== "object" || entry === null || !("path" in entry) || !("count" in entry)) return false;
+	if (typeof entry.path !== "string" || typeof entry.count !== "number") return false;
+	return !("snippet" in entry) || entry.snippet === undefined || typeof entry.snippet === "string";
 }
 
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
@@ -960,6 +1019,10 @@ function cmdErrorStatus(error: string): number {
 		case "not a directory":
 		case "permission denied": // list-dir caller-input failures (protocol §2 "Machine commands")
 		case "invalid upload encoding": // upload-file caller-input failures (protocol §2)
+		case "empty query":
+		case "query too long":
+		case "invalid paths":
+		case "too many paths": // search-sessions caller-input failures (protocol §2 "Machine commands")
 			return 400;
 		case "file too large":
 			return 413;

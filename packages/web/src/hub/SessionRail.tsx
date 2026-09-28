@@ -16,8 +16,9 @@ import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
-import type { SessionRecord, SessionStatus } from "./api";
+import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename } from "./api";
+import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
@@ -182,7 +183,20 @@ interface PickerBodyProps {
 function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }: PickerBodyProps): ReactNode {
 	const [filter, setFilter] = useState("");
 	const completedSet = useCompletedSessions();
-	const filtered = useMemo(() => filterHubSessions(sessions ?? [], filter), [sessions, filter]);
+	const listed = sessions ?? [];
+	// Message-text search runs over every listed session so rows that match
+	// only in prompt/assistant text surface too (needs ≥ 2 typed characters).
+	const searchGroups = useMemo(
+		() => groupSearchPaths(listed, session => (session.sessionFile ? { machineId: session.machineId, path: session.sessionFile } : undefined)),
+		[listed],
+	);
+	const msgMatches = useMessageMatches(searchGroups, filter);
+	const filtered = useMemo(
+		() => mergeMessageMatches(listed, session => session.sessionFile, filterHubSessions(listed, filter), msgMatches),
+		[listed, filter, msgMatches],
+	);
+	const hitOf = (session: SessionRecord): SessionMessageHit | undefined =>
+		session.sessionFile ? msgMatches?.[session.sessionFile] : undefined;
 	const hidden = useHiddenSessions();
 	const [showHiddenRows, setShowHiddenRows] = useState(false);
 	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(filtered, hidden), [filtered, hidden]);
@@ -223,7 +237,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 				type="text"
 				value={filter}
 				onChange={e => setFilter(e.target.value)}
-				placeholder="filter by name, directory, machine, or profile"
+				placeholder="filter by name, directory, machine, profile, or messages"
 				spellCheck={false}
 				autoComplete="off"
 			/>
@@ -293,6 +307,11 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 											<span className="hb-mono">{session.machineName}</span>
 											<span className="hb-mono">{relTime(session.startedAt)}</span>
 										</span>
+										{hitOf(session) !== undefined && (
+											<span className="hb-nav-msg" title={hitOf(session)!.snippet ?? ""}>
+												{hitOf(session)!.snippet ?? `${hitOf(session)!.count} message matches`}
+											</span>
+										)}
 									</button>
 									{renames && session.status === "live" && (
 										<button

@@ -2074,6 +2074,28 @@
 	min-width: 0;
 }
 
+/* One-line window around the first message-text hit (rail picker rows). */
+.hb-nav-msg {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+/* One-line window around the first message-text hit (home history rows). */
+.hb-history-msg {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11.5px;
+	color: var(--fg-faint);
+}
+
 @media (max-width: 768px) {
 	/* The collapsed icon strip stays docked; the expanded picker overlays the
 	 * surface with a backdrop, mirroring the agents rail. */
