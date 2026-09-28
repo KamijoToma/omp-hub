@@ -383,6 +383,11 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 					{label}
 				</span>
 				<span className={`hb-rail-dot hb-rail-dot-${dot}`} aria-label={DOT_LABEL[dot]} />
+				{session.superagent === true && (
+					<span className="hb-nav-badge hb-nav-badge-super" title="fleet operator">
+						super
+					</span>
+				)}
 			</button>
 		</li>
 	);

@@ -14,6 +14,7 @@ import { HomePage } from "./hub/HomePage";
 import { SessionPage } from "./hub/SessionPage";
 import { TokenGate } from "./hub/TokenGate";
 import { UsagePage } from "./hub/UsagePage";
+import { useNoticeToasts } from "./hub/notices-store";
 import { navigate, useRoute } from "./hub/router";
 import { parseCollabLink } from "./lib/link";
 import "./styles/tokens.css";
@@ -39,6 +40,12 @@ function normalizeDeepLink(): void {
 
 normalizeDeepLink();
 
+/** Hub-page side watcher: toasts hub notices arriving while the page is open. */
+function NoticeToasts(): ReactNode {
+	useNoticeToasts();
+	return null;
+}
+
 function Shell(): ReactNode {
 	const route = useRoute();
 	const [token, setToken] = useState<string | null>(() => getToken());
@@ -61,9 +68,27 @@ function Shell(): ReactNode {
 	if (route.kind === "unknown") return null;
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
-	if (route.kind === "session") return <SessionPage id={route.id} />;
-	if (route.kind === "usage") return <UsagePage machineId={route.machineId} />;
-	return <HomePage onLogout={logout} />;
+	// Token-authenticated hub pages also watch the hub notice channel for toasts.
+	if (route.kind === "session")
+		return (
+			<>
+				<SessionPage id={route.id} />
+				<NoticeToasts />
+			</>
+		);
+	if (route.kind === "usage")
+		return (
+			<>
+				<UsagePage machineId={route.machineId} />
+				<NoticeToasts />
+			</>
+		);
+	return (
+		<>
+			<HomePage onLogout={logout} />
+			<NoticeToasts />
+		</>
+	);
 }
 
 const root = document.getElementById("root");

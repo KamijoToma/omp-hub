@@ -2012,6 +2012,11 @@
 	animation: sh-fade-in 150ms ease-out;
 }
 
+.hb-nav-badge-super {
+	color: var(--fg-muted);
+	background: color-mix(in oklch, var(--fg-muted) 14%, transparent);
+}
+
 .hb-rename-form {
 	display: flex;
 	flex-direction: column;

@@ -51,6 +51,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [prompt, setPrompt] = useState("");
 	const [profiles, setProfiles] = useState<string[]>([]);
 	const [profile, setProfile] = useState("");
+	const [superagent, setSuperagent] = useState(false);
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -197,9 +198,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				name: name.trim() || undefined,
 				prompt: prompt.trim() || undefined,
 				profile: profile || undefined,
+				superagent: superagent || undefined,
 			});
 			setName("");
 			setPrompt("");
+			setSuperagent(false);
 			setBusy(false);
 			navigate(`/s/${session.id}`);
 		} catch (err) {
@@ -372,6 +375,17 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									rows={3}
 									spellCheck={false}
 								/>
+							</label>
+							<label className="sh-field">
+								<span className="sh-field-label">
+									<input
+										type="checkbox"
+										checked={superagent}
+										onChange={e => setSuperagent(e.target.checked)}
+									/>
+									{" "}superagent
+								</span>
+								<span className="sh-field-hint">fleet tools — can start/stop/message other sessions</span>
 							</label>
 							{formError && (
 								<div className="sh-connect-error" role="alert">

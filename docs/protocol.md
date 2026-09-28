@@ -2,6 +2,16 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.8.0** — adds the superagent surface: `start.superagent` (§2) marks a session as a
+fleet operator (the child registers the fleet tools, §4 fleet-req), `POST /api/sessions` accepts
+`superagent` and `SessionRecord` echoes it (§3), the `prompt` session command + `POST
+/api/sessions/:id/prompt` deliver a text message to a live session (§2/§3), and `GET|POST
+/api/notices` (§3) give agents a human-facing notification channel. Child↔parent IPC gains
+`fleet-req`/`fleet-res` (§4): the daemon proxies a whitelisted `/api/*` subset for superagent
+children so the fleet tools never hold `HUB_TOKEN`. Upgrade the hub and agent together only to
+*use* the fleet tools; the frame additions are ignored by older peers (unknown `start` fields
+pass through, unknown cmds answer `ok:false`).
+
 Revision **0.6.0** — adds the registry state snapshot and the upgrade-restart
 flow: the hub persists machines + session records to `HUB_STATE_FILE` (§3;
 default `hub-state.json` next to the entry, off in library use) and restores
@@ -69,7 +79,7 @@ daemon; use TLS/WSS outside loopback.
 ```ts
 { t: "welcome", relayUrl: string, webUrl: string }                 // answer to hello
 { t: "start", id: string, cwd: string, name?: string, prompt?: string, profile?: string,
-  sessionFile?: string, relayUrl: string, webUrl: string }
+  sessionFile?: string, superagent?: boolean, relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
 { t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
@@ -98,6 +108,10 @@ Semantics:
   session <id>"`. A session that has exited releases the file for further resumes. A file
   that lives under a named profile's session store should be resumed with the same
   `start.profile`, so config and credentials resolve from the profile that owns it.
+- `start.superagent` (0.8.0+) marks the session as a fleet operator: the child spawns with
+  `config.superagent` and registers the fleet tools (§4 fleet-req), which reach the hub through
+  the daemon's whitelisted proxy — the child never holds `HUB_TOKEN`. Fleet-initiated starts
+  are daemon-rewritten to `superagent: false`, so a superagent cannot mint another superagent.
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - `session-activity` mirrors the child's guest-visible state into the record's `activity`
@@ -134,7 +148,7 @@ Generic request/response control channel for web-driven host commands. hub→age
 { t: "cmd", id: string, reqId: string,                          // id = session id, reqId = "c_" + 10 base36
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
      | "compact" | "shake" | "handoff" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
-     | "rename" | "generate-title",
+     | "rename" | "generate-title" | "prompt",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
@@ -143,6 +157,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // prompt, limit, condition → loop
                                                                 // enabled → set-extended-context
                                                                 // name, dataB64 → upload-file
+                                                                // text → prompt
                                                                 // name → rename; no params → generate-title
 ```
 
@@ -252,6 +267,10 @@ interface LoopStatus {
 - `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
   to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
   The retried turn itself streams through the normal session channel.
+- `prompt {text}` (0.8.0+) → `data: { accepted: boolean }`. Delivers `text` to the session via
+  `session.prompt()`: a new turn when idle, queued as steering/follow-up while one streams
+  (SDK semantics — the reply never blocks on the turn). `accepted: false` means the SDK
+  dispatched locally without a model turn. Invalid/blank `text` → `ok:false` (hub → 400).
 - `loop {action, prompt?, limit?, condition?}` → `data: { loop: LoopStatus | null }`. Host-side
   loop engine (session-host re-submits `prompt` after every terminal turn end): `enable` sets or
   replaces prompt/limit/condition; `disable` clears; `pause` keeps config and drops the pending
@@ -366,6 +385,7 @@ interface SessionRecord {
   cwd: string;
   name: string;               // display name (default: basename(cwd))
   profile?: string;           // named omp profile; absent ⇒ default profile
+  superagent?: true;          // 0.8.0: fleet-operator session (§4 fleet-req); set at start, daemon strips it from fleet-initiated starts
   status: SessionStatus;
   startedAt: number;          // ms epoch
   exitedAt?: number;
@@ -387,6 +407,14 @@ interface MachineRecord {
   connectedAt: number;
   sessionCount: number;       // live+starting sessions on this machine
   tmpdir?: string;            // agent os.tmpdir(); absent until a ≥0.3.0 hello
+}
+
+interface Notice {              // 0.8.0+, in-memory only
+  id: string;                   // hub-assigned (`n_` + 10 base36)
+  message: string;
+  urgency: "info" | "warn" | "urgent";
+  sessionId?: string;           // attributing session record, when given
+  createdAt: number;            // ms epoch
 }
 ```
 
@@ -411,6 +439,7 @@ interface MachineRecord {
 | `POST /api/sessions/:id/shake` | `{mode?}` → `{ ok: true, result: ShakeResult }` (§2 `shake`); 400 non-string `mode`, 500 agent-reported unknown mode |
 | `POST /api/sessions/:id/handoff` | `{instructions?}` → `{ ok: true }` (§2 `handoff`); 400 non-string `instructions`, 409 streaming/handoff-in-progress guard |
 | `POST /api/sessions/:id/retry` | → `{ ok: true, started }`; 409 on "nothing to retry" / streaming guard |
+| `POST /api/sessions/:id/prompt` | `{text}` → `{ ok: true, accepted }` (§2 `prompt`, 0.8.0+): deliver a message to the live session — new turn when idle, steering/follow-up queue while streaming; 400 missing/blank `text`, same error set otherwise |
 | `POST /api/sessions/:id/loop` | `{action, prompt?, limit?, condition?}` → `{ ok: true, loop }` (§2 `loop`); 400 bad action/limit/condition |
 | `POST /api/sessions/:id/goal` | `{action, objective?, tokenBudget?}` → `{ ok: true, goal }` (§2 `goal`); 400 bad action/objective/budget; SDK precondition errors via cmd-result mapping |
 | `POST /api/sessions/:id/extended-context` | `{enabled?}` → `{ ok: true, extendedContext }` (§2 `set-extended-context`); 400 non-boolean `enabled` |
@@ -418,8 +447,10 @@ interface MachineRecord {
 | `POST /api/sessions/:id/rename` | `{name}` → `{ ok: true, name, session }` (§2 `rename`; the registry record's label follows); 400 missing/blank/oversize (>200) `name`, 404 unknown/offline, 409 not live, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/title` | → `{ ok: true, name, session }` (§2 `generate-title` — bare `/rename`; the registry record's label follows); 404 unknown/offline, 409 not live, 500 agent refusal (e.g. no user input), 502 no title in reply, 502/504 cmd plumbing |
 | `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
+| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
+| `POST /api/notices` | `{message, urgency?, sessionId?}` → `{ ok: true, notice }` (0.8.0+): record a human-facing notification; urgency ∈ `"info"|"warn"|"urgent"` (default `"info"`); `sessionId` optionally attributes it to a session record. 400 blank/oversize (>2000 chars) `message` or bad urgency |
+| `GET /api/notices` | → `{ notices: Notice[] }` — newest first, capped at the 50 most recent (0.8.0+). Notices are in-memory only (like the registry beyond the state file: restart drops them); web clients poll this listing for toasts |
 | `POST /api/hub/restart` | → `{ ok: true }` (0.6.0+): flushes the state snapshot (below), spawns the same interpreter/script/env detached — the fresh process waits for the port — answers, then releases. 501 when the entry did not wire a restart (library use) |
 
 - `POST /api/sessions` assigns the id, stores the record, forwards `start` to the agent. If the
@@ -463,20 +494,25 @@ child → parent (stdout, one JSON object per line; non-JSON lines are logs):
                                        // `name` mirrors the SDK session name (absent until set);
                                        // `handoff` is true while the handoff document generates
 { t: "cmd-result", reqId: string, ok: boolean, data?: unknown, error?: string }
+{ t: "fleet-req", reqId: string, method: "GET" | "POST", path: string,
+  body?: unknown }                   // 0.8.0+, superagent children only: one whitelisted
+                                     // /api/* call, proxied by the daemon (§4 fleet proxy)
 ```
 
 parent → child (stdin):
 
 ```ts
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
+{ t: "fleet-res", reqId: string, ok: true, status: number, body?: unknown }
+                                     // 0.8.0+ answer to fleet-req; ok:false carries `error`
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title",
+     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
   action?: string, objective?: string, tokenBudget?: number,
   prompt?: string, limit?: object, condition?: object, enabled?: boolean,
-  name?: string, dataB64?: string }
+  name?: string, dataB64?: string, text?: string }
                                             // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation
 ```
@@ -484,8 +520,31 @@ parent → child (stdin):
 `cmd` semantics are §2's; `get-context` is answered with the same `SessionContext` object
 (numbers only), computed by the child from the SDK's context breakdown.
 
+### Fleet proxy (0.8.0+, superagent children)
+
+`fleet-req`/`fleet-res` let a superagent session's custom tools reach the hub API without
+holding `HUB_TOKEN`. The daemon (parent) answers every `fleet-req` exactly once:
+
+- **Whitelist** — allowed: `GET /api/machines`, `GET /api/sessions`, `GET /api/sessions/:id`,
+  `POST /api/sessions`, `POST /api/sessions/:id/stop`, `POST /api/sessions/:id/prompt`,
+  `POST /api/notices`. Everything else — `DELETE`, `/api/hub/restart`, usage relay, file
+  upload, unknown paths — answers `{ok:false, error:"fleet: path not allowed"}` without any
+  network traffic. The whitelist is the security boundary; the child is untrusted input.
+- **Superagent recursion guard** — a `POST /api/sessions` body with `superagent: true` is
+  rewritten to `false` before the fetch: fleet sessions spawn only plain sessions.
+- **Proxying** — the daemon fetches `http(s)://<hub>/<path>` with its own `Authorization:
+  Bearer <HUB_TOKEN>` (hub URL = the `--hub` value with `ws:`→`http:` / `wss:`→`https:`) and
+  replays `{ok:true, status, body}` (parsed JSON; absent body on empty) or
+  `{ok:false, error}` on transport failure. Each request is logged one structured line:
+  `fleet <method> <path> -> <status|error>`.
+- **Timeout** — the child abandons an unanswered `fleet-req` after 30 s (`ok:false` to the
+  tool); a late `fleet-res` is dropped by reqId. Unknown `reqId` answers are ignored.
+- Non-superagent children have no fleet tools registered; a hostile `fleet-req` from them
+  (hand-crafted stdin is not a threat model, but defense in depth) is answered
+  `{ok:false, error:"fleet: not a superagent session"}` by the supervisor.
+
 Spawn config is argv: `bun session-host.ts --config <json>` with
-`{ id, cwd, name?, prompt?, profile?, sessionFile?, relayUrl, webUrl, agentDir? }`. A validated `profile`
+`{ id, cwd, name?, prompt?, profile?, sessionFile?, superagent?, relayUrl, webUrl, agentDir? }`. A validated `profile`
 rides the config verbatim; the supervisor exports `OMP_PROFILE`/`PI_PROFILE` on the child
 (and clears any ambient daemon-level profile variables for default sessions), so the SDK
 resolves the profile's agent directory from the first module load. `sessionFile` resumes

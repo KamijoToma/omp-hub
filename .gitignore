@@ -12,3 +12,4 @@ dist
 *.pfx
 .codegraph/
 .omp/
+hub-state.json

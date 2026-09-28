@@ -6,11 +6,13 @@ import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLim
 import { derivePublicBase, type Config } from "./config";
 import { normalizeProfileName } from "./profiles";
 import type { SessionStore } from "./sessions";
+import type { NoticeStore } from "./notices";
 
 export interface ApiContext {
 	readonly cfg: Config;
 	readonly sessions: SessionStore;
 	readonly agents: AgentRegistry;
+	readonly notices: NoticeStore;
 	/** Set by the bound hub; absent in library/tests. Invoked before the reply returns. */
 	readonly restart?: () => void;
 }
@@ -39,6 +41,7 @@ const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
 const RENAME_PATH_RE = /^\/api\/sessions\/([^/]+)\/rename$/;
 const TITLE_PATH_RE = /^\/api\/sessions\/([^/]+)\/title$/;
 const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
+const PROMPT_PATH_RE = /^\/api\/sessions\/([^/]+)\/prompt$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
 const MAX_FILENAME_CHARS = 200;
@@ -115,6 +118,12 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	}
 	if (req.method === "POST" && route === "/api/sessions") {
 		return createSession(req, ctx);
+	}
+	if (req.method === "POST" && route === "/api/notices") {
+		return createNotice(req, ctx);
+	}
+	if (req.method === "GET" && route === "/api/notices") {
+		return json({ notices: ctx.notices.list() });
 	}
 
 	const single = SESSION_PATH_RE.exec(route);
@@ -204,6 +213,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	if (files && req.method === "POST") {
 		return uploadSessionFile(decodeURIComponent(files[1]!), req, ctx);
 	}
+	const prompt = PROMPT_PATH_RE.exec(route);
+	if (prompt && req.method === "POST") {
+		return promptSession(decodeURIComponent(prompt[1]!), req, ctx);
+	}
 
 	return json({ error: "not found" }, 404);
 }
@@ -239,12 +252,20 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	}
 	const sessionFile = typeof rawSessionFile === "string" ? rawSessionFile.trim() : undefined;
 
+	// Fleet-operator opt-in must be exactly the boolean `true`; anything else is
+	// a caller bug worth surfacing, not a falsy default.
+	const superagent = body["superagent"];
+	if (superagent !== undefined && typeof superagent !== "boolean") {
+		return json({ error: "superagent must be a boolean" }, 400);
+	}
+
 	const record = ctx.sessions.create({
 		machineId,
 		machineName: machine.name,
 		cwd,
 		name: field(body, "name"),
 		profile,
+		...(superagent === true ? { superagent: true as const } : {}),
 	});
 	const prompt = field(body, "prompt");
 	const base = derivePublicBase(req, ctx.cfg);
@@ -256,6 +277,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		...(prompt === undefined ? {} : { prompt }),
 		...(profile === undefined ? {} : { profile }),
 		...(sessionFile === undefined ? {} : { sessionFile }),
+		...(superagent === true ? { superagent: true } : {}),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -493,6 +515,36 @@ async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<R
 
 	const outcome = await dispatchCmd(id, "set-thinking", { level }, ctx);
 	return outcome.ok ? json({ ok: true, thinkingLevel: pick(outcome.data, "thinkingLevel") }) : outcome.response;
+}
+
+/**
+ * `prompt {text}` (protocol §2): deliver text to a live session as a new turn or
+ * queued steering. The reply only confirms the dispatch; the turn itself streams
+ * through the normal session channel.
+ */
+async function promptSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const text = field(body, "text");
+	if (!text || text.trim() === "") return json({ error: "text is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "prompt", { text }, ctx);
+	return outcome.ok ? json({ ok: true, accepted: pick(outcome.data, "accepted") ?? true }) : outcome.response;
+}
+
+/**
+ * Notices (protocol §3, 0.8.0+): agents post human-facing notifications; web
+ * clients poll the listing. Validation failures are caller bugs → 400.
+ */
+async function createNotice(req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	try {
+		const notice = ctx.notices.add({ message: body["message"], urgency: body["urgency"], sessionId: body["sessionId"] });
+		return json({ ok: true, notice });
+	} catch (err) {
+		return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+	}
 }
 
 /**
