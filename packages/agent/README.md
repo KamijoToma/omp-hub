@@ -11,8 +11,8 @@ SDK revision, install its workspace dependencies, and build its native addon (re
 Rust/Cargo and the platform's native build toolchain):
 
 ```bash
-git clone https://github.com/KamijoToma/oh-my-pi.git ../oh-my-pi
-git -C ../oh-my-pi checkout 7ae76f8e4daca0c8f409f61bcd514260cd522365
+git clone https://github.com/can1357/oh-my-pi.git ../oh-my-pi
+git -C ../oh-my-pi checkout v18.4.2
 bun --cwd=../oh-my-pi install --frozen-lockfile
 bun --cwd=../oh-my-pi run build:native
 bun --cwd=packages/agent install --frozen-lockfile

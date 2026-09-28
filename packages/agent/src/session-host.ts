@@ -22,6 +22,7 @@ import type { ShakeMode } from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import type { SessionEntry as StoredSessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models";
 import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { cfgExtendedContext as CfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createLogger, errorMessage, type Logger } from "./log";
@@ -145,6 +146,8 @@ interface CommandDeps {
 	/** Valid one-off compact mode names (contract §1). */
 	compactModes: typeof COMPACT_MODES;
 	evaluateLoopCondition: typeof evaluateLoopCondition;
+	/** Typed `extendedContext` setting descriptor (SDK ≥ v18 descriptor registry; string keys are gone). */
+	cfgExtendedContext: typeof CfgExtendedContext;
 	/** Background dispatches (`compact`) can only log their failures. */
 	log: Logger;
 }
@@ -178,7 +181,7 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 			defaultThinkingLevel: entry.thinking?.defaultLevel ?? null,
 		})),
 		roles: agentRoles(session, available, deps),
-		extendedContext: session.settings.get("extendedContext") === true,
+		extendedContext: deps.cfgExtendedContext.get(session.settings),
 		goal: goalState(session),
 		loop,
 	};
@@ -641,9 +644,9 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
 				throw new Error("set-extended-context requires a boolean enabled");
 			}
-			const next = frame.enabled ?? !(session.settings.get("extendedContext") === true);
-			session.settings.set("extendedContext", next);
-			return { extendedContext: session.settings.get("extendedContext") === true };
+			const next = frame.enabled ?? !deps.cfgExtendedContext.get(session.settings);
+			deps.cfgExtendedContext.set(session.settings, next);
+			return { extendedContext: deps.cfgExtendedContext.get(session.settings) };
 		}
 		case "clear-context": {
 			// TUI `/clear` parity (oh-my-pi `handleResetContextCommand`): settle an
@@ -832,9 +835,9 @@ async function run(): Promise<void> {
 
 	// Static SDK imports run before stdout sealing and this catch boundary;
 	// load them here so native-binding failures still reach the supervisor as
-	// JSONL. Same for the role-model helpers and the compact/loop-condition
-	// modules: they transitively pull the SDK tree, which cannot load before
-	// this boundary in a broken-native install.
+	// JSONL. Same for the role-model helpers, the compact/loop-condition
+	// modules, and the settings descriptors: they transitively pull the SDK
+	// tree, which cannot load before this boundary in a broken-native install.
 	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
 	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
 	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
@@ -844,6 +847,9 @@ async function run(): Promise<void> {
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
 	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
+	const { cfgExtendedContext } = await import("@oh-my-pi/pi-coding-agent/session/context-settings");
+	const { cfgCollabDisplayName } = await import("@oh-my-pi/pi-coding-agent/collab/settings");
+	const { cfgLoopConditionTimeoutMs } = await import("@oh-my-pi/pi-coding-agent/modes/settings");
 	const { createCollabUiBridge } = await import("./ui-bridge");
 	const commandDeps: CommandDeps = {
 		parseThinkingLevel: parseConfiguredThinkingLevel,
@@ -852,6 +858,7 @@ async function run(): Promise<void> {
 		computeSessionContextBreakdown,
 		compactModes: COMPACT_MODES,
 		evaluateLoopCondition,
+		cfgExtendedContext,
 		log,
 	};
 
@@ -859,7 +866,7 @@ async function run(): Promise<void> {
 	// one session, and the global would freeze the first cwd.
 	const settings = await Settings.loadIsolated({ cwd: config.cwd, agentDir: config.agentDir });
 	const displayName = config.name?.trim() || basename(config.cwd);
-	settings.override("collab.displayName", displayName);
+	cfgCollabDisplayName.override(settings, displayName);
 
 	// Resume opens the recorded history (CLI `--resume` semantics: model,
 	// thinking level, and entries come back from the file); `initialCwd` keeps
@@ -912,7 +919,10 @@ async function run(): Promise<void> {
 			subscribe: listener => session.subscribe(listener),
 			getCwd: () => session.sessionManager.getCwd(),
 			getSessionId: () => session.sessionManager.getSessionId(),
-			conditionTimeoutMs: () => settings.get("loop.conditionTimeoutMs") ?? 120_000,
+			// Hub floor: SDK default is 30s; keep the hub's 120s unless the setting is
+			// explicitly configured (global/project config, env, or runtime override).
+			conditionTimeoutMs: () =>
+				settings.isConfigured(cfgLoopConditionTimeoutMs) ? cfgLoopConditionTimeoutMs.get(settings) : 120_000,
 		},
 		evaluate: evaluateLoopCondition,
 	});
