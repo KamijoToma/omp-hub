@@ -36,7 +36,7 @@ Headless daemon per machine. **No TUI is ever constructed.** Two process layers:
 main.ts (supervisor)                session-host.ts (one child process per session)
   hub-client.ts  ◀── JSONL stdio ──   createAgentSession({cwd, …})
   supervisor.ts                       CollabHost over a stub InteractiveModeContext
-                                      default-deny ExtensionUIContext
+                                      collab UI bridge (ask/select/editor → guests)
 ```
 
 **Why process-per-session (not N sessions in one process):** omp's SDK has documented
@@ -57,24 +57,29 @@ isolation sidesteps all of it and adds crash containment. Evidence:
    - `autoApprove: true` ⇒ forced `tools.approvalMode: "yolo"` (headless precedent:
      `src/task/executor.ts:786-796` "Subagents run headless"). Policy knobs:
      `tools.approval.<tool>: allow|deny` honored in every mode.
-2. Install the **default-deny UI context** (all required `ExtensionUIContext` methods; awaitables
-   resolve immediately: select→`undefined` (mapped to Deny upstream), confirm→`false`,
-   input/editor/custom→`undefined`; everything else no-op; `theme` after `initTheme()`):
-   - `setToolUIContext(ui, false)` (tools stay non-interactive; ask tool stays off),
-   - `await initializeExtensions(session, { uiContext: ui, … })` from
-     `@oh-my-pi/pi-coding-agent/modes/runtime-init` — the only supported way to make
-     `ExtensionRunner.hasUI()` true; with the runner's no-op sentinel, approval-required tool
-     calls throw instead of hanging (wrapper.ts:152-161). With yolo nothing should reach that
-     path; the deny-ctx is the safety net. **Never leave a dialog promise unsettled** — that is
-     the only way to hang a session.
+2. Install the **collab UI bridge** (`ui-bridge.ts`, docs/protocol.md §7): `createAgentSession`
+   runs with `interactivePrompts: true` (registers the `ask` tool) and `setToolUIContext(ui, true)`
+   hands extensions a bridging `ExtensionUIContext` — `askDialog`/`select`/`editor` mirror to
+   **writable** collab guests as `ui-request`/`ui-response` frames, and `CollabHost` retains a
+   request until the first writer joins. The default-deny discipline stays as the bridge's
+   fallback (all required `ExtensionUIContext` methods; awaitables settle immediately:
+   select→`undefined` (mapped to Deny upstream), confirm→`false`, input/editor/custom→`undefined`;
+   everything else no-op; `theme` after `initTheme()`): no room, gated traffic, pending cap,
+   caller abort, guest cancel, or relay teardown all settle as a cancellation instead of a
+   dialog. `await initializeExtensions(session, { uiContext: ui, … })` from
+   `@oh-my-pi/pi-coding-agent/modes/runtime-init` is still the only supported way to make
+   `ExtensionRunner.hasUI()` true. **Never leave a dialog promise unsettled** — that is
+   the only way to hang a session.
 3. Build the collab stub context (shape proven by
    `oh-my-pi/packages/coding-agent/test/collab/read-only.test.ts` `makeHostContext()`):
    `{ settings: session.settings, sessionManager: session.sessionManager, session, eventBus,
-   statusLine: { setCollabStatus(){}, invalidate(){}, getCachedContextBreakdown: () => ({usedTokens: 0, contextWindow: 0}) },
+   statusLine: { setCollabStatus(){}, invalidate(){}, getCachedContextBreakdown: () => collabContextUsage(session) },
    ui: { requestRender(){} }, showStatus(){}, updatePendingMessagesDisplay(){}, collabHost: undefined }`
    cast `as unknown as InteractiveModeContext`.
-4. `const host = new CollabHost(ctx); await host.start(relayUrl, webUrl); ctx.collabHost = host;`
-   then report `{ link, webLink, viewLink, webViewLink }` upstream.
+4. `const host = new CollabHost(ctx);` — bind the module-level `collabHost` the bridge reads
+   **before** `await host.start(relayUrl, webUrl)` (a `session_start` hook dialog raised during
+   startup must reach the bridge while the relay connection is still opening), then
+   `ctx.collabHost = host;` and report `{ link, webLink, viewLink, webViewLink }` upstream.
 5. Optional initial prompt: `void session.prompt(text)` (fire-and-forget, errors logged).
 6. Shutdown: on SIGTERM or supervisor `stop` → `host.stop("hub stop")` →
    `session.beginDispose()` → `await session.dispose()` (never `process.exit` paths from RPC mode).
