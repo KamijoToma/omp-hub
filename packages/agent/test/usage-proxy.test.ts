@@ -162,9 +162,9 @@ describe("usage proxy", () => {
 	});
 
 	test("reports an unreachable dashboard instead of throwing", async () => {
-		const proxy = createUsageProxy({ resolveOrigin: () => Promise.reject(new Error("no sibling checkout")) });
+		const proxy = createUsageProxy({ resolveOrigin: () => Promise.reject(new Error("no omp-stats install")) });
 		const result = await proxy({ t: "usage-req", reqId: "c_iii", method: "GET", path: "/api/stats" });
-		expect(result).toMatchObject({ ok: false, error: expect.stringContaining("stats dashboard unavailable: no sibling checkout") });
+		expect(result).toMatchObject({ ok: false, error: expect.stringContaining("stats dashboard unavailable: no omp-stats install") });
 	});
 
 	test("relays the dashboard's own error status", async () => {

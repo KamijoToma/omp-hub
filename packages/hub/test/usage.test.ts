@@ -172,11 +172,11 @@ describe("usage relay", () => {
 
 		const { response } = await relayGet(agent, "/api/machines/m-fail/usage/api/stats", {
 			ok: false,
-			error: "stats dashboard unavailable: no sibling checkout",
+			error: "stats dashboard unavailable: no omp-stats install",
 		});
 
 		expect(response.status).toBe(502);
-		expect(await response.json()).toEqual({ error: "stats dashboard unavailable: no sibling checkout" });
+		expect(await response.json()).toEqual({ error: "stats dashboard unavailable: no omp-stats install" });
 		agent.close();
 	});
 

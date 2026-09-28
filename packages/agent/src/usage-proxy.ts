@@ -25,7 +25,7 @@ export type StatsOriginResolver = (profile: string | undefined) => Promise<strin
 export type UsageProxy = (frame: UsageReqFrame) => Promise<UsageResultFrame>;
 
 export interface UsageProxyOptions {
-	/** Defaults to the sibling checkout's `@oh-my-pi/omp-stats` `startServer()`. */
+	/** Defaults to the pinned `@oh-my-pi/omp-stats` package's `startServer()`. */
 	resolveOrigin?: StatsOriginResolver;
 	/** Relay cap; a larger dashboard response fails the request. Default 8 MiB. */
 	maxBodyBytes?: number;
@@ -40,7 +40,7 @@ let defaultOrigin: Promise<string> | null = null;
 
 /**
  * Dashboard launcher used by default, cached until it fails: a broken
- * environment (missing sibling checkout, unwritable state) is retried on the
+ * environment (broken omp-stats install, unwritable state) is retried on the
  * next request instead of poisoning every later one.
  */
 function resolveDefaultOrigin(): Promise<string> {

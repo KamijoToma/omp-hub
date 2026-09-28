@@ -67,7 +67,7 @@ async function readOrigin(child: DashboardChild): Promise<string> {
 	throw new Error(`stats dashboard exited (code ${code}) before reporting its port`);
 }
 
-/** Default spawn: the sibling checkout's `omp-stats` CLI entry via this runtime. */
+/** Default spawn: the pinned `@oh-my-pi/omp-stats` package's CLI entry via this runtime. */
 export function spawnDashboard(profile: string): DashboardChild {
 	const resolved = import.meta.resolve("@oh-my-pi/omp-stats");
 	const entry = resolved.startsWith("file://") ? fileURLToPath(resolved) : resolved;

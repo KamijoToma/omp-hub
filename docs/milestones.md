@@ -15,7 +15,8 @@ Supervisor + hub WSS client (token, reconnect 1s→30s, heartbeat 15s) + per-ses
 (`session-host.ts`): SDK session (isolated settings, autoApprove, `agentId` unique), default-deny
 23-member UI context wired via `setToolUIContext` + `initializeExtensions`, stub
 InteractiveModeContext, `CollabHost.start`, link report, stop → dispose. Resolves
-`@oh-my-pi/pi-coding-agent` from the sibling `oh-my-pi` checkout (dev) — see package README.
+`@oh-my-pi/pi-coding-agent` from the sibling `oh-my-pi` checkout (dev; superseded in v0.5.0 by
+pinned npm SDK dependencies — see package README).
 **Acceptance:** against a local hub, `start` yields a live session with 4 links; guest prompts
 execute tools; `stop` tears down the room (guests get `room-closed`); child exit propagates
 `session-exit`.
