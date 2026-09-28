@@ -11,3 +11,4 @@ dist
 *.p12
 *.pfx
 .codegraph/
+.omp/
