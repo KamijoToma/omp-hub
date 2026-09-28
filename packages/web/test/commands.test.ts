@@ -14,6 +14,7 @@ import {
 	dumpFileName,
 	matchCommands,
 	matchResumableSession,
+	paletteCommandText,
 	parseCommand,
 	parseCompactArgs,
 	parseExtendedContextArg,
@@ -381,6 +382,19 @@ describe("composer routing", () => {
 		expect(matchCommands("th").map(cmd => cmd.name)).toEqual(["thinking", "theme"]);
 		expect(matchCommands("se").map(cmd => cmd.name)).toEqual(["sessions", "settings"]);
 		expect(matchCommands("zz")).toEqual([]);
+	});
+
+	test("palette activation keeps typed args (regression: Enter dropped them)", () => {
+		// `/rename my title` + Enter on the /rename row must run with the args.
+		expect(paletteCommandText("/rename my title", "rename")).toBe("/rename my title");
+		expect(paletteCommandText("/rename", "rename")).toBe("/rename");
+		// A partial word completes, keeping any args typed after it.
+		expect(paletteCommandText("/rena my title", "rename")).toBe("/rename my title");
+		expect(paletteCommandText("/rena", "rename")).toBe("/rename");
+		// A bare `/` completes to the highlighted row.
+		expect(paletteCommandText("/", "model")).toBe("/model");
+		// A stale row that the draft does not prefix degrades to the bare command.
+		expect(paletteCommandText("/zzz", "model")).toBe("/model");
 	});
 });
 

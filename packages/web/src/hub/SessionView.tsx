@@ -52,6 +52,7 @@ import {
 	dumpFileName,
 	matchCommands,
 	matchResumableSession,
+	paletteCommandText,
 	routeComposerText,
 	transcriptJsonl,
 } from "./commands";
@@ -428,7 +429,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 
 	const composerWrapRef = useRef<HTMLDivElement | null>(null);
 	const runCommand = useCallback((name: string): void => {
-		routeComposerText(`/${name}`, ctxRef.current);
+		// The vendored textarea's live value carries the typed args; completing
+		// off the palette must not drop them (e.g. `/rename my title`).
+		const draft = composerWrapRef.current?.querySelector("textarea")?.value ?? "";
+		routeComposerText(paletteCommandText(draft, name), ctxRef.current);
 		setPaletteText("");
 		setPaletteDismissed(true);
 		setPaletteIndex(0);

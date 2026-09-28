@@ -325,6 +325,20 @@ export function matchCommands(query: string | null): readonly CommandSpec[] {
 	return COMMANDS.filter(cmd => cmd.name.startsWith(query));
 }
 
+/**
+ * Command text a palette activation (Enter/Tab/row click) should run for the
+ * typed draft: typed args survive completion, so submitting on the `/rename`
+ * row with `/rename my title` in the box runs `/rename my title`, while a
+ * partial word completes (`/rena` → `/rename`). A draft whose word already
+ * matches the row passes through untouched.
+ */
+export function paletteCommandText(text: string, name: string): string {
+	const word = slashWord(text);
+	if (!word || word.name === name) return text;
+	if (word.name !== "" && !name.startsWith(word.name)) return `/${name}`;
+	return `/${name}${word.args ? ` ${word.args}` : ""}`;
+}
+
 export type ComposerRoute = "passthrough" | "ran" | "unknown" | "ignored";
 
 /**
