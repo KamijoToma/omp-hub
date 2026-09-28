@@ -15,3 +15,4 @@ export const log = {
 	warn: (message: string): void => write("warn", message),
 	error: (message: string): void => write("error", message),
 };
+// hot-reload probe 1790619076

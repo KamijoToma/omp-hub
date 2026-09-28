@@ -5,9 +5,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-		"dev": "bun --watch src/server.ts",
-    "start": "bun src/server.ts",
-    "demo": "bun --cwd=../web install --frozen-lockfile && bun --cwd=../web run build && bun src/server.ts",
+		"dev": "bun src/main.ts",
+		"start": "bun src/main.ts",
+		"demo": "bun --cwd=../web install --frozen-lockfile && bun --cwd=../web run build && bun src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
