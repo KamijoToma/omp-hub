@@ -5,24 +5,22 @@ Headless per-machine daemon: dials out to the hub, spawns one child process per 
 
 ## Resolving oh-my-pi SDK imports
 
-This package resolves the omp SDK from a sibling `../oh-my-pi` checkout; it is not a
-standalone published daemon. From the omp-hub repository root, clone the tested public
-SDK revision, install its workspace dependencies, and build its native addon (requires
-Rust/Cargo and the platform's native build toolchain):
+This package consumes the omp SDK as pinned npm dependencies (`@oh-my-pi/pi-coding-agent`,
+`pi-ai`, `pi-tui`, `pi-wire`, `omp-stats`). The SDK packages publish TypeScript sources with
+wildcard subpath exports, so deep imports (`pi-coding-agent/collab/host`, …) resolve the same
+files whether type-checked or run. Setup is plain dependency installation:
 
 ```bash
-git clone https://github.com/can1357/oh-my-pi.git ../oh-my-pi
-git -C ../oh-my-pi checkout v18.4.2
-bun --cwd=../oh-my-pi install --frozen-lockfile
-bun --cwd=../oh-my-pi run build:native
 bun --cwd=packages/agent install --frozen-lockfile
 ```
 
-If a sibling checkout already exists, verify its revision, install its dependencies, and build
-the native addon instead of cloning over it. `tsconfig.json` contains the source import mappings
-and asset type roots. The SDK and web guest must use compatible `COLLAB_PROTO` versions.
-Do not deploy against an unverified SDK revision. `bun run typecheck` resolves real
-upstream sources, not a mock.
+No sibling checkout or native build is required: `@oh-my-pi/pi-natives` ships prebuilt
+platform binaries via npm optional dependencies. The pinned versions equal the SDK's git
+release tags (e.g. `18.4.2` = tag `v18.4.2`), so a pin is an exact upstream revision — do
+not bump without rerunning `bun run typecheck` and `bun test`. `types/sdk-assets.d.ts`
+vendors the ambient declarations for the SDK's `with { type: "file" }` asset imports
+(they are not part of the published tarballs); extend it if a new SDK version imports new
+asset patterns. The SDK and web guest must use compatible `COLLAB_PROTO` versions.
 
 ## Run
 
