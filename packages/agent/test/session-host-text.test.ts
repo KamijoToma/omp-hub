@@ -4,7 +4,7 @@
  * `maybeStartTitleGeneration`/`generateTitle`, which need the first text.
  */
 import { describe, expect, test } from "bun:test";
-import { firstText, firstUserText } from "../src/session-host";
+import { compactionNoticeText, firstText, firstUserText } from "../src/session-host";
 
 describe("firstText", () => {
 	// Typed const, not inline literal: the helper's structural param has no
@@ -47,5 +47,28 @@ describe("firstUserText", () => {
 		};
 		expect(firstUserText([collabPrompt, { role: "assistant", content: "answer" }])).toBe("collab prompt text");
 		expect(firstUserText([{ role: "assistant", content: "only an answer" }])).toBeUndefined();
+	});
+});
+
+describe("compactionNoticeText", () => {
+	test("names the method and both token counts when the entry carries them", () => {
+		// Shape mirrors a snapcompact journal entry (typed fields, read loosely).
+		const entry: Record<string, unknown> = { method: "snapcompact", tokensAfter: 52268 };
+		expect(compactionNoticeText({ tokensBefore: 171637 }, entry)).toBe(
+			"context compacted (snapcompact) · 171,637 → 52,268 tokens",
+		);
+	});
+
+	test("omits the method and after-count an extension compaction leaves absent", () => {
+		expect(compactionNoticeText({ tokensBefore: 9100 })).toBe("context compacted · 9,100 tokens");
+		expect(compactionNoticeText({ tokensBefore: 9100 }, { method: "soft" })).toBe(
+			"context compacted (soft) · 9,100 tokens",
+		);
+	});
+
+	test("ignores junk metadata instead of printing it", () => {
+		expect(compactionNoticeText({ tokensBefore: 1200 }, { method: 42, tokensAfter: "many" })).toBe(
+			"context compacted · 1,200 tokens",
+		);
 	});
 });

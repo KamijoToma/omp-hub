@@ -220,8 +220,10 @@ interface LoopStatus {
 - `compact {instructions?, mode?}` → `data: { started: true }`. Validates `mode` against the SDK's
   compact modes (empty = default), then background-dispatches `session.compact` and replies
   immediately — compaction is a model call and outlives the 15 s hub timeout. Progress and the
-  outcome arrive through the normal transcript/notice stream, not this channel. Errors after the
-  reply are logged host-side only.
+  outcome arrive through the normal transcript/notice stream, not this channel: on success the
+  host emits an info notice naming the committed method and token delta (e.g. `context compacted
+  (snapcompact) · 171,637 → 52,268 tokens`), read off the journal entry the run committed.
+  Errors after the reply are logged host-side only and surface as an error notice.
 - `shake {mode?}` → `data: ShakeResult` (`{ mode, toolResultsDropped, blocksDropped, imagesDropped?,
   thinkingBlocksDropped?, tokensFreed, artifactId? }`). TUI `/shake` parity: a local, model-free
   context diet — `elide` (default) strips tool results and large blocks, `images` drops image
