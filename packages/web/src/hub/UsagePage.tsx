@@ -18,11 +18,35 @@ import {
 	errorText,
 	getMachineUsage,
 	getMachines,
+	listMachineProfiles,
 	syncMachineUsage,
 } from "./api";
 import { navigate } from "./router";
+import { mergeMachineUsage } from "./usage-merge";
 
 const MACHINE_POLL_MS = 2000;
+
+/** Where the last profile selection persists across page visits. */
+const PROFILE_KEY = "omp-hub.usage.profile";
+
+/** Selection values: `"all"` (merged), `"default"`, or a named profile. */
+type ProfileSelection = "all" | "default" | string;
+
+function readStoredProfile(): ProfileSelection {
+	try {
+		return globalThis.localStorage?.getItem(PROFILE_KEY) ?? "default";
+	} catch {
+		return "default";
+	}
+}
+
+function storeProfile(profile: ProfileSelection): void {
+	try {
+		globalThis.localStorage?.setItem(PROFILE_KEY, profile);
+	} catch {
+		// Storage unavailable (private mode): the choice just stays in memory.
+	}
+}
 
 const RANGES: { value: UsageRange; label: string }[] = [
 	{ value: "1h", label: "1h" },
@@ -36,6 +60,9 @@ const RANGES: { value: UsageRange; label: string }[] = [
 export function UsagePage({ machineId }: { machineId: string }): ReactNode {
 	const [machines, setMachines] = useState<MachineRecord[]>([]);
 	const [range, setRange] = useState<UsageRange>("24h");
+	const [profile, setProfile] = useState<ProfileSelection>(readStoredProfile);
+	/** Named profiles; `null` until the first listing answers. */
+	const [profiles, setProfiles] = useState<string[] | null>(null);
 	const [stats, setStats] = useState<MachineUsageStats | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -62,17 +89,53 @@ export function UsagePage({ machineId }: { machineId: string }): ReactNode {
 		};
 	}, []);
 
+	// Named profiles for the selector; a failure means the machine has none to
+	// offer (offline agent) and the page falls back to the default dashboard.
+	useEffect(() => {
+		let cancelled = false;
+		void listMachineProfiles(machineId)
+			.then(found => {
+				if (!cancelled) setProfiles(found);
+			})
+			.catch(() => {
+				if (!cancelled) setProfiles([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [machineId]);
+
+	// A stored selection can name a profile this machine no longer has — but
+	// only judge that once the listing has actually answered.
+	useEffect(() => {
+		if (profiles === null) return;
+		if (profile !== "all" && profile !== "default" && !profiles.includes(profile)) setProfile("default");
+	}, [profile, profiles]);
+
 	const load = useCallback(async (): Promise<void> => {
 		setBusy(true);
 		try {
-			setStats(await getMachineUsage(machineId, range));
-			setError(null);
+			if (profile === "all") {
+				const named = profiles ?? [];
+				const results = await Promise.allSettled([
+					getMachineUsage(machineId, range),
+					...named.map(name => getMachineUsage(machineId, range, name)),
+				]);
+				const ok = results.flatMap(result => (result.status === "fulfilled" ? [result.value] : []));
+				if (ok.length === 0) throw (results[0] as PromiseRejectedResult).reason;
+				setStats(mergeMachineUsage(ok));
+				const failed = results.length - ok.length;
+				setError(failed > 0 ? `${failed}/${results.length} profiles failed to load; showing the rest merged` : null);
+			} else {
+				setStats(await getMachineUsage(machineId, range, profile));
+				setError(null);
+			}
 		} catch (err) {
 			setError(errorText(err));
 		} finally {
 			setBusy(false);
 		}
-	}, [machineId, range]);
+	}, [machineId, range, profile, profiles]);
 
 	useEffect(() => {
 		void load();
@@ -81,15 +144,16 @@ export function UsagePage({ machineId }: { machineId: string }): ReactNode {
 	const sync = useCallback(async (): Promise<void> => {
 		setSyncing(true);
 		try {
-			await syncMachineUsage(machineId);
-			setStats(await getMachineUsage(machineId, range));
-			setError(null);
+			const named = profile === "all" ? ["default", ...(profiles ?? [])] : [profile];
+			await Promise.all(named.map(target => syncMachineUsage(machineId, target)));
+			// load() owns the error banner (including the partial-failure note).
+			await load();
 		} catch (err) {
 			setError(errorText(err));
 		} finally {
 			setSyncing(false);
 		}
-	}, [machineId, range]);
+	}, [machineId, profile, profiles, load]);
 
 	return (
 		<div className="hb-page">
@@ -106,6 +170,26 @@ export function UsagePage({ machineId }: { machineId: string }): ReactNode {
 					<span className="hb-machine-id">{machineId}</span>
 				</div>
 				<div className="hb-top-actions">
+					{profiles !== null && (
+						<select
+							className="sh-input hb-usage-range"
+							value={profile}
+							onChange={e => {
+								const next = e.target.value;
+								setProfile(next);
+								storeProfile(next);
+							}}
+							aria-label="profile"
+						>
+							{profiles.length > 0 && <option value="all">all profiles</option>}
+							<option value="default">default profile</option>
+							{profiles.map(name => (
+								<option key={name} value={name}>
+									{name}
+								</option>
+							))}
+						</select>
+					)}
 					<select
 						className="sh-input hb-usage-range"
 						value={range}

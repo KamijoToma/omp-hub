@@ -1,17 +1,25 @@
 /**
  * Machine-level `usage-req` handling (docs/protocol.md §2): relays HTTP reads
- * to the machine-local omp stats dashboard. The daemon is outbound-only, so
- * the hub reaches the dashboard (127.0.0.1:3847 by default) only through this
- * tunnel. The dashboard is started lazily on first request — `startServer()`
- * reuses a live one, reclaims a stale listener, or binds a fresh one — and
- * reused for later requests.
+ * to a machine-local omp stats dashboard. The daemon is outbound-only, so the
+ * hub reaches a dashboard (127.0.0.1:3847 by default) only through this
+ * tunnel. The default profile's dashboard is started lazily in-process —
+ * `startServer()` reuses a live one, reclaims a stale listener, or binds a
+ * fresh one — and reused for later requests. Named profiles route to their
+ * own child-process dashboards (`usage-dashboards.ts`), one per omp profile,
+ * because the stats package pins its database at module load.
  */
 
 import type { UsageReqFrame, UsageResultFrame } from "./hub-client";
+import { normalizeProfileName } from "./profiles";
+import { ProfileDashboards } from "./usage-dashboards";
 import { errorMessage } from "./log";
 
-/** Resolves the dashboard origin, e.g. `http://127.0.0.1:3847`. */
-export type StatsOriginResolver = () => Promise<string>;
+/**
+ * Resolves the dashboard origin for one request, e.g. `http://127.0.0.1:3847`.
+ * `undefined` selects the default profile's dashboard; a named profile selects
+ * that profile's.
+ */
+export type StatsOriginResolver = (profile: string | undefined) => Promise<string>;
 
 /** Answers one `usage-req`; the returned frame is the wire-ready `usage-res`. */
 export type UsageProxy = (frame: UsageReqFrame) => Promise<UsageResultFrame>;
@@ -46,13 +54,39 @@ function resolveDefaultOrigin(): Promise<string> {
 	return defaultOrigin;
 }
 
+/** Named-profile dashboards; `undefined` (default) never reaches this. */
+const profileDashboards = new ProfileDashboards();
+
+/** Default resolver: in-process default dashboard, child dashboards per profile. */
+async function resolveOriginFor(profile: string | undefined): Promise<string> {
+	return profile === undefined ? resolveDefaultOrigin() : profileDashboards.resolve(profile);
+}
+
+/** Kills every live named-profile dashboard (daemon shutdown). */
+export function stopProfileDashboards(): void {
+	profileDashboards.stopAll();
+}
+
 export function createUsageProxy(options: UsageProxyOptions = {}): UsageProxy {
-	const resolveOrigin = options.resolveOrigin ?? resolveDefaultOrigin;
+	const resolveOrigin = options.resolveOrigin ?? resolveOriginFor;
 	const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 
 	return async frame => {
 		if (ALLOWED_METHODS[frame.method] !== true) {
 			return { t: "usage-res", reqId: frame.reqId, ok: false, error: `method not allowed: ${String(frame.method)}` };
+		}
+		// Named profiles must pass omp's own name rules; the hub forwards only
+		// validated names, but the wire is untrusted (docs/protocol.md §2).
+		let requestedProfile: string | undefined;
+		if (frame.profile !== undefined) {
+			if (typeof frame.profile !== "string") {
+				return { t: "usage-res", reqId: frame.reqId, ok: false, error: "invalid usage profile" };
+			}
+			try {
+				requestedProfile = normalizeProfileName(frame.profile);
+			} catch {
+				return { t: "usage-res", reqId: frame.reqId, ok: false, error: `invalid usage profile: ${frame.profile}` };
+			}
 		}
 		// The forward target is always the loopback dashboard: the path must stay
 		// a relative absolute-path (no scheme, no authority, no backslashes).
@@ -80,7 +114,7 @@ export function createUsageProxy(options: UsageProxyOptions = {}): UsageProxy {
 
 		let origin: string;
 		try {
-			origin = await resolveOrigin();
+			origin = await resolveOrigin(requestedProfile);
 		} catch (error) {
 			return { t: "usage-res", reqId: frame.reqId, ok: false, error: `stats dashboard unavailable: ${errorMessage(error)}` };
 		}

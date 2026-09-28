@@ -297,21 +297,26 @@ export interface MachineUsageStats {
 
 /**
  * Usage dashboard stats for one machine, relayed from its local omp stats
- * dashboard (protocol §3 usage relay). The hub answers 404 (unknown machine),
- * 502 (machine offline or dashboard unavailable), 504 (relay timeout) — all
- * {@link HubApiError}.
+ * dashboard (protocol §3 usage relay). `profile` names an omp profile
+ * (0.5.0+); omitted or `"default"` selects the machine's default dashboard.
+ * The hub answers 404 (unknown machine), 502 (machine offline or dashboard
+ * unavailable), 504 (relay timeout) — all {@link HubApiError}.
  */
-export async function getMachineUsage(machineId: string, range: UsageRange): Promise<MachineUsageStats> {
+export async function getMachineUsage(machineId: string, range: UsageRange, profile?: string): Promise<MachineUsageStats> {
+	const params = new URLSearchParams({ range });
+	if (profile !== undefined && profile !== "default") params.set("profile", profile);
 	return api<MachineUsageStats>(
-		`/api/machines/${encodeURIComponent(machineId)}/usage/api/stats?range=${encodeURIComponent(range)}`,
+		`/api/machines/${encodeURIComponent(machineId)}/usage/api/stats?${params.toString()}`,
 	);
 }
 
 /** Triggers the machine's incremental session scan and returns its counts. */
 export async function syncMachineUsage(
 	machineId: string,
+	profile?: string,
 ): Promise<{ processed: number; files: number; totalMessages: number }> {
-	return api(`/api/machines/${encodeURIComponent(machineId)}/usage/api/sync`, { method: "POST" });
+	const query = profile !== undefined && profile !== "default" ? `?profile=${encodeURIComponent(profile)}` : "";
+	return api(`/api/machines/${encodeURIComponent(machineId)}/usage/api/sync${query}`, { method: "POST" });
 }
 
 export async function getSessions(): Promise<SessionRecord[]> {

@@ -12,7 +12,7 @@ import { createLogger, errorMessage } from "./log";
 import { handleMachineCmd } from "./machine-cmds";
 import { resolveMachineId } from "./machine-id";
 import { Supervisor } from "./supervisor";
-import { createUsageProxy, type UsageProxy } from "./usage-proxy";
+import { createUsageProxy, stopProfileDashboards, type UsageProxy } from "./usage-proxy";
 
 const DEFAULT_MAX_SESSIONS = 8;
 
@@ -220,6 +220,7 @@ async function main(): Promise<void> {
 			} catch (err) {
 				log.warn(`stopAll failed: ${errorMessage(err)}`);
 			}
+			stopProfileDashboards();
 			client.close();
 			process.exit(0);
 		})();

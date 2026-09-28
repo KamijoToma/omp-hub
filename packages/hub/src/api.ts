@@ -310,7 +310,34 @@ async function listMachineFs(machineId: string, req: Request, ctx: ApiContext): 
  * to the machine's local omp stats dashboard over a `usage-req` frame and
  * replays the agent's `usage-res` verbatim. Reads like any other `/api/*`
  * caller — bearer-authenticated, JSON errors on the tunnel's own failures.
+ *
+ * `?profile=<name>` (0.5.0+) selects the named omp profile's dashboard: the
+ * parameter is consumed here and travels on the frame, never in the forwarded
+ * dashboard path. `"default"` and an empty value mean the default profile.
  */
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** First release whose agent starts per-profile stats dashboards (protocol 0.5.0). */
+const PROFILE_RELAY_VERSION: readonly [number, number, number] = [0, 5, 0];
+
+/** `x.y.z` triple of an agent version string; null when unparsable ("unknown", "test"). */
+function versionTriple(version: string): [number, number, number] | null {
+	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+	if (!match) return null;
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function supportsProfileRelay(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	if (!triple) return false;
+	return triple[0] !== PROFILE_RELAY_VERSION[0]
+		? triple[0] > PROFILE_RELAY_VERSION[0]
+		: triple[1] !== PROFILE_RELAY_VERSION[1]
+			? triple[1] > PROFILE_RELAY_VERSION[1]
+			: triple[2] >= PROFILE_RELAY_VERSION[2];
+}
+
 async function usageProxy(machineId: string, rest: string, search: string, req: Request, ctx: ApiContext): Promise<Response> {
 	const machine = ctx.agents.getMachine(machineId);
 	if (!machine) return json({ error: "machine not found" }, 404);
@@ -319,6 +346,21 @@ async function usageProxy(machineId: string, rest: string, search: string, req: 
 	}
 	if (!machine.connected || !ctx.agents.isOnline(machineId)) return json({ error: "machine offline" }, 502);
 
+	const params = new URLSearchParams(search);
+	const rawProfile = params.get("profile");
+	params.delete("profile");
+	const query = params.toString();
+	const forwardSearch = query !== "" ? `?${query}` : "";
+	let profile: string | undefined;
+	if (rawProfile !== null && rawProfile !== "" && rawProfile !== "default") {
+		if (!PROFILE_NAME_RE.test(rawProfile)) return json({ error: "invalid profile name" }, 400);
+		const version = ctx.agents.agentVersion(machineId);
+		if (!supportsProfileRelay(version)) {
+			return json({ error: `agent ${version ?? "unknown"} does not support profile usage relay (needs 0.5.0+)` }, 400);
+		}
+		profile = rawProfile;
+	}
+
 	let bodyB64: string | undefined;
 	if (req.method === "POST") {
 		const body = new Uint8Array(await req.arrayBuffer());
@@ -326,7 +368,7 @@ async function usageProxy(machineId: string, rest: string, search: string, req: 
 		bodyB64 = body.byteLength > 0 ? Buffer.from(body).toString("base64") : undefined;
 	}
 
-	const result = await ctx.agents.sendUsageRequest(machineId, req.method, `${rest}${search}`, bodyB64);
+	const result = await ctx.agents.sendUsageRequest(machineId, req.method, `${rest}${forwardSearch}`, bodyB64, profile);
 	// Relay failures are gateway-shaped: agent-reported or transport errors are
 	// 502; only the hub's own timeout is 504.
 	if (!result.ok) return json({ error: result.error }, result.error === "usage timeout" ? 504 : 502);

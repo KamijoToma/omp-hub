@@ -12,7 +12,7 @@ import { errorMessage, type Logger } from "./log";
 import type { SessionLinks, SessionStatus } from "./supervisor";
 
 /** Agent release reported in `hello.version`. */
-const AGENT_VERSION = "0.4.0";
+const AGENT_VERSION = "0.5.0";
 const HEARTBEAT_MS = 15_000;
 const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -82,6 +82,11 @@ export interface UsageReqFrame {
 	path: string;
 	/** Base64 request body; POST only. */
 	bodyB64?: string;
+	/**
+	 * Named omp profile whose dashboard serves the request (0.5.0+); omitted
+	 * means the daemon's default profile dashboard.
+	 */
+	profile?: string;
 }
 
 export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame | UsageReqFrame;

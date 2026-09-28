@@ -42,6 +42,40 @@ function stubOrigin(respond: (req: Request) => Response | Promise<Response>): { 
 
 const fixedOrigin = (url: string): StatsOriginResolver => () => Promise.resolve(url);
 
+describe("profile routing", () => {
+	test("routes named profiles to their own dashboard and default to the base one", async () => {
+		const base = stubOrigin(() => Response.json({ profile: "default" }));
+		const named = stubOrigin(() => Response.json({ profile: "fast" }));
+		const seen: Array<string | undefined> = [];
+		const proxy = createUsageProxy({
+			resolveOrigin: profile => {
+				seen.push(profile);
+				return Promise.resolve(profile === undefined ? base.url : named.url);
+			},
+		});
+
+		await expect(proxy({ t: "usage-req", reqId: "c_p1", method: "GET", path: "/api/stats" })).resolves.toMatchObject({ ok: true });
+		await expect(proxy({ t: "usage-req", reqId: "c_p2", method: "GET", path: "/api/stats", profile: "fast" })).resolves.toMatchObject({ ok: true });
+		await expect(proxy({ t: "usage-req", reqId: "c_p3", method: "GET", path: "/api/stats", profile: "default" })).resolves.toMatchObject({ ok: true });
+
+		expect(seen).toEqual([undefined, "fast", undefined]);
+		expect(base.last()?.path).toBe("/api/stats");
+		expect(named.last()?.path).toBe("/api/stats");
+	});
+
+	test("rejects profile names outside omp's charset without resolving an origin", async () => {
+		const stub = stubOrigin(() => Response.json({}));
+		const proxy = createUsageProxy({ resolveOrigin: fixedOrigin(stub.url) });
+
+		for (const profile of ["../escape", "Bad Name", "x".repeat(65)]) {
+			const result = await proxy({ t: "usage-req", reqId: "c_bad", method: "GET", path: "/api/stats", profile });
+			expect(result).toMatchObject({ t: "usage-res", reqId: "c_bad", ok: false });
+			expect(!result.ok && result.error).toMatch(/^invalid usage profile/);
+		}
+		expect(stub.last()).toBeUndefined();
+	});
+});
+
 describe("usage proxy", () => {
 	test("relays a GET with query string and decodes to the dashboard reply", async () => {
 		const stub = stubOrigin(() => Response.json({ ok: true, totalRequests: 3 }));
