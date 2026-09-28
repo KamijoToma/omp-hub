@@ -37,6 +37,9 @@ interface Room {
 	nextPeerId: number;
 }
 
+/** One live room, handed over between hub cores on hot reload. */
+export type RelayRoom = Room;
+
 /** `[4B uint32 BE peerId][sealed payload]` → parts, or null when the frame is too short. */
 function unpackEnvelope(data: Uint8Array): { peerId: number; payload: Uint8Array } | null {
 	if (data.byteLength < ENVELOPE_HEADER_LENGTH) return null;
@@ -143,6 +146,18 @@ export class CollabRelay {
 		if (room.guests.delete(peerId)) {
 			trySend(room.host, JSON.stringify({ t: "peer-left", peer: peerId }));
 		}
+	}
+
+	/** Detaches every live room for handover to a fresh hub core (hot reload). */
+	drainRooms(): Map<string, RelayRoom> {
+		const rooms = new Map(this.rooms);
+		this.rooms.clear();
+		return rooms;
+	}
+
+	/** Re-registers rooms drained from a previous hub core (hot reload). */
+	adoptRooms(rooms: Map<string, RelayRoom>): void {
+		for (const [roomId, room] of rooms) this.rooms.set(roomId, room);
 	}
 
 	/** Shutdown path: tell every guest the room is gone, then drop the rooms. */

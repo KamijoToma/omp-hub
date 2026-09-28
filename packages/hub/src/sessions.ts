@@ -115,6 +115,20 @@ export class SessionStore {
 		);
 	}
 
+	/**
+	 * Replaces the contents with `records` (any order), preserving recency
+	 * order. Used by the upgrade-restart restore and the hot-reload handover.
+	 */
+	adopt(records: readonly SessionRecord[]): void {
+		this.#sessions.clear();
+		this.#order.clear();
+		this.#sequence = 0;
+		for (const record of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
+			this.#sessions.set(record.id, record);
+			this.#order.set(record.id, this.#sequence++);
+		}
+	}
+
 	/** `live` + `starting` sessions on a machine (`MachineRecord.sessionCount`). */
 	countActiveFor(machineId: string): number {
 		let count = 0;

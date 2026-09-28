@@ -2,7 +2,14 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.5.0** — reported by `hello.version` and `GET /api/health` — adds the per-profile
+Revision **0.6.0** — adds the registry state snapshot and the upgrade-restart
+flow: the hub persists machines + session records to `HUB_STATE_FILE` (§3;
+default `hub-state.json` next to the entry, off in library use) and restores
+them on boot, `POST /api/hub/restart` (§3) re-execs the hub in place, and `hb`
+reconciles restored records against the daemon's child list (§2). Collab rooms
+are not persisted — session hosts retry the relay on their own and re-create
+their rooms (same roomId/key), guests rejoin — so a live session survives the
+restart with no wire change. Revision 0.5.0 adds the per-profile
 usage relay (§2 `usage-req.profile`, §3 `?profile=`, §5 `/usage/<machineId>` profile selector);
 upgrade the hub and agent together: hubs may send `profile` to any agent, but only ≥0.5.0
 agents honor it (older ones answer from the default profile's dashboard, so the hub gates the
@@ -101,6 +108,11 @@ Semantics:
   absent — consumers must treat it as optional (and `handoff` too: absent clears the bit).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
   reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
+- `hb.sessions` doubles as the upgrade-restart reconcile (0.6.0+): records restored from the
+  state snapshot (§3) that this connection's heartbeat no longer reports — or reports
+  `exited`/`failed` — flip to that terminal state (`"agent heartbeat: no such child"` /
+  `"agent heartbeat"`). Only records created before the agent connected take part; newer ones
+  follow the normal `session-exit` flow.
 - `usage-req` → `usage-res` relays one HTTP request to a machine-local omp stats dashboard
   (`127.0.0.1:3847` for the default profile; the agent starts it on demand and reuses a live
   one). `path` must be an absolute path on that dashboard origin; `bodyB64` is POST-only.
@@ -406,12 +418,33 @@ interface MachineRecord {
 | `POST /api/sessions/:id/files` | raw body + `X-Filename` header (percent-encoded) → `{ ok: true, path, bytes }` (§2 `upload-file`); 400 missing/blank/oversize name or empty body, 404 unknown/offline, 409 not live, 413 body > 15 MiB, 502/504 cmd plumbing |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
+| `POST /api/hub/restart` | → `{ ok: true }` (0.6.0+): flushes the state snapshot (below), spawns the same interpreter/script/env detached — the fresh process waits for the port — answers, then releases. 501 when the entry did not wire a restart (library use) |
 
 - `POST /api/sessions` assigns the id, stores the record, forwards `start` to the agent. If the
   agent is offline → 404. If the agent socket write fails → record removed, 502.
 - `stop` forwards `stop` to the owning agent (best effort; record flips on `session-exit`).
 - Sessions are pruned: `exited`/`failed` records older than 24 h are dropped hourly (MVP: simple
   cap of 500 records, oldest-exited first).
+
+### Hub state & upgrade restart (0.6.0+)
+
+- `HUB_STATE_FILE` — the registry snapshot. Default: `hub-state.json` in the entry's working
+  directory; an explicit value (even relative) is resolved against the cwd; the library default
+  (tests) keeps persistence off. Content: machines + session records, written atomically
+  (tmp + rename) when the registry changes (coalesced, ≤2 s after a mutation) and flushed on
+  graceful stop/restart. The file carries live links/keys — treat it like the registry itself:
+  sensitive.
+- Boot restores records as-is (`live` stays `live` optimistically; machines start
+  `connected: false`) and the first `hb` of each reconnected agent reconciles children it no
+  longer has (§2). Collab rooms are **not** persisted: a host socket treats a hub restart as a
+  transient loss (the shutdown close codes are non-fatal for hosts), retries with backoff, and
+  re-creates the room with the same roomId + key; guests keep retrying (`4001`/`4004`) and
+  rejoin with a fresh full snapshot. Live sessions therefore survive a restart without any wire
+  change — only hub-side records need the snapshot.
+- `POST /api/hub/restart` is the upgrade flow: flush → spawn (same interpreter, script, env;
+  the child sets `HUB_RESTART_BIND_WAIT` and waits up to 10 s for the port) → answer → the old
+  process releases. Deployments that replace the whole process/image instead rely on the same
+  snapshot: state dir must be a volume, port/token unchanged.
 
 ## 4. Supervisor ↔ session-host IPC (JSONL over stdio, internal to the agent)
 
