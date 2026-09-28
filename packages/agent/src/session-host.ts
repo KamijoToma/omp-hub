@@ -11,6 +11,7 @@ import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
@@ -877,7 +878,7 @@ async function run(): Promise<void> {
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
 	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
-	const { createStubUIContext } = await import("./ui-stub");
+	const { createCollabUiBridge } = await import("./ui-bridge");
 	const commandDeps: CommandDeps = {
 		parseThinkingLevel: parseConfiguredThinkingLevel,
 		modelRoles,
@@ -911,12 +912,17 @@ async function run(): Promise<void> {
 		agentId: `hub-${config.id}`,
 		agentDisplayName: displayName,
 		hasUI: false,
+		interactivePrompts: true,
 		autoApprove: true,
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));
-	const ui = createStubUIContext();
-	setToolUIContext(ui, false);
+	// The bridge surfaces ask/select/editor dialogs to collab guests
+	// (docs/protocol.md §"Interactive ask bridging"); `interactivePrompts` is
+	// what registers the `ask` tool at all (SDK gates it on `canPromptUser`).
+	let collabHost: CollabHost | undefined;
+	const ui = createCollabUiBridge(() => collabHost);
+	setToolUIContext(ui, true);
 	await initializeExtensions(session, {
 		uiContext: ui,
 		reportSendError: () => {},
@@ -947,6 +953,9 @@ async function run(): Promise<void> {
 
 	const ctx = buildCollabCtx(session, eventBus);
 	const host = new CollabHost(ctx);
+	// Before start(): a session_start hook dialog raised during startup must
+	// reach the bridge even while the relay connection is still opening.
+	collabHost = host;
 	await host.start(config.relayUrl, config.webUrl);
 	ctx.collabHost = host;
 

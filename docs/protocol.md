@@ -507,3 +507,31 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 
 The palette opens on leading `/`, filters as you type, Enter/Tab completes, Esc closes.
 Guests attached via `omp join` keep their own TUI-local command behavior (unchanged).
+
+## 7. Interactive ask bridging (session-host tool UI ↔ collab guests)
+
+The headless session host registers the SDK `ask` tool (`createAgentSession` with
+`interactivePrompts: true` → `canPromptUser`) and installs a collab-bridging
+`ExtensionUIContext` (`agent/src/ui-bridge.ts`) via `setToolUIContext(ui, true)`.
+No new hub or relay frames: dialogs ride the frozen collab wire (§1) as
+`ui-request`/`ui-request-end` host frames answered by guest `ui-response` frames —
+the same grammar omp TUI uses to mirror its dialogs (collab wire proto ≥ 3; the
+vendored web `lib/wire.ts` matches).
+
+- `askDialog` (the `ask` tool), `select`, and `editor` surface to **writable**
+  guests; the web composer renders them (options, checkbox multi-select with
+  `Next →` submit gating, `Other (type your own)` editor detour, `Chat about
+  this`, Cancel). Read-only (view link) guests never see them.
+- With a live room but zero connected guests the request is **retained** by
+  `CollabHost` until the first writer joins (its documented behavior); the
+  session's `activity.inputRequired` bit (§2/§4) reports the wait to the hub.
+  `ask.timeout` (SDK setting, default 0 = wait) bounds it with the tool's
+  auto-select-recommended semantics.
+- Deny discipline keeps the host's default-deny contract: no room, gated
+  traffic, pending cap, caller abort, guest cancel, or relay teardown all settle
+  the awaitable immediately as a cancellation — AskTool then aborts the turn
+  instead of stranding a promise. One dialog at a time is inherent (`ask` is
+  `concurrency: "exclusive"`; extra requests queue in the web composer).
+- Guest answers are display-label keyed; the bridge disambiguates labels that
+  collide with reserved runtime labels on the wire and maps answers back to the
+  original labels before persisting results.
