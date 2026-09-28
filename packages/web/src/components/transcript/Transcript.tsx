@@ -5,6 +5,7 @@ import type {
 	TextContent,
 	ToolResultMessage,
 } from "../../lib/wire";
+import { COLLAB_PROMPT_MESSAGE_TYPE } from "../../lib/wire";
 import { ChevronRight, History } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -35,26 +36,197 @@ export interface TranscriptProps {
 	rewind?: TranscriptRewind;
 }
 
-function Row({
+// ═══════════════════════════════════════════════════════════════════════════
+// Turn grouping
+//
+// The flat entry list is clustered into conversation turns before rendering:
+// a user prompt (own accent bubble) and the agent work run it triggered
+// (one raised card holding every assistant request of that run). Meta entries
+// — dividers, standalone markers, displayed custom messages — stay ungrouped.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type AgentTurn = {
+	kind: "agent";
+	key: string;
+	entries: SessionEntry[];
+	/** Streaming ghost continuing this turn. */
+	ghost: AssistantMessage | null;
+	ghostPending: boolean;
+	/** Active tools not represented inside `ghost`. */
+	tailTools: ActiveTool[];
+	/** Nothing visible yet — bare "thinking…" pulse. */
+	shimmer: boolean;
+	/** Turn is still producing output. */
+	live: boolean;
+};
+
+type TurnGroup =
+	| { kind: "user"; key: string; entry: SessionEntry; from: string | null; synthetic: boolean }
+	| AgentTurn
+	| { kind: "custom"; key: string; entry: SessionEntry }
+	| { kind: "divider"; key: string; entry: SessionEntry }
+	| { kind: "marker"; key: string; entry: SessionEntry };
+
+/** Sender shown on a collab guest prompt bubble; `from` falls back to "guest". */
+function collabGuestName(entry: SessionEntry): string | null {
+	if (entry.type !== "custom_message") return null;
+	const details = entry.details;
+	if (details === null || typeof details !== "object") return "guest";
+	const from = (details as Record<string, unknown>).from;
+	return typeof from === "string" && from.length > 0 ? from : "guest";
+}
+
+/** Local `hh:mm` for a card header; null when the timestamp is unparseable. */
+function fmtClock(timestamp: string): string | null {
+	const date = new Date(timestamp);
+	if (Number.isNaN(date.getTime())) return null;
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function agentModel(group: AgentTurn): string | null {
+	for (const entry of group.entries) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			return entry.message.model;
+		}
+	}
+	return group.ghost !== null ? group.ghost.model : null;
+}
+
+function buildTurnGroups(model: {
+	entries: readonly SessionEntry[];
+	stream: AssistantMessage | null;
+	streamDone: boolean;
+	activeTools: ReadonlyMap<string, ActiveTool>;
+	working: boolean;
+}): TurnGroup[] {
+	const { entries, stream, streamDone, activeTools, working } = model;
+
+	// Active tools not already represented as toolCall blocks in the stream ghost.
+	const streamIds = new Set<string>();
+	if (stream !== null) {
+		for (const block of stream.content) {
+			if (block.type === "toolCall") streamIds.add(block.id);
+		}
+	}
+	const tailTools: ActiveTool[] = [];
+	for (const tool of activeTools.values()) {
+		if (!streamIds.has(tool.toolCallId)) tailTools.push(tool);
+	}
+
+	const groups: TurnGroup[] = [];
+	let agent: AgentTurn | null = null;
+	const openAgent = (): AgentTurn => {
+		const turn: AgentTurn = {
+			kind: "agent",
+			key: `agent-${groups.length}`,
+			entries: [],
+			ghost: null,
+			ghostPending: false,
+			tailTools: [],
+			shimmer: false,
+			live: false,
+		};
+		groups.push(turn);
+		return turn;
+	};
+
+	for (const entry of entries) {
+		switch (entry.type) {
+			case "message": {
+				const msg = entry.message;
+				if (msg.role === "assistant") {
+					if (agent === null) agent = openAgent();
+					agent.entries.push(entry);
+				} else if (msg.role === "user") {
+					if (msg.synthetic === true && agent !== null) {
+						// System-injected prompt (steering / auto-continue) mid-run:
+						// an inline row inside the running turn, not a new bubble.
+						agent.entries.push(entry);
+					} else {
+						agent = null;
+						groups.push({
+							kind: "user",
+							key: `user-${groups.length}`,
+							entry,
+							from: null,
+							synthetic: msg.synthetic === true,
+						});
+					}
+				}
+				// toolResult entries are consumed via pairing; developer & unknown roles skipped
+				break;
+			}
+			case "custom_message": {
+				if (entry.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
+					agent = null;
+					groups.push({
+						kind: "user",
+						key: `user-${groups.length}`,
+						entry,
+						from: collabGuestName(entry),
+						synthetic: false,
+					});
+				} else if (entry.display) {
+					agent = null;
+					groups.push({ kind: "custom", key: `custom-${groups.length}`, entry });
+				}
+				break;
+			}
+			case "compaction":
+			case "branch_summary":
+				agent = null;
+				groups.push({ kind: "divider", key: `divider-${groups.length}`, entry });
+				break;
+			case "model_change":
+			case "thinking_level_change":
+				// Mid-run setting changes ride along inside the open agent turn.
+				if (agent !== null) agent.entries.push(entry);
+				else groups.push({ kind: "marker", key: `marker-${groups.length}`, entry });
+				break;
+			default:
+				break; // unknown entry types from newer hosts — skip tolerantly
+		}
+	}
+
+	// The live tail — stream ghost, active tools, "thinking…" — extends the
+	// trailing agent turn, or opens one when the transcript ends on something else.
+	if (stream !== null || tailTools.length > 0 || working) {
+		const last = groups.at(-1);
+		const turn = last !== undefined && last.kind === "agent" ? last : openAgent();
+		if (stream !== null) {
+			turn.ghost = stream;
+			turn.ghostPending = !streamDone;
+		}
+		turn.tailTools = tailTools;
+		turn.shimmer = stream === null && tailTools.length === 0 && working;
+		turn.live = (stream !== null && !streamDone) || working;
+	}
+
+	return groups;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rendering
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** One message row inside a turn card; hover/tap affordance pinned top-right. */
+function Msg({
 	kind,
-	gutter,
+	synthetic,
 	title,
 	action,
 	children,
 }: {
 	kind: "user" | "assistant" | "custom" | "marker";
-	gutter: ReactNode;
+	synthetic?: boolean;
 	title?: string;
-	/** Hover/tap affordance pinned to the row's top-right corner. */
 	action?: ReactNode;
 	children: ReactNode;
 }): ReactNode {
 	return (
-		<div className={`tr-row tr-row--${kind}`}>
-			<div className="tr-gutter" title={title}>
-				{gutter}
-			</div>
-			<div className="tr-body">{children}</div>
+		<div className={`tr-msg tr-msg--${kind}${synthetic === true ? " tr-msg--synthetic" : ""}`} title={title}>
+			{synthetic === true && <span className="tr-turn-tag">auto</span>}
+			{children}
 			{action}
 		</div>
 	);
@@ -306,15 +478,15 @@ const EntryRow = memo(function EntryRow({
 			switch (msg.role) {
 				case "user":
 					return (
-						<Row kind="user" gutter="host" title={entry.timestamp} action={action}>
+						<Msg kind="user" synthetic={msg.synthetic === true} title={entry.timestamp} action={action}>
 							<MsgContent content={msg.content} />
-						</Row>
+						</Msg>
 					);
 				case "assistant":
 					return (
-						<Row kind="assistant" gutter="agent" title={entry.timestamp} action={action}>
+						<Msg kind="assistant" title={entry.timestamp} action={action}>
 							<AssistantBody message={msg} results={results} active={active} pending={false} host={host} />
-						</Row>
+						</Msg>
 					);
 				default:
 					// toolResult entries are consumed via pairing; developer & unknown roles skipped
@@ -322,33 +494,22 @@ const EntryRow = memo(function EntryRow({
 			}
 		}
 		case "custom_message": {
-			if (entry.customType === "collab-prompt") {
-				const details = entry.details;
-				const from =
-					details !== null &&
-					typeof details === "object" &&
-					typeof (details as Record<string, unknown>).from === "string"
-						? ((details as Record<string, unknown>).from as string)
-						: "guest";
+			if (entry.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
+				// Sender name lives on the wrapping user card's header.
 				return (
-					<Row
-						kind="user"
-						gutter={<span className="tr-badge">{from}</span>}
-						title={entry.timestamp}
-						action={action}
-					>
+					<Msg kind="user" title={entry.timestamp} action={action}>
 						<MsgContent content={entry.content} />
-					</Row>
+					</Msg>
 				);
 			}
 			if (!entry.display) return null;
 			return (
-				<Row kind="custom" gutter="" title={entry.timestamp}>
+				<Msg kind="custom" title={entry.timestamp}>
 					<div className="tr-custom">
 						<span className="tr-chip">{entry.customType}</span>
 						<MsgContent content={entry.content} />
 					</div>
-				</Row>
+				</Msg>
 			);
 		}
 		case "compaction":
@@ -365,21 +526,137 @@ const EntryRow = memo(function EntryRow({
 			);
 		case "model_change":
 			return (
-				<Row kind="marker" gutter="" title={entry.timestamp}>
+				<Msg kind="marker" title={entry.timestamp}>
 					<span className="tr-marker">model → {entry.model}</span>
-				</Row>
+				</Msg>
 			);
 		case "thinking_level_change":
 			return (
-				<Row kind="marker" gutter="" title={entry.timestamp}>
+				<Msg kind="marker" title={entry.timestamp}>
 					<span className="tr-marker">thinking → {entry.thinkingLevel ?? "off"}</span>
-				</Row>
+				</Msg>
 			);
 		default:
 			// unknown entry types from newer hosts — skip tolerantly
 			return null;
 	}
 }, entryRowEqual);
+
+/** Renders one clustered turn: cards for user/agent turns, bare rows for meta. */
+function TurnGroupView({
+	group,
+	results,
+	active,
+	host,
+	rewind,
+}: {
+	group: TurnGroup;
+	results: ReadonlyMap<string, ToolResultMessage>;
+	active: ReadonlyMap<string, ActiveTool>;
+	host?: ToolRenderHost;
+	rewind?: TranscriptRewind;
+}): ReactNode {
+	const entryRow = (entry: SessionEntry): ReactNode => (
+		<EntryRow
+			entry={entry}
+			results={results}
+			active={active}
+			host={host}
+			rewindTargetId={rewind?.targets.get(entry.id)}
+			onRewindEntry={rewind?.onRewind}
+		/>
+	);
+	switch (group.kind) {
+		case "user": {
+			const clock = fmtClock(group.entry.timestamp);
+			return (
+				<div
+					className={`tr-turn tr-turn--user${group.synthetic ? " tr-turn--synthetic" : ""}`}
+					title={group.entry.timestamp}
+				>
+					{(group.from !== null || group.synthetic || clock !== null) && (
+						<header className="tr-turn-head">
+							{group.from !== null && <span className="tr-turn-name">{group.from}</span>}
+							{group.synthetic && <span className="tr-turn-tag">auto</span>}
+							{clock !== null && <span className="tr-turn-time">{clock}</span>}
+						</header>
+					)}
+					{entryRow(group.entry)}
+				</div>
+			);
+		}
+		case "agent": {
+			// Header model chip: provider prefix stripped (`anthropic/x` → `x`).
+			const rawModel = agentModel(group);
+			const model =
+				rawModel === null
+					? null
+					: (rawModel
+							.split("/")
+							.filter(part => part.length > 0)
+							.pop() ?? rawModel);
+			const first = group.entries[0];
+			const clock = first === undefined ? null : fmtClock(first.timestamp);
+			return (
+				<div className={`tr-turn tr-turn--agent${group.live ? " tr-turn--live" : ""}`}>
+					<header className="tr-turn-head">
+						<span className="tr-turn-dot" aria-hidden="true" />
+						{model !== null && <span className="tr-turn-model">{model}</span>}
+						{first !== undefined && clock !== null && (
+							<span className="tr-turn-time" title={first.timestamp}>
+								{clock}
+							</span>
+						)}
+					</header>
+					{group.entries.map(entry => (
+						<EntryRow
+							key={entry.id}
+							entry={entry}
+							results={results}
+							active={active}
+							host={host}
+							rewindTargetId={rewind?.targets.get(entry.id)}
+							onRewindEntry={rewind?.onRewind}
+						/>
+					))}
+					{group.ghost !== null && (
+						<Msg kind="assistant">
+							<AssistantBody
+								message={group.ghost}
+								results={results}
+								active={active}
+								pending={group.ghostPending}
+								host={host}
+							/>
+						</Msg>
+					)}
+					{group.tailTools.map(tool => (
+						<Msg key={tool.toolCallId} kind="assistant">
+							<ToolCard
+								toolCallId={tool.toolCallId}
+								name={tool.toolName}
+								intent={tool.intent}
+								args={tool.args}
+								running
+								partialResult={tool.partialResult}
+								host={host}
+							/>
+						</Msg>
+					))}
+					{group.shimmer && (
+						<Msg kind="assistant">
+							<div className="tr-shimmer">thinking…</div>
+						</Msg>
+					)}
+				</div>
+			);
+		}
+		case "custom":
+		case "divider":
+		case "marker":
+			return entryRow(group.entry);
+	}
+}
 
 export function Transcript(props: TranscriptProps): ReactNode {
 	const { entries, stream, streamDone, activeTools, working, compact, host, rewind } = props;
@@ -394,6 +671,11 @@ export function Transcript(props: TranscriptProps): ReactNode {
 		return map;
 	}, [entries]);
 
+	const groups = useMemo(
+		() => buildTurnGroups({ entries, stream, streamDone, activeTools, working }),
+		[entries, stream, streamDone, activeTools, working],
+	);
+
 	const rootRef = useRef<HTMLDivElement | null>(null);
 	const lockRef = useRef(true);
 
@@ -402,18 +684,6 @@ export function Transcript(props: TranscriptProps): ReactNode {
 		const el = rootRef.current;
 		if (el !== null && lockRef.current) el.scrollTop = el.scrollHeight;
 	}, [entries, stream, activeTools, working]);
-
-	// Active tools not already represented as toolCall blocks in the stream ghost.
-	const streamIds = new Set<string>();
-	if (stream !== null) {
-		for (const block of stream.content) {
-			if (block.type === "toolCall") streamIds.add(block.id);
-		}
-	}
-	const tailTools: ActiveTool[] = [];
-	for (const tool of activeTools.values()) {
-		if (!streamIds.has(tool.toolCallId)) tailTools.push(tool);
-	}
 
 	return (
 		<div
@@ -426,50 +696,17 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				}
 			}}
 		>
-			{entries.length === 0 && stream === null && !working && <div className="tr-empty">no activity yet</div>}
-			{entries.map(entry => (
-				<EntryRow
-					key={entry.id}
-					entry={entry}
+			{groups.length === 0 && <div className="tr-empty">no activity yet</div>}
+			{groups.map(group => (
+				<TurnGroupView
+					key={group.key}
+					group={group}
 					results={results}
 					active={activeTools}
 					host={host}
-					rewindTargetId={rewind?.targets.get(entry.id)}
-					onRewindEntry={rewind?.onRewind}
+					rewind={rewind}
 				/>
 			))}
-			{stream !== null && (
-				<Row kind="assistant" gutter="agent">
-					<AssistantBody
-						message={stream}
-						results={results}
-						active={activeTools}
-						pending={!streamDone}
-						host={host}
-					/>
-				</Row>
-			)}
-			{tailTools.length > 0 && (
-				<Row kind="assistant" gutter={stream === null ? "agent" : ""}>
-					{tailTools.map(tool => (
-						<ToolCard
-							key={tool.toolCallId}
-							toolCallId={tool.toolCallId}
-							name={tool.toolName}
-							intent={tool.intent}
-							args={tool.args}
-							running
-							partialResult={tool.partialResult}
-							host={host}
-						/>
-					))}
-				</Row>
-			)}
-			{working && stream === null && (
-				<Row kind="assistant" gutter="agent">
-					<div className="tr-shimmer">thinking…</div>
-				</Row>
-			)}
 		</div>
 	);
 }
