@@ -24,33 +24,123 @@ jobs:
       - run: bun --cwd=packages/hub run typecheck
       - run: bun --cwd=packages/hub test
       - run: docker build -f docker/Dockerfile -t omp-hub:ci .
+      - name: Stage tagged web assets and third-party licenses
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          mkdir -p release-web/licenses
+          cp -a packages/web/dist release-web/dist
+          for package in react react-dom scheduler lucide-react marked; do
+            cp "packages/web/node_modules/$package/LICENSE" "release-web/licenses/$package-LICENSE"
+          done
+      - uses: actions/upload-artifact@v4
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          name: web-bundle
+          path: release-web/
+          if-no-files-found: error
 
   agent:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: omp-hub
-      - uses: actions/checkout@v4
-        with:
-          repository: KamijoToma/oh-my-pi
-          ref: 7ae76f8e4daca0c8f409f61bcd514260cd522365
-          path: oh-my-pi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
-        working-directory: oh-my-pi
-      - name: Install pinned SDK native addon
+      - run: bun --cwd=packages/agent install --frozen-lockfile
+      - run: bun --cwd=packages/agent run typecheck
+      - run: bun --cwd=packages/agent test
+
+  release:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [web-hub, agent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Validate release tag and source version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          native_pkg="$(mktemp -d)"
-          printf '{"name":"omp-native-ci","private":true}\n' > "$native_pkg/package.json"
-          bun add --no-save --cwd="$native_pkg" @oh-my-pi/pi-natives-linux-x64@18.2.11
-          cp "$native_pkg/node_modules/@oh-my-pi/pi-natives-linux-x64/pi_natives.linux-x64-baseline.node" oh-my-pi/packages/natives/native/
-      - run: bun install --frozen-lockfile
-        working-directory: omp-hub/packages/agent
-      - run: bun run typecheck
-        working-directory: omp-hub/packages/agent
-      - run: bun test
-        working-directory: omp-hub/packages/agent
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid release tag: $RELEASE_TAG"; exit 1; }
+          git merge-base --is-ancestor HEAD origin/main || { echo "tag must point to main history"; exit 1; }
+          version="${RELEASE_TAG#v}"
+          for package in hub agent web; do
+            actual="$(PACKAGE="$package" bun -p 'require(`./packages/${process.env.PACKAGE}/package.json`).version')"
+            [[ "$actual" == "$version" ]] || { echo "$package version $actual != $version"; exit 1; }
+          done
+      - name: Generate categorized release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-bundle
+          path: release-web
+      - name: Assemble release archive and checksum
+        run: |
+          mkdir -p release/omp-hub/packages/{hub,agent,web} release/omp-hub/{licenses,docs/screenshots}
+          cp -a packages/hub/{src,package.json,bun.lock,tsconfig.json} release/omp-hub/packages/hub/
+          cp -a packages/agent/{src,types,package.json,bun.lock,tsconfig.json,README.md} release/omp-hub/packages/agent/
+          cp -a release-web/dist release/omp-hub/packages/web/dist
+          cp -a release-web/licenses/. release/omp-hub/licenses/
+          cp README.md README.zh-CN.md LICENSE release/omp-hub/
+          cp docs/{architecture,protocol,milestones,e2e}.md release/omp-hub/docs/
+          cp docs/screenshots/*.png release/omp-hub/docs/screenshots/
+          tar -C release -czf "release/omp-hub-$GITHUB_REF_NAME.tar.gz" omp-hub
+          (cd release && sha256sum "omp-hub-$GITHUB_REF_NAME.tar.gz" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+      - name: Smoke-test unpacked archive
+        run: |
+          mkdir -p release/smoke
+          tar -C release/smoke -xzf "release/omp-hub-$GITHUB_REF_NAME.tar.gz"
+          bun --cwd=release/smoke/omp-hub/packages/agent install --frozen-lockfile
+          bun release/smoke/omp-hub/packages/agent/src/main.ts --help
+          bun -e '
+            import { startHub } from "./release/smoke/omp-hub/packages/hub/src/server.ts";
+            const hub = startHub({ port: 0, token: "release-ci", hostname: "127.0.0.1" });
+            let agent;
+            try {
+              const health = await fetch(`${hub.url}/healthz`);
+              if (health.status !== 200 || await health.text() !== "ok") throw new Error("hub healthz failed");
+              const home = await fetch(hub.url);
+              if (home.status !== 200 || !(await home.text()).includes("<script")) throw new Error("web UI missing");
+              agent = Bun.spawn([
+                "bun", "release/smoke/omp-hub/packages/agent/src/main.ts",
+                "--hub", hub.url, "--token", "release-ci", "--machine-id", "release-ci-machine",
+              ], { stdout: "inherit", stderr: "inherit" });
+              const deadline = Date.now() + 10_000;
+              let connected = false;
+              while (Date.now() < deadline) {
+                const response = await fetch(`${hub.url}/api/machines`, {
+                  headers: { Authorization: "Bearer release-ci" },
+                });
+                const data = await response.json();
+                connected = data.machines.some(machine => machine.machineId === "release-ci-machine" && machine.connected);
+                if (connected) break;
+                await Bun.sleep(100);
+              }
+              if (!connected) throw new Error("unpacked agent did not connect to the hub");
+            } finally {
+              if (agent) {
+                agent.kill();
+                await agent.exited;
+              }
+              hub.stop();
+            }
+          '
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            release/omp-hub-${{ github.ref_name }}.tar.gz
+            release/SHA256SUMS.txt
