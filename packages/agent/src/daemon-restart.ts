@@ -28,7 +28,15 @@ export interface DaemonRestartOptions {
  * production logs keep flowing into whatever stream the operator launched with
  * (e.g. the `daemon.log` shell redirect) with no reconfiguration. */
 function spawnReplacement(argv: string[]): unknown {
-	return Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"] });
+	try {
+		return Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"] });
+	} catch {
+		// execPath can point at a deleted inode when the on-disk binary was
+		// rebuilt while this daemon ran; /proc/self/exe still resolves the
+		// RUNNING build (Linux). Re-executing it keeps the daemon alive —
+		// loading the new build takes a fresh deploy.
+		return Bun.spawn(["/proc/self/exe", ...argv.slice(1)], { stdio: ["ignore", "inherit", "inherit"] });
+	}
 }
 
 /**
