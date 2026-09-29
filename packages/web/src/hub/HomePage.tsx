@@ -5,12 +5,13 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Activity, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Square } from "lucide-react";
+import { Activity, ChevronDown, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Square, X } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
 import type { MachineRecord, MachineSession, SessionRecord, SessionStatus } from "./api";
+import { TOOL_CATALOG } from "./tool-catalog";
 import {
 	errorText,
 	getMachineSessions,
@@ -56,7 +57,9 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [profiles, setProfiles] = useState<string[]>([]);
 	const [profile, setProfile] = useState("");
 	const [superagent, setSuperagent] = useState(false);
-	const [tools, setTools] = useState("");
+	const [selectedTools, setSelectedTools] = useState<string[]>([]);
+	const [toolsOpen, setToolsOpen] = useState(false);
+	const toolsRef = useRef<HTMLDivElement | null>(null);
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -197,11 +200,6 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 		setBusy(true);
 		setFormError(null);
 		try {
-			// Comma-separated tool whitelist; blank input keeps the default set.
-			const toolList = tools
-				.split(",")
-				.map(tool => tool.trim())
-				.filter(tool => tool !== "");
 			const session = await startSession({
 				machineId,
 				cwd: target,
@@ -209,12 +207,13 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				prompt: prompt.trim() || undefined,
 				profile: profile || undefined,
 				superagent: superagent || undefined,
-				tools: toolList.length > 0 ? toolList : undefined,
+				tools: selectedTools.length > 0 ? selectedTools : undefined,
 			});
 			setName("");
 			setPrompt("");
 			setSuperagent(false);
-			setTools("");
+			setSelectedTools([]);
+			setToolsOpen(false);
 			setBusy(false);
 			navigate(`/s/${session.id}`);
 		} catch (err) {
@@ -222,6 +221,31 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 			setFormError(errorText(err));
 		}
 	};
+
+	/** Add/remove one tool from the whitelist; order follows the clicks. */
+	const toggleTool = (tool: string): void => {
+		setSelectedTools(prev => (prev.includes(tool) ? prev.filter(name => name !== tool) : [...prev, tool]));
+	};
+
+	// The whitelist menu closes on Esc and on any press outside the picker —
+	// capture phase, so the same pattern as the hub modals.
+	useEffect(() => {
+		if (!toolsOpen) return;
+		const onPointerDown = (event: PointerEvent): void => {
+			if (toolsRef.current && event.target instanceof Node && !toolsRef.current.contains(event.target)) {
+				setToolsOpen(false);
+			}
+		};
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === "Escape") setToolsOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown, true);
+		document.addEventListener("keydown", onKeyDown, true);
+		return () => {
+			document.removeEventListener("pointerdown", onPointerDown, true);
+			document.removeEventListener("keydown", onKeyDown, true);
+		};
+	}, [toolsOpen]);
 
 	const copy = useCallback(async (key: string, text: string): Promise<void> => {
 		setFlash({ key, ok: await copyText(text) });
@@ -400,19 +424,59 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									spellCheck={false}
 								/>
 							</label>
-							<label className="sh-field">
+							<div className="sh-field">
 								<span className="sh-field-label">tools whitelist (optional)</span>
-								<input
-									className="sh-input sh-input-mono"
-									type="text"
-									value={tools}
-									onChange={e => setTools(e.target.value)}
-									placeholder="bash, read, edit, write"
-									spellCheck={false}
-									autoComplete="off"
-								/>
-								<span className="sh-field-hint">comma-separated — the session gets exactly these tools</span>
-							</label>
+								<div className="hb-tools-picker" ref={toolsRef}>
+									<div className="hb-tools-row">
+										<button
+											type="button"
+											className="sh-input hb-tools-toggle"
+											onClick={() => setToolsOpen(open => !open)}
+											aria-expanded={toolsOpen}
+											aria-haspopup="true"
+											title={selectedTools.length > 0 ? selectedTools.join(", ") : "all tools"}
+										>
+											<span className="hb-tools-summary">
+												{selectedTools.length === 0
+													? "default — all tools"
+													: `${selectedTools.length} selected`}
+											</span>
+											<ChevronDown size={14} aria-hidden="true" />
+										</button>
+										{selectedTools.length > 0 && (
+											<button
+												type="button"
+												className="sh-btn"
+												onClick={() => setSelectedTools([])}
+												title="back to the default tool set"
+											>
+												<X size={14} aria-hidden="true" />
+												<span className="sh-btn-label">clear</span>
+											</button>
+										)}
+									</div>
+									{toolsOpen && (
+										<div className="hb-tools-menu" role="group" aria-label="tools whitelist">
+											{TOOL_CATALOG.map(tool => (
+												<label key={tool.name} className="hb-tool-option">
+													<input
+														type="checkbox"
+														checked={selectedTools.includes(tool.name)}
+														onChange={() => toggleTool(tool.name)}
+													/>
+													<span className="hb-tool-name" title={tool.label}>
+														{tool.name}
+													</span>
+													<span className="hb-tool-desc">{tool.description}</span>
+												</label>
+											))}
+										</div>
+									)}
+								</div>
+								<span className="sh-field-hint">
+									pick tools to restrict the session; none selected keeps the default set
+								</span>
+							</div>
 							<label className="sh-field">
 								<span className="sh-field-label">
 									<input
