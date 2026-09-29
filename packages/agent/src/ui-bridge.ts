@@ -1,23 +1,9 @@
 /**
- * Collab-backed `ExtensionUIContext` for the headless session host.
- *
- * The SDK's `ask` tool refuses to run without a UI surface (`createIf` gates on
- * `canPromptUser`, `execute` on `context.hasUI`), and the stock stub would deny
- * every dialog instantly. This bridge instead surfaces `askDialog`/`select`/
- * `editor` to collab guests through `CollabHost.requestGuestUi` — the same
- * mirror the interactive TUI raises (`extension-ui-controller.ts`), minus the
- * local TUI half. A writable guest answers via `ui-response`; the web
- * composer already renders these requests (proto ≥ 3 wire grammar).
- *
- * Deny semantics keep the host's default-deny contract: when no room exists,
- * traffic is gated, the pending cap is hit, the caller aborts, or the guest
- * side tears down, every awaitable settles immediately with
- * `undefined`/`false` — AskTool then reports a cancellation and aborts the
- * turn instead of stranding a promise. With a live room but zero connected
- * guests the request is *retained* by CollabHost until the first writer
- * joins (its documented behavior), which is the headless analogue of a TUI
- * dialog waiting at the keyboard; `ask.timeout` bounds it when configured.
+ * Headless extension UI: fleet controllers and writable collab guests share
+ * each pending question. Whoever answers first settles it; the other surface
+ * receives cancellation. A missing guest never cancels a fleet request.
  */
+import { randomUUID } from "node:crypto";
 
 import type { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
@@ -68,23 +54,84 @@ function boundAskTitle(prefix: string, question: string): string {
 	return flat.length > MAX_TITLE_CHARS ? `${flat.slice(0, MAX_TITLE_CHARS - 1)}…` : flat;
 }
 
-/** One round trip to the writable guests: `null` (no room/gated) and
- * `unavailable` (aborted/teardown) both deny; a string answer resolves. */
-async function requestGuestString(
+export interface FleetPendingInput {
+	requestId: string;
+	kind: "select" | "editor";
+	title: string;
+	options?: CollabUiSelectItem[];
+	prefill?: string;
+}
+
+export interface FleetInputBridge extends ExtensionUIContext {
+	getPendingInput(): FleetPendingInput[];
+	answerInput(requestId: string, answer: string): boolean;
+}
+
+type RequestString = (request: CollabUiRequestDraft, signal?: AbortSignal) => Promise<string | undefined>;
+
+/** First valid controller or writable guest answer wins, even without guests. */
+function createInputRequests(
 	getHost: () => CollabHost | undefined,
-	request: CollabUiRequestDraft,
-	signal: AbortSignal | undefined,
-): Promise<string | undefined> {
-	const host = getHost();
-	const remote = host?.requestGuestUi(request, signal);
-	if (!remote) return undefined;
-	const result = await remote;
-	return result.kind === "answered" && typeof result.value === "string" ? result.value : undefined;
+	onEvent?: (event: { kind: "input_required" | "input_resolved"; requestId: string }) => void,
+): { request: RequestString; pending: () => FleetPendingInput[]; answer: (requestId: string, answer: string) => boolean } {
+	const pending = new Map<string, { input: FleetPendingInput; settle: (answer?: string) => void }>();
+	return {
+		pending: () => [...pending.values()].map(entry => entry.input),
+		answer(requestId, answer) {
+			const entry = pending.get(requestId);
+			if (!entry || typeof answer !== "string") return false;
+			if (entry.input.kind === "select" &&
+				!entry.input.options?.some(option => (typeof option === "string" ? option : option.label) === answer)) return false;
+			entry.settle(answer);
+			return true;
+		},
+		async request(draft, signal) {
+			if (signal?.aborted) return undefined;
+			const requestId = randomUUID();
+			const input: FleetPendingInput = {
+				requestId, kind: draft.kind, title: draft.title,
+				...(draft.kind === "select" ? { options: draft.options } : { prefill: draft.prefill }),
+			};
+			const guestAbort = new AbortController();
+			let settled = false;
+			let resolveAnswer!: (answer?: string) => void;
+			const answerPromise = new Promise<string | undefined>(resolve => { resolveAnswer = resolve; });
+			const settle = (answer?: string): void => {
+				if (settled) return;
+				settled = true;
+				pending.delete(requestId);
+				resolveAnswer(answer);
+			};
+			pending.set(requestId, { input, settle });
+			const onAbort = (): void => settle(undefined);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			let announced = false;
+			try {
+				const remote = getHost()?.requestGuestUi(draft, guestAbort.signal);
+				if (remote) {
+					announced = true;
+					onEvent?.({ kind: "input_required", requestId });
+					void remote.then(result =>
+						settle(result.kind === "answered" && typeof result.value === "string" ? result.value : undefined),
+						() => settle(undefined));
+				} else {
+					// No room/traffic gate: preserve the headless default-deny contract.
+					settle(undefined);
+				}
+				return await answerPromise;
+			} finally {
+				pending.delete(requestId);
+				signal?.removeEventListener("abort", onAbort);
+				guestAbort.abort();
+				if (announced) onEvent?.({ kind: "input_resolved", requestId });
+			}
+		},
+	};
 }
 
 /** Ask one question through the guests (TUI controller's `#runGuestAskQuestion`). */
 async function askGuestQuestion(
-	getHost: () => CollabHost | undefined,
+	request: RequestString,
 	question: ExtensionAskDialogQuestion,
 	signal: AbortSignal | undefined,
 ): Promise<ExtensionAskDialogResultItem | "chat" | undefined> {
@@ -121,8 +168,7 @@ async function askGuestQuestion(
 			const options: CollabUiSelectItem[] = [...baseOptions, ASK_OTHER_OPTION];
 			if (hasAnswer) options.push(ASK_NEXT_OPTION);
 			options.push(ASK_CHAT_OPTION);
-			const choice = await requestGuestString(
-				getHost,
+			const choice = await request(
 				{
 					kind: "select",
 					title: displayQuestion,
@@ -140,7 +186,7 @@ async function askGuestQuestion(
 			if (choice === ASK_CHAT_OPTION) return "chat";
 			if (choice === ASK_NEXT_OPTION) break;
 			if (choice === ASK_OTHER_OPTION) {
-				const input = await requestGuestString(getHost, { kind: "editor", title: customAnswerTitle }, signal);
+				const input = await request({ kind: "editor", title: customAnswerTitle }, signal);
 				// Guest cancelled the editor: re-show the checkboxes instead of
 				// cancelling the whole ask.
 				if (input === undefined) continue;
@@ -158,8 +204,7 @@ async function askGuestQuestion(
 				: 0;
 		const initialIndex = Math.max(0, Math.min(recommended, Math.max(0, question.options.length - 1)));
 		for (;;) {
-			const choice = await requestGuestString(
-				getHost,
+			const choice = await request(
 				{
 					kind: "select",
 					title: displayQuestion,
@@ -174,7 +219,7 @@ async function askGuestQuestion(
 			if (choice === undefined) return undefined;
 			if (choice === ASK_CHAT_OPTION) return "chat";
 			if (choice === ASK_OTHER_OPTION) {
-				const input = await requestGuestString(getHost, { kind: "editor", title: customAnswerTitle }, signal);
+				const input = await request({ kind: "editor", title: customAnswerTitle }, signal);
 				// Guest cancelled the editor: re-show the option list.
 				if (input === undefined) continue;
 				customInput = input;
@@ -200,10 +245,17 @@ async function askGuestQuestion(
  * bridge can be installed before `CollabHost` construction completes (the
  * session host wires the tool UI before it starts the room).
  */
-export function createCollabUiBridge(getHost: () => CollabHost | undefined): ExtensionUIContext {
+export function createCollabUiBridge(
+	getHost: () => CollabHost | undefined,
+	onEvent?: (event: { kind: "input_required" | "input_resolved"; requestId: string }) => void,
+): FleetInputBridge {
 	const stub = createStubUIContext();
+	const inputs = createInputRequests(getHost, onEvent);
+	const request = inputs.request;
 	return {
 		...stub,
+		getPendingInput: inputs.pending,
+		answerInput: inputs.answer,
 		// The web composer presents the dialog as soon as it arrives; the
 		// tool-level fallback timeout (`ask.timeout`) starts at call time.
 		timeoutStartsOnPresentation: false,
@@ -212,7 +264,7 @@ export function createCollabUiBridge(getHost: () => CollabHost | undefined): Ext
 			const signal = dialogOptions?.signal;
 			const results: ExtensionAskDialogResultItem[] = [];
 			for (const question of questions) {
-				const result = await askGuestQuestion(getHost, question, signal);
+				const result = await askGuestQuestion(request, question, signal);
 				// undefined: denied, aborted, torn down, or guest cancel — AskTool
 				// maps an undefined dialog result to a user cancellation.
 				if (result === undefined) return undefined;
@@ -242,8 +294,7 @@ export function createCollabUiBridge(getHost: () => CollabHost | undefined): Ext
 			options.forEach((option, index) => {
 				originalByDisplay.set(displayLabels[index]!, typeof option === "string" ? option : option.label);
 			});
-			const choice = await requestGuestString(
-				getHost,
+			const choice = await request(
 				{
 					kind: "select",
 					title: boundAskTitle("", title),
@@ -264,8 +315,7 @@ export function createCollabUiBridge(getHost: () => CollabHost | undefined): Ext
 			prefill?: string,
 			dialogOptions?: ExtensionUIDialogOptions,
 		): Promise<string | undefined> {
-			return requestGuestString(
-				getHost,
+			return request(
 				{
 					kind: "editor",
 					title: boundAskTitle("", title),
@@ -273,6 +323,13 @@ export function createCollabUiBridge(getHost: () => CollabHost | undefined): Ext
 				},
 				dialogOptions?.signal,
 			);
+		},
+		async confirm(title, message, dialogOptions) {
+			const choice = await request({ kind: "select", title: boundAskTitle(`${title}: `, message), options: ["Yes", "No"] }, dialogOptions?.signal);
+			return choice === "Yes";
+		},
+		async input(title, placeholder, dialogOptions) {
+			return request({ kind: "editor", title: boundAskTitle("", title), prefill: placeholder }, dialogOptions?.signal);
 		},
 	};
 }

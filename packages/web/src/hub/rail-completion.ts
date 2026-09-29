@@ -79,9 +79,9 @@ export function pruneCompletedSessions(liveIds: readonly string[]): void {
 }
 
 /**
- * Working→stopped edges that count as "task finished": the record must still
- * be live, no longer working, and not waiting on input (that state already
- * has its own "input" marker). Brand-new records are baseline, not edges.
+ * Working→stopped edges count only when the session remains reachable and live,
+ * has stopped working, and does not need input. A daemon disconnect is not a
+ * completed task; brand-new records are a baseline, not an edge.
  */
 export function diffCompletedSessions(prev: readonly SessionRecord[], next: readonly SessionRecord[]): string[] {
 	const before = new Map(prev.map(record => [record.id, record]));
@@ -91,6 +91,7 @@ export function diffCompletedSessions(prev: readonly SessionRecord[], next: read
 		if (was === undefined) continue;
 		if (was.activity?.working !== true) continue;
 		if (record.status !== "live") continue;
+		if (record.unreachable) continue; // a dropped daemon link is not a completed task
 		if (record.activity?.working === true) continue;
 		if (record.activity?.inputRequired === true) continue;
 		done.push(record.id);

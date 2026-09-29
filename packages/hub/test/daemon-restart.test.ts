@@ -12,6 +12,7 @@ interface SessionJson {
 	id: string;
 	name: string;
 	status: string;
+	unreachable?: true;
 	exitReason?: string;
 	links?: { full: string };
 }
@@ -75,11 +76,12 @@ function api(path: string, init: RequestInit = {}): Promise<Response> {
 
 interface FakeAgent {
 	readonly ws: WebSocket;
+	frames(): readonly Record<string, unknown>[];
 	/** Waits for the next frame matching the predicate, skipping unmatched earlier frames. */
 	wait<T>(match: (frame: Record<string, unknown>) => T | undefined, what: string, timeoutMs?: number): Promise<T>;
 }
 
-async function connectAgent(machineId: string, name: string): Promise<FakeAgent> {
+async function connectAgent(machineId: string, name: string, version = "test"): Promise<FakeAgent> {
 	const ws = new WebSocket(`${main.ws}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
@@ -105,9 +107,9 @@ async function connectAgent(machineId: string, name: string): Promise<FakeAgent>
 		}
 	};
 
-	ws.send(JSON.stringify({ t: "hello", name, machineId, version: "test" }));
+	ws.send(JSON.stringify({ t: "hello", name, machineId, version }));
 	await wait((frame) => (frame.t === "welcome" ? frame : undefined), "welcome");
-	return { ws, wait };
+	return { ws, wait, frames: () => frames };
 }
 
 async function sessionJson(id: string): Promise<SessionJson> {
@@ -159,8 +161,8 @@ async function liveSession(agent: FakeAgent, machineId: string): Promise<Session
 }
 
 /** The fresh daemon's connect sequence: hello, then an immediate empty hb. */
-async function connectFreshDaemon(machineId: string, name: string): Promise<FakeAgent> {
-	const agent = await connectAgent(machineId, name);
+async function connectFreshDaemon(machineId: string, name: string, version = "test"): Promise<FakeAgent> {
+	const agent = await connectAgent(machineId, name, version);
 	agent.ws.send(JSON.stringify({ t: "hb", ts: Date.now(), sessions: [] }));
 	return agent;
 }
@@ -222,8 +224,17 @@ describe("daemon upgrade restart", () => {
 		expect((await machineJson("m2")).restarting).toBeUndefined();
 
 		agent.ws.close(1000);
-		const exited = await waitForStatus(live.id, "exited");
-		expect(exited.exitReason).toBe("agent disconnected"); // plain drop, not an upgrade
+		const deadline = Date.now() + 4_000;
+		for (;;) {
+			const current = await sessionJson(live.id);
+			if (current.unreachable) {
+				expect(current.status).toBe("live");
+				expect(current.exitReason).toBeUndefined(); // a plain socket drop is not a completed session
+				break;
+			}
+			if (Date.now() > deadline) throw new Error("daemon disconnect did not mark its session unreachable");
+			await yieldLoop();
+		}
 		const fresh = await connectFreshDaemon("m2", "legacy");
 		// No start frame may arrive: nothing was planned.
 		await fresh
@@ -320,6 +331,49 @@ describe("daemon upgrade restart", () => {
 			.catch((err: Error) => {
 				expect(err.message).toContain("timeout waiting");
 			});
+	});
+
+	test("does not resume a scoped operator after downgrade to a pre-0.12 daemon", async () => {
+		const agent = await connectAgent("m7", "downgraded", "0.12.0");
+		const namespaceResponse = await api("/api/namespaces", {
+			method: "POST", body: JSON.stringify({ name: "restart-downgrade" }),
+		});
+		expect(namespaceResponse.status).toBe(201);
+		const namespace = (await namespaceResponse.json()) as { namespace: { id: string } };
+		const created = await api("/api/sessions", {
+			method: "POST",
+			body: JSON.stringify({
+				machineId: "m7", cwd: "/srv/proj", sessionFile: SESSION_FILE,
+				namespaceId: namespace.namespace.id, superagent: true,
+			}),
+		});
+		expect(created.status).toBe(202);
+		const session = ((await created.json()) as { session: SessionJson }).session;
+		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "operator start");
+		agent.ws.send(JSON.stringify({ t: "session-ready", id: session.id, sessionFile: SESSION_FILE, links: LINKS_A }));
+		await waitForStatus(session.id, "live");
+
+		const acceptedPromise = api("/api/machines/m7/restart-daemon", { method: "POST" });
+		const cmd = await agent.wait(
+			(frame) => (frame.t === "cmd" && frame.cmd === "restart-daemon" ? frame : undefined),
+			"operator daemon restart",
+		);
+		agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true, data: {} }));
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "daemon upgrade" }));
+		agent.ws.close(1000);
+		expect((await acceptedPromise).status).toBe(200);
+		await waitForStatus(session.id, "exited");
+
+		const old = await connectFreshDaemon("m7", "downgraded", "0.11.0");
+		const deadline = Date.now() + 4_000;
+		while ((await machineJson("m7")).restarting) {
+			if (Date.now() > deadline) throw new Error("downgraded daemon did not reconcile");
+			await yieldLoop();
+		}
+		await yieldLoop(); // allow the processed heartbeat's outbound frames to reach the fake daemon
+		expect(old.frames().filter(frame => frame.t === "start")).toEqual([]);
+		expect((await sessionJson(session.id)).status).toBe("exited");
+		old.ws.close(1000);
 	});
 
 	test("restarting an offline machine is 502", async () => {

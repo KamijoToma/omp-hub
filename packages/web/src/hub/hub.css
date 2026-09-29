@@ -346,6 +346,28 @@
 	margin-top: 2px;
 }
 
+.hb-namespace-control {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 6px;
+	padding: 8px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-namespace-control .sh-field {
+	width: 100%;
+}
+
+.hb-namespace-control .sh-field-hint {
+	overflow-wrap: anywhere;
+}
+
+.hb-form .sh-field[hidden] {
+	display: none;
+}
+
 /* ---- history (machine omp sessions) ---- */
 .hb-history-head {
 	display: flex;
@@ -432,7 +454,8 @@
 	animation: sh-fade-in 150ms ease-out;
 }
 
-.hb-history-badge-idle {
+.hb-history-badge-idle,
+.hb-history-badge-unreachable {
 	color: var(--fg-muted);
 	border: 1px solid var(--border);
 }

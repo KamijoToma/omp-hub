@@ -30,7 +30,12 @@ function handleLine(line: string): void {
 		ok?: boolean;
 		status?: number;
 		error?: string;
+		event?: unknown;
 	};
+	if (frame.t === "fleet-notification") {
+		write({ t: "log", level: "info", message: JSON.stringify(frame.event) });
+		return;
+	}
 	if (frame.t === "stop") process.exit(0);
 	if (frame.t === "fleet-res") {
 		// The parent's answer: forward it verbatim as the parked cmd's data.
@@ -47,10 +52,17 @@ function handleLine(line: string): void {
 		write({
 			t: "fleet-req",
 			reqId: fleetReqId,
+			ownerId: "s_spoofed",
+			namespaceId: "n_spoofed",
 			method: frame.method ?? "GET",
-			path: frame.path ?? "/api/machines",
+			path: frame.path ?? "/api/fleet/machines",
 			...(frame.body === undefined ? {} : { body: frame.body }),
 		});
+		return;
+	}
+	if (frame.cmd === "emit-fleet-event") {
+		write({ t: "fleet-event", eventId: "evt_fixture_1", kind: "input_required", requestId: "ask_1", id: "s_spoofed" });
+		write({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { emitted: true } });
 		return;
 	}
 	write({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { echo: frame.cmd } });

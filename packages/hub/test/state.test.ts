@@ -4,7 +4,7 @@
  * machine `connected` flag being a socket property (never persisted as true).
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { MachineRecord } from "../src/agents";
@@ -34,6 +34,8 @@ function session(overrides: Partial<SessionRecord> = {}): SessionRecord {
 		machineName: "dev-machine",
 		cwd: "/srv/work",
 		name: "api work",
+		namespaceId: null,
+		membershipVersion: 0,
 		status: "live",
 		startedAt: 1234,
 		...overrides,
@@ -80,6 +82,7 @@ describe("StatePersistence", () => {
 		expect(existsSync(file)).toBe(true);
 		const written = readFileSync(file, "utf8");
 		expect(parseStateSnapshot(written)).not.toBeNull();
+		if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
 		// No leftover tmp files from the atomic replace.
 		expect(existsSync(`${file}.tmp-${process.pid}`)).toBe(false);
 

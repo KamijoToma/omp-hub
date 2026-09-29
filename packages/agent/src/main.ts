@@ -6,6 +6,7 @@
  * stop every child and exit.
  */
 
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { performDaemonRestart, restartFailure } from "./daemon-restart";
 import { handleFleetRequest, hubHttpBase } from "./fleet-proxy";
@@ -157,6 +158,12 @@ async function main(): Promise<void> {
 
 	const usageProxy = createUsageProxy();
 
+	const reportSessionError = (id: string, error: string): void => {
+		const eventId = randomUUID();
+		client.send({ t: "session-error", id, error, eventId });
+		client.send({ t: "session-event", id, eventId, kind: "session_failed", error });
+	};
+
 	const supervisor = new Supervisor(
 		{
 			onReady: (id, payload) =>
@@ -167,9 +174,14 @@ async function main(): Promise<void> {
 					pid: payload.pid,
 					links: payload.links,
 				}),
-			onError: (id, error) => client.send({ t: "session-error", id, error }),
-			onExit: (id, code, reason) => client.send({ t: "session-exit", id, code, reason }),
+			onError: reportSessionError,
+			onExit: (id, code, reason) => {
+				const eventId = randomUUID();
+				client.send({ t: "session-exit", id, code, reason, eventId });
+				client.send({ t: "session-event", id, eventId, kind: "session_exited" });
+			},
 			onActivity: (id, activity) => client.send({ t: "session-activity", id, ...activity }),
+			onFleetEvent: (id, event) => client.send({ t: "session-event", id, ...event }),
 		},
 		log,
 		// 0.8.0 fleet proxy: superagent children reach the hub API through here,
@@ -179,6 +191,7 @@ async function main(): Promise<void> {
 				handleFleetRequest(req, {
 					hubBase: hubHttpBase(options.hub),
 					token: options.token,
+					ownerId: req.ownerId,
 					log: message => log.info(message),
 				}),
 		},
@@ -220,13 +233,13 @@ async function main(): Promise<void> {
 			if (restarting) {
 				const error = "daemon is restarting";
 				log.warn(`rejecting start for ${frame.id}: ${error}`);
-				client.send({ t: "session-error", id: frame.id, error });
+				reportSessionError(frame.id, error);
 				return;
 			}
 			if (supervisor.liveCount >= options.maxSessions) {
 				const error = `max sessions reached (${options.maxSessions})`;
 				log.warn(`rejecting start for ${frame.id}: ${error}`);
-				client.send({ t: "session-error", id: frame.id, error });
+				reportSessionError(frame.id, error);
 				return;
 			}
 			void supervisor
@@ -244,7 +257,7 @@ async function main(): Promise<void> {
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})
-				.catch(err => client.send({ t: "session-error", id: frame.id, error: errorMessage(err) }));
+				.catch(err => reportSessionError(frame.id, errorMessage(err)));
 		},
 		onStop: frame => void supervisor.stop(frame.id, frame.reason ?? "hub stop"),
 		onCmd: frame => {
@@ -259,6 +272,7 @@ async function main(): Promise<void> {
 				client.send({ t: "usage-res", reqId: frame.reqId, ok: false, error: errorMessage(err) }),
 			);
 		},
+		onFleetNotification: frame => { supervisor.notifyFleet(frame.id, frame.event); },
 	});
 
 	let shuttingDown = false;

@@ -8,7 +8,9 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import type * as Sdk from "@oh-my-pi/pi-coding-agent";
+import { pageFleetMessages, type FleetMessagePage } from "./fleet-client";
 import { errorMessage } from "./log";
 import { defaultProfilesRoot, listProfiles } from "./profiles";
 import { getSubscriptions } from "./subscriptions";
@@ -322,10 +324,12 @@ export interface MachineCmdFrame {
 	query?: string;
 	/** `get-subscriptions` selects one isolated omp profile. */
 	profile?: string;
+	cursor?: string;
+	pageLimit?: number;
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -485,6 +489,31 @@ function fsError(err: unknown): string {
 	return errorMessage(err);
 }
 
+/** Load only a file inside the actual omp default or named-profile session
+ * roots. SDK open is used for branch indexing; suppressBreadcrumb prevents
+ * metadata writes, and no mutation/flush API is called. */
+export async function readStoredSessionMessages(
+	file: unknown, cursor?: string, limit?: number,
+	options?: { sessionRoots: readonly string[] },
+): Promise<FleetMessagePage> {
+	if (typeof file !== "string" || !path.isAbsolute(file) || !file.endsWith(".jsonl")) throw new Error("invalid session file");
+	const resolved = await realpath(file);
+	const roots = options ? [...options.sessionRoots] : [getSessionsDir()];
+	if (!options) {
+		const profilesRoot = defaultProfilesRoot();
+		for (const profile of await listProfiles(profilesRoot)) roots.push(path.join(profilesRoot, profile, "agent", "sessions"));
+	}
+	let allowed = false;
+	for (const root of roots) {
+		const physicalRoot = await realpath(root).catch(() => null);
+		if (physicalRoot && resolved.startsWith(`${physicalRoot}${path.sep}`)) { allowed = true; break; }
+	}
+	if (!allowed) throw new Error("session file is outside managed omp session stores");
+	const { SessionManager } = await loadSdk();
+	const manager = await SessionManager.open(resolved, undefined, undefined, { throwIfMissing: true, suppressBreadcrumb: true });
+	return pageFleetMessages(manager, cursor, limit);
+}
+
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
 export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineCmdResult> {
 	if (frame.cmd === "list-dir") {
@@ -520,6 +549,13 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 	if (frame.cmd === "search-sessions") {
 		try {
 			return { ok: true, data: await searchSessionMessages(frame.paths, frame.query) };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "read-session-messages") {
+		try {
+			return { ok: true, data: await readStoredSessionMessages(frame.path, frame.cursor, frame.pageLimit) };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
 		}

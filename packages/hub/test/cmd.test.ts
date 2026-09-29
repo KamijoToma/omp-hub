@@ -10,6 +10,7 @@ interface SessionJson {
 	id: string;
 	name: string;
 	status: string;
+	unreachable?: true;
 	exitReason?: string;
 }
 
@@ -606,10 +607,11 @@ describe("session commands", () => {
 		expect(failed.status).toBe(502);
 		expect(await failed.json()).toEqual({ error: "agent disconnected" });
 
-		// The lost agent took the session with it; later commands are 409, not 502.
-		expect((await waitForStatus(main, session.id, "exited")).exitReason).toBe("agent disconnected");
+		// The daemon may have only lost its connection: do not fabricate a completed task.
+		const current = await sessionJson(main, session.id);
+		expect(current).toMatchObject({ status: "live", unreachable: true });
 		const after = await api(main, `/api/sessions/${session.id}/agent-state`);
-		expect(after.status).toBe(409);
+		expect(after.status).toBe(502);
 	});
 
 	test("compact dispatches in the background and confirms the dispatch", async () => {
