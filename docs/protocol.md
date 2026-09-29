@@ -20,6 +20,19 @@ reconcile against the disconnect-time snapshot). `MachineRecord` gains `restarti
 Upgrade the hub and agent together to *use* any addition; unknown cmds answer `ok:false` and
 unknown `start` fields pass through, so mixed fleets degrade gracefully.
 
+Revision **0.10.0** — model-role alignment with the TUI model hub. `AgentState.roles[]` gains
+`auto` (0.10.0+): a role with no configured value flags its fallback model — `default` resolves
+to the active session model, every other chat role expands the legacy `pi/<role>` alias over
+the accepts-filtered model pool (configured-role fallbacks → default inheritance → priority
+lists) the way the TUI displays auto-selection — instead of reporting `model: null`. `set-model`
+accepts `clearRole` (§2): drop a role's persisted assignment so auto-selection applies;
+clearing `default` switches the live session to any newly exposed persisted value without
+writing settings. `cycle-model` accepts `roleCycle` (§2): TUI ctrl+p parity cycling the
+configured role models in settings `cycleOrder` order. Matching HTTP passthrough (§3) and the
+web model picker gains a role clear action while `/cycle-roles` lands as a slash command (§6).
+Additive: older agents ignore the new fields — `clearRole` against one fails with the existing
+"requires provider and modelId" cmd error, and an absent `auto` reads as "unknown".
+
 Revision **0.8.0** — adds the superagent surface: `start.superagent` (§2) marks a session as a
 fleet operator (the child registers the fleet tools, §4 fleet-req), `POST /api/sessions` accepts
 `superagent` and `SessionRecord` echoes it (§3), the `prompt` session command + `POST
@@ -189,7 +202,7 @@ Generic request/response control channel for web-driven host commands. hub→age
      | "prewalk" | "plan" | "advisor" | "tier" | "pause" | "cycle-model"
      | "get-settings" | "set-setting",
   provider?: string, modelId?: string, level?: string,
-  role?: string, persist?: boolean }                            // set-model only
+  role?: string, persist?: boolean, clearRole?: boolean }      // set-model only
                                                                 // entryId, summarize → navigate-tree
                                                                 // instructions, mode → compact
                                                                 // action, objective, tokenBudget → goal
@@ -203,7 +216,7 @@ Generic request/response control channel for web-driven host commands. hub→age
                                                                 // action, planFilePath → plan
                                                                 // action → advisor
                                                                 // action, family, tier → tier
-                                                                // direction → cycle-model
+                                                                // direction, roleCycle → cycle-model
                                                                 // settingId, value → set-setting
 ```
 
@@ -231,6 +244,7 @@ interface AgentState {
   roles: {                                  // chat-section model roles
     role: string; name: string;             // e.g. "smol", "Fast"
     model: { provider: string; id: string; name: string } | null;  // resolved assignment
+    auto: boolean;                          // model is auto-selected — role has no configured value (0.10.0+)
   }[];
   extendedContext: boolean;                 // session `extendedContext` setting
   goal: SessionGoalState | null;            // active/paused goal; null when off
@@ -268,12 +282,16 @@ interface LoopStatus {
 }
 ```
 
-- `set-model {provider, modelId, role?, persist?, level?}` → `data: { switched: boolean, role: string,
+- `set-model {provider, modelId, role?, persist?, level?, clearRole?}` → `data: { switched: boolean, role: string,
   thinkingLevel: string | null }` (session.setModel; `role` defaults to `"default"`. A non-default role
   also persists the assignment to settings unless `persist: false`. `level` optionally presets the
   thinking level, applied after the switch so it wins over the target model's default; the agent
   validates it before switching and returns the effective level. Errors when no auth for the provider,
-  `role` is blank/over 64 chars, or `level` is not a valid thinking selector.)
+  `role` is blank/over 64 chars, or `level` is not a valid thinking selector.) `clearRole: true`
+  (0.10.0+) unassigns the role instead of switching — `provider`/`modelId` are ignored, the persisted
+  value is dropped from the layer that supplies it (project shadows global), and auto-selection
+  applies; clearing `default` resolves any newly exposed persisted value and switches the live
+  session to it without writing settings back (`switched` reports whether the active model moved).
 - `set-thinking {level}` → `data: { thinkingLevel: string }` (effective level after set).
 - `get-context` (no parameters) → `data: SessionContext`: SDK token estimates for the session's
   current context. The model object never leaves the host — only numbers do:
@@ -448,9 +466,13 @@ interface McpServerRow {
   process-wide pause gate (`data: { paused }`; omitted `enabled` toggles, mirroring
   `set-extended-context`). One child hosts exactly one session, so the process-wide gate is
   session-scoped in practice.
-- `cycle-model {direction?}` (0.9.0+): `session.cycleModel` (`direction` `"forward"` default |
-  `"backward"`) over the session's model list — `data: { switched, model, thinkingLevel }`;
-  `switched: false` when there is nothing to cycle to. TUI model-cycling keybinding parity.
+- `cycle-model {direction?, roleCycle?}` (0.9.0+; `roleCycle` 0.10.0+): `session.cycleModel`
+  (`direction` `"forward"` default | `"backward"`) over the session's model list —
+  `data: { switched, model, thinkingLevel }`; `switched: false` when there is nothing to cycle to.
+  TUI model-cycling keybinding parity. `roleCycle: true` cycles the configured role models in
+  settings `cycleOrder` order (default `smol` → `default` → `slow`) instead — TUI ctrl+p parity;
+  only the active model changes (no settings writes), unresolvable roles are skipped, and a
+  single-entry cycle reports `switched: false`.
 - `get-settings` (0.9.0+, no parameters) → `data: { settings: SettingWire[] }`: the
   hub-curated allowlist of the SDK's typed setting descriptors, current values included. The
   model registry, provider credentials, and other never-expose surfaces are not allowlisted.
@@ -629,7 +651,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |
 | `GET /api/sessions/:id/agent-state` | → `{ ok: true, state: AgentState }`; 404 unknown, 409 not live, 502 agent offline, 504 cmd timeout |
 | `GET /api/sessions/:id/context` | → `{ ok: true, context: SessionContext }`; same error set |
-| `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`, or blank `level` |
+| `POST /api/sessions/:id/model` | `{provider, modelId, role?, persist?, clearRole?, level?}` → `{ ok: true, switched, role, thinkingLevel }`; same error set; 400 blank/oversize `role`, non-boolean `persist`/`clearRole`, or blank `level`; `clearRole: true` (0.10.0+) requires `role` and ignores `provider`/`modelId` (§2 `set-model` unassign) |
 | `POST /api/sessions/:id/thinking` | `{level}` → `{ ok: true, thinkingLevel }`; same error set |
 | `GET /api/sessions/:id/tree` | → `{ ok: true, leafId, truncated, nodes }` (§2 `get-tree`: preview-only session tree for the web `/tree` picker); same error set |
 | `POST /api/sessions/:id/tree` | `{entryId, summarize?}` → `{ ok: true, cancelled, aborted, editorText, leafId }`; same error set; 400 missing `entryId` or non-boolean `summarize` |
@@ -655,7 +677,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `POST /api/sessions/:id/advisor` | `{action?}` → `{ ok: true, enabled, advisors }` (§2 `advisor`, 0.9.0+); 400 bad `action`; 500 enabling with no discovered advisor configs; same error set |
 | `POST /api/sessions/:id/tier` | `{action?, family?, tier?}` → `{ ok: true, tiers }` (§2 `tier`, 0.9.0+); 400 bad `action`, unknown `family`, `tier` invalid for the family, or `family` omitted with no current model; same error set |
 | `POST /api/sessions/:id/pause` | `{enabled?}` → `{ ok: true, paused }` (§2 `pause`, 0.9.0+); 400 non-boolean `enabled`; same error set |
-| `POST /api/sessions/:id/cycle` | `{direction?}` → `{ ok: true, switched, model, thinkingLevel }` (§2 `cycle-model`, 0.9.0+); 400 bad `direction`; same error set |
+| `POST /api/sessions/:id/cycle` | `{direction?, roleCycle?}` → `{ ok: true, switched, model, thinkingLevel }` (§2 `cycle-model`, 0.9.0+; `roleCycle` 0.10.0+); 400 bad `direction` or non-boolean `roleCycle`; same error set |
 | `GET /api/sessions/:id/settings` | → `{ ok: true, settings: SettingWire[] }` (§2 `get-settings`, 0.9.0+); same error set |
 | `POST /api/sessions/:id/settings` | `{settingId, value}` → `{ ok: true, setting: SettingWire }` (§2 `set-setting`, 0.9.0+; `value: null` clears the override); 400 missing `settingId` or absent `value` key, 400 unknown/disallowed id or type-invalid value (agent-reported); same error set |
 | `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent?, tools?, prewalk?, planYolo? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, blank `sessionFile`, malformed `tools`, or a bad `prewalk`/`planYolo` selector (must be boolean or non-empty string). `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`); `tools` (0.9.0+) whitelists the session's callable tools — non-empty array of non-empty strings (§2 `start.tools`, `SessionRecord.tools`); `prewalk` / `planYolo` (0.9.0+, boolean or model/role pattern string) arm the startup hand-offs (§2 `start.prewalk`) |
@@ -793,7 +815,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/handoff` | summarize the session into a handoff document and compact in place — `[instructions]` focuses the summary (drives `POST …/handoff`; the document lands via transcript, a failure toasts via an error notice, and the header shows a running chip while it generates) |
 | `/clear` | clear the conversation context in place, keep the session (drives `POST …/clear-context`; local notice reports the dropped-message count) |
 | `/new` | start a fresh session on this machine (machineId/cwd/profile from the current record) and navigate to it — hub-level orchestration, no host cmd; needs a hub session record |
-| `/rename` | rename this session: `[name]` drives `POST …/rename` (§2 `rename` — the agent-side name is authoritative, the registry label and collab header follow); bare drives `POST …/title` (§2 `generate-title` — TUI bare `/rename`, regenerates from the conversation). The sidebar rows rename the same way (pencil / right-click), and the header title is click-to-rename on hub pages |
+| `/rename` | rename this session: `[name]` drives `POST …/rename` (§2 `rename` — the agent-side name is authoritative, the registry label and collab header follow); bare drives `POST …/title` (§2 `generate-title` — TUI bare `/rename`, regenerates from the conversation). The sidebar rows rename the same way (pencil / right-click, sparkles button in the dialog), and the header title is click-to-rename on hub pages with the same sparkles auto-rename embedded in the input; both buttons spin while the title generates |
 | `/resume` | resume another omp session on this machine and navigate to it: `[session id]` arg resolves against the machine's resumable sessions (§2 machine sessions; TUI `/resume` prefix match on session id/file name) and starts it via `POST /api/sessions` with `sessionFile` (plus the entry's cwd/title/profile); bare opens the machine session picker modal |
 | `/retry` | retry the last failed agent turn (drives `POST …/retry`) |
 | `/todo` | expand the docked todo panel (board derived client-side from the live transcript — no host traffic) |
@@ -807,6 +829,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/slow` | low-priority tier on the current model's provider family — flex where offered (drives `POST …/tier` `set tier=flex`) |
 | `/pause` | freeze/resume the session's agent loop; bare toggles (drives `POST …/pause`; header chip while paused) |
 | `/cycle` | cycle to the next model in the session's list (drives `POST …/cycle`) |
+| `/cycle-roles` | cycle the configured role models in `cycleOrder` order — TUI ctrl+p parity, default `smol` → `default` → `slow` (drives `POST …/cycle` with `roleCycle`; 0.10.0+ agents only) |
 | `/settings` | settings modal: model + thinking + links + theme + display name + Advanced (session settings from `GET/POST …/settings` — runtime overrides, not persisted) |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |

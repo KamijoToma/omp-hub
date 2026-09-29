@@ -92,6 +92,16 @@ const BLOB_URL_TTL_MS = 10_000;
 /** Cadence for polling `GET …/agent-state` to drive the advanced-mode header chips. */
 const AGENT_STATE_POLL_MS = 5_000;
 
+/**
+ * Set a textarea's value through the native setter plus a bubbling input event:
+ * React's change tracker sees a real edit, so controlled owners (the vendored
+ * composer draft, the palette mirror) update as if the user typed it.
+ */
+function setNativeTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
+	Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+	textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 export interface SessionViewProps {
 	/** Hub-assigned session id (`/s/<id>`), the key for the agent-state API. */
 	sessionId: string;
@@ -182,6 +192,11 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	busyRef.current = busy;
 	const steeringRef = useRef(steering);
 	steeringRef.current = steering;
+	// Host UI request mirror: while one is pending the composer's textarea is
+	// the ask editor, not the prompt draft (ref keeps the rewind restore stable).
+	const uiRequestRef = useRef(snap.uiRequest);
+	uiRequestRef.current = snap.uiRequest;
+	const composerWrapRef = useRef<HTMLDivElement | null>(null);
 	const [railOpen, setRailOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
@@ -351,12 +366,21 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		[sessionId, notify],
 	);
 
-	// Bare `/rename`: generate a title from the conversation (TUI parity); the
-	// result pins as a user rename and the registry label follows.
-	const generateTitle = useCallback((): void => {
-		void postGenerateTitle(sessionId).then(
-			applied => notify("info", `session renamed to "${applied}"`),
-			(err: unknown) => notify("error", errorText(err)),
+	// Bare `/rename` and the title-bar sparkles button: generate a title from
+	// the conversation (TUI parity); the result pins as a user rename and the
+	// registry label follows. Resolves with the applied name so the title-bar
+	// button can prefill its draft, or `null` after an error notice so the
+	// caller skips the success path without an unhandled rejection.
+	const generateTitle = useCallback((): Promise<string | null> => {
+		return postGenerateTitle(sessionId).then(
+			applied => {
+				notify("info", `session renamed to "${applied}"`);
+				return applied;
+			},
+			(err: unknown) => {
+				notify("error", errorText(err));
+				return null;
+			},
 		);
 	}, [sessionId, notify]);
 
@@ -366,14 +390,27 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	// identity stays stable for the memoized transcript rows.
 	const entriesRef = useRef(snap.entries);
 	entriesRef.current = snap.entries;
+	// Rewind draft restore: put the rewound-to prompt back into the vendored
+	// composer textarea (native setter + input event, like `runCommand`) so it
+	// can be edited instead of retyped. Skipped while a host UI request owns
+	// that textarea — it is the ask editor, not the prompt draft.
+	const applyRewindDraft = useCallback((draft: string): void => {
+		if (draft === "" || uiRequestRef.current) return;
+		const textarea = composerWrapRef.current?.querySelector("textarea");
+		if (!textarea) return;
+		setNativeTextareaValue(textarea, draft);
+		textarea.focus();
+		textarea.setSelectionRange(draft.length, draft.length);
+	}, []);
 	const rewindHere = useCallback(
 		(entryId: string): void => {
 			if (busyRef.current) notify("warning", "rewinding interrupts the running turn");
 			void rewindToEntry(sessionId, client, entriesRef.current, entryId).then(outcome => {
+				if (outcome.kind === "moved") applyRewindDraft(outcome.draft);
 				notify(outcome.kind === "moved" ? "info" : outcome.kind === "error" ? "error" : "warning", outcome.message);
 			});
 		},
-		[sessionId, client, notify],
+		[sessionId, client, notify, applyRewindDraft],
 	);
 
 	const setExtendedContext = useCallback(
@@ -483,6 +520,21 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		);
 	}, [sessionId, notify]);
 
+	// TUI ctrl+p parity: cycle the configured role models (cycleOrder — default
+	// smol → default → slow) instead of the model list; 0.10.0+ agents only.
+	const cycleRoles = useCallback((): void => {
+		void postCycle(sessionId, { direction: "forward", roleCycle: true }).then(
+			result =>
+				notify(
+					result.switched && result.model ? "info" : "warning",
+					result.switched && result.model
+						? `switched to ${result.model.name}${result.thinkingLevel ? ` · ${result.thinkingLevel}` : ""}`
+						: "no role cycle — assign models to smol/default/slow first",
+				),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
 	// `/todo`: the todo board lives in the docked panel (derived from the live
 	// transcript), so the command only guarantees it is expanded.
 	const [todoOpen, setTodoOpen] = useState(() => localStorage.getItem(TODO_COLLAPSE_KEY) !== "1");
@@ -516,6 +568,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		setTier,
 		togglePause,
 		cycleModel,
+		cycleRoles,
 		showTodos,
 	};
 	const ctxRef = useRef(ctx);
@@ -554,7 +607,6 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	const activeIndex = matches.length === 0 ? 0 : Math.min(paletteIndex, matches.length - 1);
 	const paletteOpen = modal === null && query !== null && !paletteDismissed && matches.length > 0;
 
-	const composerWrapRef = useRef<HTMLDivElement | null>(null);
 	const runCommand = useCallback((name: string): void => {
 		// The vendored textarea's live value carries the typed args; completing
 		// off the palette must not drop them (e.g. `/rename my title`).
@@ -567,10 +619,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		// submit path, so clear its textarea here (native setter + input event,
 		// which is also what re-opens palette state consistently).
 		const textarea = composerWrapRef.current?.querySelector("textarea");
-		if (textarea) {
-			Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "");
-			textarea.dispatchEvent(new Event("input", { bubbles: true }));
-		}
+		if (textarea) setNativeTextareaValue(textarea, "");
 	}, []);
 
 	// The composer's textarea is vendored, so its value is read off the DOM: input
@@ -718,6 +767,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				onOpenThinking={() => setModal("thinking")}
 				onOpenContext={() => setModal("context")}
 				onRename={renameSession}
+				onGenerateTitle={generateTitle}
 				handoffRunning={handoffRunning}
 				prewalkTarget={agentState?.prewalk?.name}
 				planEnabled={agentState?.plan?.enabled === true}
@@ -808,6 +858,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 					entries={snap.entries}
 					working={snap.working}
 					notify={notify}
+					onDraft={applyRewindDraft}
 					onClose={closeModal}
 				/>
 			)}

@@ -22,6 +22,8 @@ export interface RewindPickerProps {
 	/** Agent turn in flight; rewinding aborts it. */
 	working: boolean;
 	notify(level: Notice["level"], message: string): void;
+	/** Receives the target prompt's text after a successful rewind, for the composer draft. */
+	onDraft?(draft: string): void;
 	onClose(): void;
 }
 
@@ -36,6 +38,20 @@ function entryPreview(entry: MessageEntry | CustomMessageEntry): string {
 	const content = entry.type === "message" ? entry.message.content : entry.content;
 	const text = typeof content === "string" ? content : (content.find(block => block.type === "text")?.text ?? "");
 	return text.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+/**
+ * Full text of a rewindable entry for the composer draft: unlike
+ * {@link entryPreview} nothing is collapsed or truncated, so the restored
+ * prompt can be edited and resubmitted as-is. Images have no draft form.
+ */
+function entryPromptText(entry: MessageEntry | CustomMessageEntry): string {
+	const content = entry.type === "message" ? entry.message.content : entry.content;
+	if (typeof content === "string") return content;
+	return content
+		.filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+		.map(block => block.text)
+		.join("\n\n");
 }
 
 /** A rewind can target a real user prompt or a collab guest prompt; nothing else. */
@@ -81,6 +97,8 @@ export type RewindOutcomeKind = "moved" | "aborted" | "cancelled" | "error";
 export interface RewindOutcome {
 	kind: RewindOutcomeKind;
 	message: string;
+	/** Prompt text to restore into the composer on `moved`; "" when there is none. */
+	draft: string;
 }
 
 /**
@@ -96,27 +114,28 @@ export async function rewindToEntry(
 	entryId: string,
 ): Promise<RewindOutcome> {
 	const entry = entries.find(candidate => candidate.id === entryId);
-	const fallbackPreview = entry && isRewindable(entry) ? entryPreview(entry) : "";
+	const fallbackDraft = entry && isRewindable(entry) ? entryPromptText(entry).trim() : "";
 	let result: NavigateTreeResult;
 	try {
 		result = await navigateTree(sessionId, entryId);
 	} catch (err) {
-		return { kind: "error", message: errorText(err) };
+		return { kind: "error", message: errorText(err), draft: "" };
 	}
 	if (result.cancelled) {
 		return result.aborted
-			? { kind: "aborted", message: "the agent turn was aborting — try again in a moment" }
-			: { kind: "cancelled", message: "a session hook cancelled the rewind" };
+			? { kind: "aborted", message: "the agent turn was aborting — try again in a moment", draft: "" }
+			: { kind: "cancelled", message: "a session hook cancelled the rewind", draft: "" };
 	}
 	client.dropEntriesFrom(entryId);
-	const draft = result.editorText?.trim() || fallbackPreview;
+	const draft = result.editorText?.trim() || fallbackDraft;
 	return {
 		kind: "moved",
 		message: draft ? `rewound — draft restored: ${draft.slice(0, 80)}` : "rewound",
+		draft,
 	};
 }
 
-export function RewindPicker({ sessionId, client, entries, working, notify, onClose }: RewindPickerProps): ReactNode {
+export function RewindPicker({ sessionId, client, entries, working, notify, onDraft, onClose }: RewindPickerProps): ReactNode {
 	const targets = useMemo(() => rewindTargets(entries), [entries]);
 	const [selected, setSelected] = useState<RewindTarget | null>(null);
 	const [pending, setPending] = useState(false);
@@ -129,6 +148,7 @@ export function RewindPicker({ sessionId, client, entries, working, notify, onCl
 		void rewindToEntry(sessionId, client, entries, selected.entry.id).then(outcome => {
 			// Success closes; every failure keeps the modal up with inline copy.
 			if (outcome.kind === "moved") {
+				onDraft?.(outcome.draft);
 				notify("info", outcome.message);
 				onClose();
 				return;

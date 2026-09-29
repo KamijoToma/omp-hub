@@ -50,6 +50,7 @@ interface Trace {
 	tiers: string[];
 	pauses: number;
 	cycles: number;
+	roleCycles: number;
 	todosShown: number;
 }
 
@@ -76,6 +77,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		tiers: [],
 		pauses: 0,
 		cycles: 0,
+		roleCycles: 0,
 		todosShown: 0,
 	};
 	return {
@@ -123,6 +125,9 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			},
 			cycleModel: () => {
 				trace.cycles += 1;
+			},
+			cycleRoles: () => {
+				trace.roleCycles += 1;
 			},
 			showTodos: () => {
 				trace.todosShown += 1;
@@ -176,6 +181,7 @@ describe("composer routing", () => {
 			tiers: [],
 			pauses: 0,
 			cycles: 0,
+			roleCycles: 0,
 			todosShown: 0,
 		});
 	});
@@ -243,6 +249,7 @@ describe("composer routing", () => {
 			"slow",
 			"pause",
 			"cycle",
+			"cycle-roles",
 			"settings",
 			"collab",
 			"mcp",
@@ -282,6 +289,7 @@ describe("composer routing", () => {
 			{ text: "/slow", check: t => expect(t.tiers).toEqual(["flex"]) },
 			{ text: "/pause", check: t => expect(t.pauses).toBe(1) },
 			{ text: "/cycle", check: t => expect(t.cycles).toBe(1) },
+			{ text: "/cycle-roles", check: t => expect(t.roleCycles).toBe(1) },
 			{ text: "/settings", check: t => expect(t.modals).toEqual(["settings"]) },
 			{ text: "/collab", check: t => expect(t.modals).toEqual(["links"]) },
 			{ text: "/theme", check: t => expect(t.themes).toBe(1) },

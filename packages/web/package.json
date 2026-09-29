@@ -7,13 +7,16 @@
   "license": "MIT",
   "scripts": {
     "dev": "bun ./index.html",
-    "build": "rm -rf dist && bun build ./index.html --outdir=dist --minify --public-path=/ --entry-naming=[hash].[ext] --chunk-naming=[hash].[ext] --asset-naming=[hash].[ext] && mv dist/*.html dist/index.html && cp -R public/. dist/",
+    "build": "rm -rf dist && bun build ./index.html --splitting --outdir=dist --minify --public-path=/ --entry-naming=[hash].[ext] --chunk-naming=[hash].[ext] --asset-naming=[hash].[ext] && mv dist/*.html dist/index.html && cp -R public/. dist/ && bun scripts/fix-html-entry.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
+    "highlight.js": "^11.12.0",
+    "katex": "^0.18.9",
     "lucide-react": "^1.17.0",
     "marked": "^18.0.5",
+    "mermaid": "^12.0.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

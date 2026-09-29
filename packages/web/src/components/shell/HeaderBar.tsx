@@ -1,4 +1,4 @@
-import { LoaderCircle, LogOut, PanelLeft, PanelRight } from "lucide-react";
+import { LoaderCircle, LogOut, PanelLeft, PanelRight, Sparkles } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { GuestSnapshot } from "../../lib/client";
@@ -40,6 +40,13 @@ export interface HeaderBarProps {
 	 */
 	onRename?(name: string): void;
 	/**
+	 * Hub-only (`/s/<id>`): generate a title from the conversation via the
+	 * embedded sparkles button in the rename input; resolves with the applied
+	 * name, or `null` when the hub/agent failed (already reported). Left unset
+	 * on `/join`, same as {@link onRename}.
+	 */
+	onGenerateTitle?(): Promise<string | null>;
+	/**
 	 * True while the agent generates a handoff document (registry `activity`
 	 * mirror, protocol §3); shows the running chip. Absent on `/join`.
 	 */
@@ -78,6 +85,7 @@ export function HeaderBar({
 	onOpenThinking,
 	onOpenContext,
 	onRename,
+	onGenerateTitle,
 	handoffRunning,
 	prewalkTarget,
 	planEnabled,
@@ -97,8 +105,12 @@ export function HeaderBar({
 
 	// Title-bar rename (hub pages): the span becomes an inline input; Enter or
 	// blur commits, Esc discards. Empty drafts and no-op renames close quietly.
+	// The embedded sparkles button generates a conversation title (bare
+	// `/rename` parity): while the request runs the icon spins; the applied
+	// name lands back in the draft for tweaking before Enter/blur commits.
 	const [renaming, setRenaming] = useState(false);
 	const [draft, setDraft] = useState("");
+	const [generating, setGenerating] = useState(false);
 	const inputRef = useRef<HTMLInputElement | null>(null);
 	useEffect(() => {
 		if (renaming) inputRef.current?.select();
@@ -115,28 +127,57 @@ export function HeaderBar({
 		const name = draft.trim();
 		if (name && name !== title) onRename?.(name);
 	};
+	const generateTitle = onGenerateTitle
+		? () => {
+				if (generating) return;
+				setGenerating(true);
+				onGenerateTitle().then(applied => {
+					setGenerating(false);
+					if (applied !== null) setDraft(applied);
+				});
+			}
+		: undefined;
 
 	return (
 		<header className="sh-header">
 			<div className="sh-header-left">
 				{renaming ? (
-					<input
-						ref={inputRef}
-						className="sh-title-input"
-						value={draft}
-						maxLength={200}
-						spellCheck={false}
-						autoComplete="off"
-						aria-label="session name"
-						placeholder="session name"
-						onChange={e => setDraft(e.target.value)}
-						onBlur={commitRename}
-						onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
-							if (isImeComposing(e)) return;
-							if (e.key === "Enter") commitRename();
-							else if (e.key === "Escape") setRenaming(false);
-						}}
-					/>
+					<span className="sh-title-rename">
+						<input
+							ref={inputRef}
+							className="sh-title-input"
+							value={draft}
+							maxLength={200}
+							spellCheck={false}
+							autoComplete="off"
+							aria-label="session name"
+							placeholder="session name"
+							onChange={e => setDraft(e.target.value)}
+							onBlur={commitRename}
+							onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
+								if (isImeComposing(e)) return;
+								if (e.key === "Enter") commitRename();
+								else if (e.key === "Escape") setRenaming(false);
+							}}
+						/>
+						{generateTitle && (
+							<button
+								type="button"
+								className="sh-title-gen"
+								onClick={generateTitle}
+								// Keep input focus: a plain mousedown would blur-commit
+								// and close the rename editor before the click lands.
+								onMouseDown={e => e.preventDefault()}
+								title="generate a title from the conversation (/rename)"
+								aria-label="auto rename"
+								aria-busy={generating}
+								tabIndex={-1}
+								disabled={generating}
+							>
+								<Sparkles size={12} className={generating ? "hb-spin" : undefined} aria-hidden="true" />
+							</button>
+						)}
+					</span>
 				) : startRename ? (
 					<button type="button" className="sh-title sh-title-btn" title={`${title} — click to rename`} onClick={startRename}>
 						{title}

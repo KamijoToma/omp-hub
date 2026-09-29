@@ -555,8 +555,9 @@
 }
 
 /* ---- syntax tokens (highlight.js, scoped) ----
- * Minimal monochrome-plus-accent palette; only applies when the host exposes
- * a global hljs (the HTML export page). */
+ * Minimal monochrome-plus-accent palette; applies when the host exposes
+ * a global hljs (the HTML export page, and the hub app via
+ * src/hub/highlight.ts). */
 
 .tv-pre .hljs-comment,
 .tv-pre .hljs-quote {

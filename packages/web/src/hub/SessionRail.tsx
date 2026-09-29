@@ -142,9 +142,11 @@ function RenameSessionModal({ session, onRenamed, onClose }: RenameSessionModalP
 						className="sh-btn sh-btn-icon"
 						onClick={generate}
 						title="generate a title from the conversation (/rename)"
+						aria-label="auto rename"
+						aria-busy={busy}
 						disabled={busy}
 					>
-						<Sparkles size={13} aria-hidden="true" />
+						<Sparkles size={13} className={busy ? "hb-spin" : undefined} aria-hidden="true" />
 					</button>
 				</div>
 				{error && (

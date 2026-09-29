@@ -5,7 +5,9 @@ import type {
 	TextContent,
 	ToolResultMessage,
 } from "../../lib/wire";
-import { COLLAB_PROMPT_MESSAGE_TYPE } from "../../lib/wire";
+import { COLLAB_PROMPT_MESSAGE_TYPE, LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE } from "../../lib/wire";
+import { stripSystemNotice } from "../../lib/system-notice";
+import { LateDiagnostics } from "./LateDiagnostics";
 import { ChevronRight, History } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -503,11 +505,26 @@ const EntryRow = memo(function EntryRow({
 				);
 			}
 			if (!entry.display) return null;
+			if (entry.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
+				// Structured diagnostics card (TUI parity) — the text body is a
+				// model-facing <system-notice> wrapper, never rendered.
+				return (
+					<Msg kind="custom" title={entry.timestamp} action={action}>
+						<div className="tr-custom">
+							<span className="tr-chip">{entry.customType}</span>
+							<LateDiagnostics entry={entry} />
+						</div>
+					</Msg>
+				);
+			}
+			// Generic display messages: the SDK wraps model-facing notices in
+			// <system-notice> XML; render the inner text, not the prompt wrapper.
+			const content = typeof entry.content === "string" ? stripSystemNotice(entry.content) : entry.content;
 			return (
-				<Msg kind="custom" title={entry.timestamp}>
+				<Msg kind="custom" title={entry.timestamp} action={action}>
 					<div className="tr-custom">
 						<span className="tr-chip">{entry.customType}</span>
-						<MsgContent content={entry.content} />
+						<MsgContent content={content} />
 					</div>
 				</Msg>
 			);

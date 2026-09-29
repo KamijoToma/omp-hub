@@ -187,8 +187,8 @@ interface HljsLike {
 
 /**
  * Optional syntax highlighter seam. The HTML export page ships highlight.js as
- * a global; the collab-web app does not bundle it. Renderers degrade to plain
- * text when absent.
+ * a global, and the collab-web app feeds it from `hub/highlight.ts`; other
+ * hosts degrade to plain text when absent.
  */
 export function getHljs(): HljsLike | null {
 	const candidate = (globalThis as { hljs?: HljsLike }).hljs;

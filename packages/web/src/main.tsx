@@ -11,6 +11,7 @@ import { createRoot } from "react-dom/client";
 import GuestApp from "./guest/app";
 import { clearToken, getToken } from "./hub/api";
 import { HomePage } from "./hub/HomePage";
+import "./hub/highlight";
 import { SessionPage } from "./hub/SessionPage";
 import { TokenGate } from "./hub/TokenGate";
 import { UsagePage } from "./hub/UsagePage";
