@@ -2,50 +2,53 @@
 
 [English](README.md) | 简体中文
 
-[omp](https://github.com/can1357/oh-my-pi) 智能体会话的无界面远程控制套件。
+在自己的机器上运行 [omp](https://github.com/can1357/oh-my-pi) 会话，通过浏览器集中管理。每台受控机器上的代理主动连接 Hub；Hub 提供控制台、加密会话中继和 Web 客户端。
 
 ## 功能预览
 
-**集中管理机器与会话。** 选择机器和 omp 配置档，启动或恢复会话，并复制完整控制或只读链接。
+**集中查看机器与会话。** 控制台列出已连接机器和会话，并提供重启操作及可配置的新会话表单。
 
-![Hub 首页：已连接机器、会话控制和最近历史](docs/screenshots/dashboard.png)
+![控制台：演示机器、两个实时会话和新会话设置表单](docs/screenshots/dashboard.png)
 
-**在浏览器中操作实时会话。** 查看转录、展开工具运行结果，并直接发送提示词。
+**在多个实时会话间切换。** 展开的侧栏列出演示会话，旁边展示会话状态栏和斜杠命令面板。
 
-![实时会话：问候语演示与展开的 bash 工具结果](docs/screenshots/live-session.png)
+![浏览器实时会话：展开的双会话侧栏、状态栏和命令面板](docs/screenshots/live-session.png)
 
 <details>
 <summary>移动端会话界面</summary>
 
-<img src="docs/screenshots/mobile-session.png" alt="移动端会话转录、工具结果与提示词输入框" width="390">
+<img src="docs/screenshots/mobile-session.png" alt="移动端浏览器会话：折叠的侧栏、状态栏和命令面板" width="390">
 
 </details>
 
-截图来自隔离的演示机器和预先准备的示例转录；没有请求模型服务，也没有使用私人会话历史。
+截图使用隔离的演示机器与空闲的合成会话；没有请求模型服务，也没有使用私人历史或凭据。
 
 ## 组件
 
 | 目录 | 运行位置 | 职责 |
 |---|---|---|
-| `packages/hub` | 服务器或 Docker 容器 | 协作中继、机器与会话注册表、Web UI 托管、代理控制通道 |
-| `packages/agent` | 每台需要受控的机器 | 无界面守护进程：接收 Hub 命令，启动 SDK 会话并通过协作通道托管 |
-| `packages/web` | 构建后由 Hub 提供静态资源 | 桌面与移动端浏览器界面：机器列表、会话启停与完整的实时控制 |
+| `packages/hub` | 服务器或 Docker | 中继、机器／会话 API、Web UI 与代理控制通道 |
+| `packages/agent` | 每台受控机器 | 只主动连接 Hub 的守护进程，托管相互隔离的 omp 会话 |
+| `packages/web` | 由 Hub 提供服务 | 桌面与移动端浏览器界面 |
 
-代理所在机器不会打开本地 TUI/GUI。用户通过浏览器操作，也可以用真正的 omp 客户端执行
-`omp join "<链接>"` 接入实时会话。
+代理机器不会打开本地 TUI。通过浏览器操作，或用 `omp join "<完整控制或只读链接>"` 从终端加入。
 
 ## 主要功能
 
-- 在已连接机器上启动会话，可指定工作目录（cwd）、omp 配置档和初始提示词；查看并恢复该机器保存的会话。
-- **完整的浏览器会话操作**：流式转录、工具卡片、发送提示词、中断任务、子智能体面板
-  （聊天、终止、唤醒、查看转录）、宿主交互对话框（选择器、编辑器）以及停止会话。
-- **omp 客户端接入**：复制会话的完整控制或只读协作链接，在终端运行 `omp join` 获得原生 TUI 体验。
-- **响应式界面**：手机和桌面布局沿用上游 collab-web 的断点设计。
-- **单容器 Hub**：一个端口同时提供中继、API 和 Web UI。
-- **Web 斜杠命令**：在输入框键入 `/` 打开命令面板，支持 `/model`、`/thinking`、`/rewind`、
-  `/settings`、`/collab`（链接）、`/theme`、`/dump`、`/leave`、`/help`。模型与思考等级的切换
-  通过 Hub → 代理控制通道在宿主机执行；斜杠命令文本不会作为提示词发送给模型。
-- **机器用量面板**：代理机器上的 omp 统计信息通过 Hub 代理到浏览器。
+- **管理多个会话：** 在已连接机器上指定目录，可选配置档、名称和初始提示词；通过侧栏或
+  切换器查看活动状态、切换实时会话，可选浏览器通知。可重命名、仅在当前浏览器隐藏、停止或
+  从 Hub 列表移除会话（保留 omp 会话文件），并恢复已保存的对话。支持按元信息筛选；当前
+  源码版本还支持搜索提示词／助手消息内容。
+- **在浏览器中工作：** 实时查看转录和工具结果、发送或中断提示词、处理交互对话框、
+  管理子智能体；完整控制和只读链接也可用于 omp 客户端接入。
+- **控制智能体：** 切换模型、思考等级与角色分配；配置会话范围的高级设置与模式（计划、
+  顾问、目标和循环），管理 MCP 服务器（配置变更在新会话生效）。启动时可用工具白名单
+  限制可用工具，或开启 **superagent** 跨会话启动、停止与发送消息；未指定白名单则使用
+  默认的全部工具。
+- **维护机器与 Hub：** 查看机器用量，从控制台重启代理以加载新代码：代理会停止会话子进程，
+  再按原会话 ID 从已保存的转录恢复。需认证的 Hub 重启 API 可利用 `hub-state.json`（实际
+  Hub 进程的默认状态文件）交接机器／会话注册表。代理重连、实时会话宿主重建中继房间；
+  房间和临时通知不持久化，重启期间会短暂中断。
 
 ## 工作原理（30 秒）
 
@@ -64,77 +67,70 @@
                                    └─────────────────┘
 ```
 
-- 会话内容在 session-host 与访客（浏览器或 `omp join`）之间使用 **AES-256-GCM 端到端加密**；
-  Hub 中继不解密消息。不过，Hub *注册表*保存其管理的会话链接及密钥，因此 Hub 本身仍是可信方，
-  部署时必须按敏感服务对待。
-- 代理只主动连接 Hub，不监听入站端口，因此适用于 NAT 后面的机器。
+- 会话帧在宿主与浏览器或 `omp join` 之间使用 **AES-256-GCM 端到端加密**；中继只转发密文。但 Hub 注册表持有完整控制／只读链接及密钥，状态快照还会把这些链接写入磁盘；须保护 Hub 和快照。
+- 代理只主动连接 Hub，受控机器无需开放入站端口。
 
-## 快速开始（本地开发、单机）
+## 从 GitHub Release 安装
 
-前提：Bun ≥ 1.3.14、Rust/Cargo 和原生构建工具链、已配置可用模型提供商的 omp 凭据目录
-（`~/.omp`，也可通过环境变量提供模型 API 密钥），以及兼容的 omp SDK 源码。代理通过同级目录
-`../oh-my-pi` 解析 SDK 导入；它不是可独立安装的 npm 包。在 `omp-hub` 仓库根目录执行以下命令；
-如果同级目录已有该仓库，请勿覆盖，应核对其版本和依赖：
+每台代理机器需要 Bun ≥ 1.3.14 和可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.0` 资源。要使用本页介绍但尚未随该版本发布的新功能（如按消息内容搜索会话），请改用下文的源码仓库。
 
 ```bash
-git clone https://github.com/KamijoToma/oh-my-pi.git ../oh-my-pi
-git -C ../oh-my-pi checkout 7ae76f8e4daca0c8f409f61bcd514260cd522365
-bun --cwd=../oh-my-pi install --frozen-lockfile
-bun --cwd=../oh-my-pi run build:native
+# 在 Hub 机器的任意目录开始：
+mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
+umask 077  # 保护含会话链接的 hub-state.json
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/omp-hub-v0.9.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt
+tar -xzf omp-hub-v0.9.0.tar.gz
+cd omp-hub
+HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
+```
+
+在另一个终端、每台代理机器上，重复下载、校验与解包步骤（本机体验可复用刚解包的目录），然后执行：
+
+```bash
+cd "$HOME/omp-hub-release/omp-hub"
+bun --cwd=packages/agent install --frozen-lockfile
 mkdir -p /tmp/omp-hub-demo
+HUB_TOKEN=dev-token bun packages/agent/src/main.ts --hub ws://127.0.0.1:8080 --name dev-machine
 ```
 
-以上 SDK 修订版是本项目本地验证时使用的版本。源码映射及部署约束参见
-[代理说明（英文）](packages/agent/README.md)。
+打开 `http://127.0.0.1:8080`，输入 `dev-token`，选择 `dev-machine`，以 `/tmp/omp-hub-demo` 为工作目录启动会话。`dev-token` 和 HTTP/WS **仅适用于单机回环地址**。远程部署要改用强共享令牌和 HTTPS/WSS：
 
 ```bash
-# 1. 启动 Hub 演示模式：安装锁定版本的 Web 依赖、构建 UI，并在 :8080 提供中继、API 和页面
-cd packages/hub
-HOST=127.0.0.1 HUB_TOKEN=dev-token bun run demo
-
-# 2. 在另一个终端从本仓库根目录启动代理
-cd packages/agent
-HUB_TOKEN=dev-token bun run dev -- --hub ws://127.0.0.1:8080 --name dev-machine
+# Hub 机器：从已解包目录运行，确保证书文件可读。
+cd "$HOME/omp-hub-release/omp-hub"
+HUB_TOKEN='<强共享密钥>' HOST=0.0.0.0 \
+  HUB_TLS_CERT=/path/to/cert.pem HUB_TLS_KEY=/path/to/key.pem \
+  bun packages/hub/src/main.ts
+# 代理机器：同样从已解包目录运行，并先完成上文锁文件安装。
+cd "$HOME/omp-hub-release/omp-hub"
+HUB_TOKEN='<同一个强共享密钥>' \
+  bun packages/agent/src/main.ts --hub wss://hub.example.com:8080 --name my-machine
 ```
 
-在浏览器打开 `http://127.0.0.1:8080`，输入仅用于本机开发的令牌 `dev-token`，选择
-`dev-machine`，以 `cwd=/tmp/omp-hub-demo` 启动会话。若要从终端加入，在会话页面复制**完整控制**
-协作链接，再运行 `omp join "<在此粘贴完整链接>"`。完整链接具有会话写入权限，必须保密。
+替换示例密钥、证书路径与域名，并把 Hub 的入站访问限定在可信网络。也可在反向代理终止 TLS，并为 Hub 设置 `HUB_PUBLIC_URL=https://hub.example.com`，使生成的会话链接使用 WSS。远程浏览器的 WebCrypto 需要 HTTPS，非本机的 `ws://` 会话链接会被拒绝。完整控制链接具有写入权限，务必保密。代理的锁文件会安装针对当前平台预编译的 SDK 二进制文件，**无需相邻 SDK 源码仓库或 Rust 构建**。参见[代理说明](packages/agent/README.md)。
 
-分别进入 `packages/web`、`packages/hub`、`packages/agent` 执行
-`bun install --frozen-lockfile && bun run typecheck` 进行类型检查；代理的类型检查需要同级
-`oh-my-pi` 源码及其已安装的依赖。在 `packages/web` 执行 `bun run build` 可仅重建静态 UI，
-不启动 Hub。
+### 源码仓库（获取最新源码功能）
 
-### 增量更新 Demo
-
-对于由 `omp ps` 以 `demohub`、`demoagent` 名称长期托管的 Demo，应从干净的工作区执行增量部署，
-不再为每个提交都重建并重启两个进程：
+安装 Git 和 Bun 后，克隆源码仓库并在其根目录执行（Release 归档不包含 Web 源码或构建脚本）：
 
 ```bash
-# 首次运行：指定当前实际运行版本对应的提交。
-bun packages/hub/src/deploy-demo.ts --from <当前部署提交> --dry-run
-bun packages/hub/src/deploy-demo.ts --from <当前部署提交>
-
-# 后续运行会读取 Git 公共目录中保存的分组件状态。
-bun packages/hub/src/deploy-demo.ts
+git clone https://github.com/KamijoToma/omp-hub.git
+cd omp-hub
+bun --cwd=packages/agent install --frozen-lockfile
+mkdir -p /tmp/omp-hub-demo
+umask 077  # 保护含会话链接的 hub-state.json
+HUB_TOKEN=dev-token HOST=127.0.0.1 bun --cwd=packages/hub run demo
+# 在另一个终端，也从仓库根目录执行：
+HUB_TOKEN=dev-token bun --cwd=packages/agent run start -- --hub ws://127.0.0.1:8080 --name dev-machine
 ```
 
-部署脚本分别判断 Web、Hub 和 Agent 的变更。仅文档或测试变化时只推进部署状态，不重启进程。
-Web 资源先构建并校验到带版本的发布目录，再通过 `packages/web/dist` 切换；完成首次目录到符号链接
-的迁移后，仅 Web 更新为原子切换，不重启 Hub。Hub 和 Agent 仅在各自已加载代码发生变化时重启。
+`demo` 按锁文件安装 Web 依赖、构建静态 UI 后启动 Hub；普通的 `bun --cwd=packages/hub run start` 则使用已有 Web 构建。要从终端接入，复制会话链接并执行 `omp join "<在此粘贴链接>"`。
 
-执行任何破坏性操作前，脚本会查询 `/api/sessions`；存在 `starting` 或 `live` 会话时默认拒绝部署。
-`--force-active` 是显式维护覆盖，会终止这些会话。现有 `dist/` 的首次迁移也需要一次受保护的 Hub
-重启。`--rollback-web` 可切回上一个已验证的 Web 版本。仅当当前 `HEAD` 已经是实际运行版本时，
-才能使用 `--record-current`。
+## Docker（仅 Hub，需源码仓库）
 
-脚本默认从受管 Hub 配置中私下读取本地地址和共享令牌；可用 `HUB_TOKEN` 和 `--hub-url` 覆盖。
-若进程名称或 `omp ps` 作用域不同，可使用 `--hub-service`、`--agent-service` 和 `--service-dir`。
-
-## Docker（仅 Hub）
-
-本地部署时，把容器端口仅映射到宿主机的回环地址：
+从**仓库根目录**构建 Hub／Web 镜像，并只在宿主机回环地址发布端口：
 
 ```bash
 docker build -f docker/Dockerfile -t omp-hub .
@@ -142,30 +138,13 @@ export HUB_TOKEN="$(openssl rand -hex 32)"
 docker run --rm -p 127.0.0.1:8080:8080 -e HUB_TOKEN="$HUB_TOKEN" omp-hub
 ```
 
-也可以使用 `docker compose -f docker/docker-compose.yml up --build`；它同样读取已导出的
-`HUB_TOKEN`。代理需要访问受控机器的本地文件系统、Shell 和 omp 凭据，因此必须直接在受控机器
-上运行，不包含在此 Hub 镜像中。
-
-浏览器或代理从远端访问时必须使用 **HTTPS/WSS**：可通过 `HUB_TLS_CERT` 和 `HUB_TLS_KEY`
-让 Hub 自行终止 TLS，或在反向代理终止 TLS 并设置 `HUB_PUBLIC_URL=https://...`。
-浏览器的 WebCrypto 需要安全上下文，非本机的 `ws://` 协作链接也会被拒绝。
-若需让 Hub 直接监听非回环地址，应显式设置 `HOST=0.0.0.0` 并置于防火墙之后；Docker 镜像
-在容器内部监听所有地址，但上面的示例只在宿主机回环地址发布端口。挂载 TLS 证书时，须保证
-镜像内的非 root 用户能够读取证书文件。详情见
-[局域网与 TLS 约束（英文）](docs/architecture.md#tls--lan-notes-hard-constraints-from-upstream)。
+`docker compose -f docker/docker-compose.yml up --build` 同样使用已导出的令牌。镜像不包含代理；在每台受控机器上单独安装并运行。构建镜像需要仓库的 Web 源码和 `docker/`，**Release 归档没有这些文件**。远程访问请按上文使用 HTTPS/WSS；容器内部监听所有地址，但此示例只向宿主机回环地址发布端口。挂载的 TLS 密钥须可由非 root 容器用户读取。容器默认文件系统不是持久可写的状态目录；若要跨容器重启恢复，请挂载私有的可写目录，并将 `HUB_STATE_FILE` 指向该目录。详情见[局域网与 TLS 约束（英文）](docs/architecture.md#tls--lan-notes-hard-constraints-from-upstream)。
 
 ## 安全模型与限制
 
-`HUB_TOKEN` 是代理通道和 HTTP API 共用的 Bearer 凭据；未设置或为空时 Hub 会拒绝启动。
-浏览器在本地存储该令牌。任何持有令牌的用户都可获得会话的完整写入链接；Hub 注册表也保存
-所有会话链接及密钥。会话宿主在无界面自动批准模式下运行 omp 工具，能够访问代理机器的文件
-和模型凭据。令牌持有者还能查看机器上跨项目的近期 omp 会话历史（包括路径、标题和首条消息摘要）
-并恢复保存的会话。若私人历史需要隔离，请用独立的系统账户运行代理。
+`HUB_TOKEN` 用于代理连接和 HTTP API；未设置或为空时 Hub 拒绝启动。浏览器将其保存在本地。令牌持有者可以获取会话的完整写入链接、查看机器上跨项目的近期 omp 会话历史（含路径、标题及首条消息摘要），并恢复保存的会话。无界面宿主会自动批准 omp 工具调用，能访问代理机器的文件与模型凭据；工具白名单只限制这一次会话的工具，不限制持有令牌的人下次启动的会话。superagent 还能操作其他会话。若需隔离本机历史或凭据，请用独立系统账户运行代理。
 
-`/r/` 中继无需令牌，也没有房间数量限制或宿主身份校验：持有只读链接的人可能在宿主断线后
-抢占宿主位置。**这不是面向不可信用户的多租户或公网服务**；只允许可信用户和网络访问，
-不要公开令牌或会话链接。Hub 状态只保存在内存中；重启 Hub 会丢失实时房间。详情见
-[安全模型（英文）](docs/architecture.md#security-model-mvp)。
+`/r/` 中继不验证访客身份、限制房间数或校验宿主身份：持有只读链接的人也可能在宿主断线后占用宿主位置。Hub 注册表和 `hub-state.json` 快照含会话密钥，必须保护状态文件、令牌和链接。实际 Hub 入口会持久化机器／会话注册表用于重启恢复，但实时中继连接和临时通知不会跨进程保存；代理与访客重连后可恢复实时房间，不保证完全无中断。**这不是面向不可信用户的多租户或公网服务**；只向可信用户与网络开放。详情见[安全模型（英文）](docs/architecture.md#security-model-mvp)。
 
 ## 文档
 
@@ -174,8 +153,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -e HUB_TOKEN="$HUB_TOKEN" omp-hub
 - [里程碑（英文）](docs/milestones.md)：MVP 阶段与后续计划。
 - [端到端验证记录（英文）](docs/e2e.md)：人工验证步骤和已知限制。
 
-GitHub Actions 会按锁文件安装三个包的依赖，运行类型检查和测试，构建 Web UI 与容器镜像，
-并固定代理使用的外部 SDK 修订版。
+GitHub Actions 按锁文件安装三个包的依赖、运行类型检查及 Bun 测试，再构建 Web UI 与仅包含 Hub 的容器。`main` 分支上符合条件的版本标签会打包 Release 归档和 `SHA256SUMS.txt`，验证解包后的归档并发布资源。发布资源对应标签时的代码，不包含未发布的源码更改；该工作流不会发布 npm 包或 Docker 镜像。
 
 ## 许可证
 
@@ -183,4 +161,4 @@ GitHub Actions 会按锁文件安装三个包的依赖，运行类型检查和�
 [`@oh-my-pi/collab-web`](https://github.com/can1357/oh-my-pi) 的代码（MIT）；原作者的版权声明
 和授权文本保留在 `LICENSE`。构建进 Web UI 的第三方库仍适用其各自的许可证（包括 Lucide 的
 ISC／Feather 声明和 Marked 的 Markdown 声明）；Hub 的 Docker 镜像在 `/app/licenses/` 中附带
-完整的第三方授权文本。
+完整的第三方授权文本，GitHub Release 归档则在 `licenses/` 中附带。

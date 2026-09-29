@@ -2,55 +2,55 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Headless remote-control suite for [omp](https://github.com/can1357/oh-my-pi) agent sessions.
+Run [omp](https://github.com/can1357/oh-my-pi) sessions on your own machines and manage them from a browser. A small outbound-only agent on each machine connects to the hub; the hub serves the dashboard, encrypted-session relay, and web client.
 
 ## Preview
 
-**Manage machines and sessions in one place.** Pick a machine and profile, start or resume work,
-and copy full or view-only links.
+**See your machines and sessions together.** The dashboard lists connected machines and sessions, with restart controls and a configurable new-session form.
 
-![Hub dashboard with a connected machine, session controls, and recent history](docs/screenshots/dashboard.png)
+![Dashboard with demo-machine, two live sessions and the session setup form](docs/screenshots/dashboard.png)
 
-**Drive the live session from a browser.** Follow the transcript, expand tool output, and send prompts.
+**Switch between live sessions without losing your place.** The expanded rail shows both demo sessions beside the session header and slash-command picker.
 
-![Live session showing a greeting CLI and its expanded bash result](docs/screenshots/live-session.png)
+![Live browser session with an expanded two-session rail, status header and command picker](docs/screenshots/live-session.png)
 
 <details>
 <summary>Mobile session view</summary>
 
-<img src="docs/screenshots/mobile-session.png" alt="Mobile session with transcript, tool result, and prompt composer" width="390">
+<img src="docs/screenshots/mobile-session.png" alt="Mobile browser session with collapsed rail, status header and command picker" width="390">
 
 </details>
 
-These captures use an isolated demo machine and a sample transcript; no provider request or
-personal session history was used.
+These captures use an isolated demo machine and idle synthetic sessions; no provider request, personal session history or credentials were used.
 
 ## Components
 
 | Package | Runs where | Purpose |
 |---|---|---|
-| `packages/hub` | a server (or Docker) | collab relay + machine/session registry + web UI host + wrapper control channel |
-| `packages/agent` | every machine you want to drive | headless daemon: receives hub commands, spawns SDK agent sessions, hosts them via collab |
-| `packages/web` | built into hub's static dist | browser UI (desktop + mobile): machine list, start/stop sessions, full live session control |
+| `packages/hub` | server or Docker | Relay, machine/session API, web UI and agent control channel |
+| `packages/agent` | each machine you control | Outbound-only daemon that hosts isolated omp sessions |
+| `packages/web` | served by the hub | Desktop and mobile browser UI |
 
-No local TUI/GUI is opened anywhere on the agent machines. All interaction happens in the browser
-or by attaching a real omp client (`omp join "<link>"`) to a live session.
+No TUI opens on an agent machine. Use the browser or attach a terminal with `omp join "<full or view link>"`.
 
 ## Features
 
-- Start sessions on connected machines (cwd, optional omp profile and initial prompt); list and
-  resume sessions saved on an agent machine.
-- **Full web operation** of a live session: streaming transcript, tool cards, prompt, interrupt,
-  subagent panel (chat/kill/revive/transcript), host UI dialogs (select/editor) — the complete
-  collab guest feature set, plus stop.
-- **omp client attach**: copy the session's full or view-only collab link and `omp join` it from
-  any terminal for the native TUI experience.
-- **Responsive layout**: phone and desktop layouts share the upstream collab-web breakpoints.
-- **Hub as one Docker container**: single port serves relay + API + web UI.
-- **Web slash commands**: typing `/` in the composer opens a palette — `/model`, `/thinking`,
-  `/rewind`, `/settings`, `/collab` (links), `/theme`, `/dump`, `/leave`, `/help`. Model/thinking changes run
-  on the host through the hub→agent command channel; slash text is never sent to the LLM.
-- Machine usage dashboard proxies the machine-local omp statistics endpoint.
+- **Manage multiple sessions:** Start on a connected machine with a directory, optional profile,
+  name and initial prompt. Switch live sessions with the rail or switcher, activity indicators and
+  optional browser notifications. Rename, hide (this browser only), stop or remove sessions from
+  the hub list (saved omp files remain); resume saved conversations. Search session lists/history
+  by metadata and, in current source builds, prompt/assistant message text.
+- **Work in the browser:** Stream transcripts and tool results, send or interrupt prompts, handle
+  interactive dialogs and manage subagents. Use full-control or view-only links to attach an omp client.
+- **Control the agent:** Choose models, thinking level and role assignments; use session-scoped
+  advanced settings, modes (plan, advisor, goal and loop), and MCP servers (config edits apply to
+  new sessions). At start, optionally whitelist tools or enable **superagent** fleet controls to
+  start, stop and message other sessions. No whitelist means the default, unrestricted tool set.
+- **Operate the fleet:** See machine usage and restart an agent daemon from the dashboard to load
+  new code: its session children stop and resume from saved transcripts under their existing IDs.
+  The authenticated hub restart API hands over machine/session records from `hub-state.json` (the
+  real hub's default state file). Agents reconnect and live hosts recreate relay rooms; rooms and
+  ephemeral notices are not persisted, so allow for an interruption.
 
 ## How it works (30 seconds)
 
@@ -69,78 +69,70 @@ or by attaching a real omp client (`omp join "<link>"`) to a live session.
                                    └─────────────────┘
 ```
 
-- All session payloads stay **AES-256-GCM end-to-end encrypted** between the session-host and the
-  guest (browser or `omp join`); the hub relay is content-blind. The hub *registry* does hold the
-  links (keys) for the sessions it manages — on this MVP the hub is a trusted party; deploy it
-  accordingly.
-- The wrapper never binds a port: it dials out to the hub. NAT-friendly.
+- Session frames are **AES-256-GCM end-to-end encrypted** between host and browser or `omp join`; the relay forwards ciphertext. The hub registry nevertheless holds full/view links and their keys, and its state snapshot stores those links on disk. Treat both hub and snapshot as sensitive.
+- The agent dials out to the hub and requires no inbound port on the controlled machine.
 
-## Quick start (local development, single machine)
+## Install from a GitHub release
 
-Prereqs: Bun ≥ 1.3.14 and an omp auth store (`~/.omp`) with a working provider (or provider API
-keys in the environment). The agent consumes the omp SDK as npm packages pinned to the upstream
-release tag (`18.4.2` = tag `v18.4.2`); the pin pulls prebuilt native binaries — no source
-checkout or Rust toolchain. From the `omp-hub` repository root:
+Requires Bun ≥ 1.3.14 and working omp provider credentials (`~/.omp/agent` or provider API keys) on each agent machine. The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. This example uses the published `v0.9.0` assets. To run newer features documented here (such as message-text session search), use the source checkout below until a newer release includes them.
 
 ```bash
+# On the hub machine, from any working directory:
+mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
+umask 077  # keep hub-state.json and its session links private
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/omp-hub-v0.9.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt
+tar -xzf omp-hub-v0.9.0.tar.gz
+cd omp-hub
+HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
+```
+
+In another terminal, repeat the download, checksum and extraction steps on each agent machine (or reuse the extracted directory for a local trial), then run:
+
+```bash
+cd "$HOME/omp-hub-release/omp-hub"
 bun --cwd=packages/agent install --frozen-lockfile
 mkdir -p /tmp/omp-hub-demo
+HUB_TOKEN=dev-token bun packages/agent/src/main.ts --hub ws://127.0.0.1:8080 --name dev-machine
 ```
 
-See [the agent README](packages/agent/README.md) for the SDK pin policy and deployment constraints.
+Open `http://127.0.0.1:8080`, enter `dev-token`, choose `dev-machine` and start a session in `/tmp/omp-hub-demo`. `dev-token` and plain HTTP/WS are **only for a local, loopback-only trial**. For a remote deployment, choose a strong shared token and expose the hub over HTTPS/WSS:
 
 ```bash
-# 1. hub demo (installs locked web deps, builds UI, serves relay + API + web on :8080)
-cd packages/hub
-HOST=127.0.0.1 HUB_TOKEN=dev-token bun run demo
-
-# 2. wrapper agent (another shell, from the repository root)
-cd packages/agent
-HUB_TOKEN=dev-token bun run dev -- --hub ws://127.0.0.1:8080 --name dev-machine
+# Hub machine, from the extracted omp-hub/ directory; cert paths must be readable.
+cd "$HOME/omp-hub-release/omp-hub"
+HUB_TOKEN='<strong-shared-secret>' HOST=0.0.0.0 \
+  HUB_TLS_CERT=/path/to/cert.pem HUB_TLS_KEY=/path/to/key.pem \
+  bun packages/hub/src/main.ts
+# Agent machine, from its extracted omp-hub/ directory, after the locked install:
+cd "$HOME/omp-hub-release/omp-hub"
+HUB_TOKEN='<same-strong-shared-secret>' \
+  bun packages/agent/src/main.ts --hub wss://hub.example.com:8080 --name my-machine
 ```
 
-Open `http://127.0.0.1:8080` in a browser, enter the local-only token `dev-token`, select
-`dev-machine` and start a session with `cwd=/tmp/omp-hub-demo`. To attach a terminal client,
-copy the **full** collab link from the session page and run `omp join "<paste full link here>"`.
-Keep full links private: they grant write access to the session.
+Replace the example secret, certificate paths and DNS name; restrict hub ingress to trusted networks. Alternatively terminate TLS at a reverse proxy and set `HUB_PUBLIC_URL=https://hub.example.com` on the hub so generated session links use WSS. A remote browser needs HTTPS for WebCrypto; remote insecure `ws://` links are rejected. Keep full links private: they grant write access. The agent's frozen lockfile installs platform-specific prebuilt SDK binaries; **no sibling SDK checkout or Rust build** is needed. See [agent setup](packages/agent/README.md).
 
-For type checking, run `bun install --frozen-lockfile && bun run typecheck` in each of
-`packages/web`, `packages/hub`, and `packages/agent`. `bun run build` in `packages/web`
-rebuilds the static UI without starting the hub.
+### Source checkout (latest source features)
 
-### Incremental demo updates
-
-For a long-lived demo supervised by `omp ps` as `demohub` and `demoagent`, deploy from a clean
-checkout instead of rebuilding and restarting both processes after every commit:
+From a terminal with Git and Bun installed, clone the repository and run from its root (the release archive has no web source/build scripts):
 
 ```bash
-# First run: name the commit that is currently serving the demo.
-bun packages/hub/src/deploy-demo.ts --from <deployed-commit> --dry-run
-bun packages/hub/src/deploy-demo.ts --from <deployed-commit>
-
-# Later runs use the per-component state saved in the Git common directory.
-bun packages/hub/src/deploy-demo.ts
+git clone https://github.com/KamijoToma/omp-hub.git
+cd omp-hub
+bun --cwd=packages/agent install --frozen-lockfile
+mkdir -p /tmp/omp-hub-demo
+umask 077  # keep hub-state.json and its session links private
+HUB_TOKEN=dev-token HOST=127.0.0.1 bun --cwd=packages/hub run demo
+# In another terminal, also from the repository root:
+HUB_TOKEN=dev-token bun --cwd=packages/agent run start -- --hub ws://127.0.0.1:8080 --name dev-machine
 ```
 
-The deployer classifies changes independently for Web, Hub, and Agent. Documentation and test-only
-commits advance deployment state without restarting anything. Web assets are built and validated in
-a versioned release directory, then switched through `packages/web/dist`; after the one-time
-directory-to-symlink migration, Web-only updates are atomic and do not restart the Hub. Hub and
-Agent processes restart only when their loaded code changed.
+`demo` installs the web's locked dependencies, builds its static UI and launches the hub. Normal `bun --cwd=packages/hub run start` serves an existing web build. To attach a terminal client, copy a session's link and run `omp join "<paste link here>"`.
 
-Before any disruptive action, the deployer queries `/api/sessions` and refuses to continue while a
-session is `starting` or `live`. `--force-active` is an explicit maintenance override and will
-terminate those sessions. The first migration of an existing `dist/` also needs one guarded Hub
-restart. `--rollback-web` switches back to the previous validated Web release. Use
-`--record-current` only when the checked-out `HEAD` is already the code actually running.
+## Docker (hub only, source checkout)
 
-The script reads the local URL and shared token privately from the supervised Hub specification;
-`HUB_TOKEN` and `--hub-url` override those values. Different process names or an alternate `omp ps`
-scope can be selected with `--hub-service`, `--agent-service`, and `--service-dir`.
-
-## Docker (hub only)
-
-For a local-only deployment, build the hub image and bind it to loopback:
+From the **repository root**, build the hub/web image and expose its port on loopback:
 
 ```bash
 docker build -f docker/Dockerfile -t omp-hub .
@@ -148,33 +140,13 @@ export HUB_TOKEN="$(openssl rand -hex 32)"
 docker run --rm -p 127.0.0.1:8080:8080 -e HUB_TOKEN="$HUB_TOKEN" omp-hub
 ```
 
-`docker compose -f docker/docker-compose.yml up --build` uses the exported `HUB_TOKEN` too.
-Wrappers run directly on the machines being controlled (they need the local filesystem, shell,
-and omp auth store); they are not included in this image.
-
-For remote browser/agent access, use **HTTPS/WSS** (terminate TLS on the hub with
-`HUB_TLS_CERT`/`HUB_TLS_KEY`, or at a reverse proxy and set `HUB_PUBLIC_URL=https://...`).
-The browser requires a secure context for WebCrypto; non-local `ws://` collab links are rejected.
-For a direct non-loopback hub, explicitly set `HOST=0.0.0.0` behind a firewall; Docker already
-binds within its container, but the examples publish only on the host's loopback address.
-Ensure the non-root container user can read mounted TLS certificates. See
-[TLS / LAN notes](docs/architecture.md#tls--lan-notes-hard-constraints-from-upstream).
+`docker compose -f docker/docker-compose.yml up --build` also uses the exported token. The agent is not in this image; install and run it on each controlled machine. The image build needs repository web source and `docker/`, which are **not** in the release archive. For remote access use HTTPS/WSS as above; the image listens inside the container on all interfaces but this example only publishes on the host's loopback. Mounted TLS keys must be readable by the non-root container user. The container filesystem is not a durable writable state location: mount a private writable directory and set `HUB_STATE_FILE` there for restart recovery across containers. See [TLS / LAN notes](docs/architecture.md#tls--lan-notes-hard-constraints-from-upstream).
 
 ## Security and limits
 
-`HUB_TOKEN` is a required shared bearer credential for the agent channel and HTTP API; an unset
-or blank token prevents startup. The browser stores the token locally. Any authenticated
-user can obtain a session's full write link, and the hub registry stores all session links and
-keys. Session hosts run omp tools with headless auto-approval and have access to the agent
-machine's files and provider credentials. Any token holder can browse the machine's recent omp
-session history across projects (including paths, titles and first-message excerpts) and resume
-saved sessions. Run the daemon under a dedicated OS account if personal history must stay private.
-The relay `/r/` is unauthenticated and has no room quota or host-identity check: a holder of a
-view link could claim the host role after a disconnect.
+`HUB_TOKEN` is required for the agent connection and HTTP API; an empty token prevents hub startup. The browser stores it locally. Any token holder can obtain full session write links, browse recent omp session history across projects (including paths, titles and first-message excerpts), and resume saved sessions. Headless session hosts auto-approve omp tool use and can access the agent machine's files and provider credentials; a tools whitelist limits one session's available tools, **not** what a trusted token holder can start next. A superagent has fleet-wide session controls. Use a dedicated OS account for each agent when local history or credentials need isolation.
 
-This is **not** a multi-tenant or public-internet service; restrict ingress to trusted users and
-networks, and never publish tokens/links. State is in memory and live rooms are lost when the hub
-restarts. See [the security model](docs/architecture.md#security-model-mvp).
+The relay `/r/` does not authenticate peers or enforce room quotas/host identity: even a view-link holder could claim a room's host role after a disconnect. The hub's live registry and `hub-state.json` snapshot contain session keys; protect the state file, token and links. The real hub entry persists machine/session registry snapshots for restart recovery, but live relay sockets and ephemeral notifications do not survive a process restart. Agent and guest reconnects can restore live rooms; do not treat this as a zero-interruption guarantee. This is **not** a public-internet or multi-tenant service: restrict access to trusted users and networks. See [the security model](docs/architecture.md#security-model-mvp).
 
 ## Docs
 
@@ -183,33 +155,7 @@ restarts. See [the security model](docs/architecture.md#security-model-mvp).
 - [docs/milestones.md](docs/milestones.md) — MVP phases and post-MVP roadmap
 - [docs/e2e.md](docs/e2e.md) — manual end-to-end verification and known limitations
 
-GitHub Actions runs frozen installs, typechecks and the complete Bun test suites for all three
-packages on every push and pull request, then builds the web UI and hub container. The agent uses
-the SDK npm versions pinned in `packages/agent/bun.lock`; CI does not build a separate upstream tree.
-
-### GitHub releases
-
-After merging into `main`, update the `version` in all three package manifests to the same
-`X.Y.Z` before pushing a `vX.Y.Z` tag. Keep release tags immutable and restrict who can create
-them. The tag run repeats all CI checks; only a successful run from `main` creates a GitHub Release.
-It attaches `omp-hub-vX.Y.Z.tar.gz` (Hub source, built web UI, Agent source and third-party licenses)
-and `SHA256SUMS.txt`. Release notes group commits since the preceding **published** release under
-Breaking Changes, Features, Fixes, Changes and Documentation; maintenance commits are linked from
-the full comparison rather than listed individually. Unclassified user-facing commits go under
-Changes. For accurate categories, use `feat(scope): ...`, `fix(scope): ...`, `docs: ...`, etc.
-There is no npm publication or GHCR push; the Docker image is built as a CI check, not published.
-
-For a release archive, verify it with `sha256sum -c SHA256SUMS.txt` after downloading both assets,
-then extract it and run from the extracted `omp-hub/` directory:
-
-```bash
-HUB_TOKEN="<secret>" bun packages/hub/src/server.ts
-bun --cwd=packages/agent install --frozen-lockfile
-HUB_TOKEN="<secret>" bun packages/agent/src/main.ts --hub ws://127.0.0.1:8080
-```
-
-The archive excludes `node_modules`, credentials and live registry state. Install the Agent's
-locked dependencies on each target machine so npm selects that platform's native addon.
+GitHub Actions runs frozen installs, typechecks and Bun tests for all three packages, then builds the web UI and hub-only container. A qualifying version tag on `main` assembles the release archive and `SHA256SUMS.txt`, tests the unpacked archive and publishes the assets. Releases contain the tagged version, not unreleased source changes; no npm package or Docker image is published by this workflow.
 
 ## License
 

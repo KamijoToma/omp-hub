@@ -86,12 +86,14 @@ jobs:
           path: release-web
       - name: Assemble release archive and checksum
         run: |
-          mkdir -p release/omp-hub/packages/{hub,agent,web} release/omp-hub/licenses
+          mkdir -p release/omp-hub/packages/{hub,agent,web} release/omp-hub/{licenses,docs/screenshots}
           cp -a packages/hub/{src,package.json,bun.lock,tsconfig.json} release/omp-hub/packages/hub/
           cp -a packages/agent/{src,types,package.json,bun.lock,tsconfig.json,README.md} release/omp-hub/packages/agent/
           cp -a release-web/dist release/omp-hub/packages/web/dist
           cp -a release-web/licenses/. release/omp-hub/licenses/
-          cp README.md LICENSE release/omp-hub/
+          cp README.md README.zh-CN.md LICENSE release/omp-hub/
+          cp docs/{architecture,protocol,milestones,e2e}.md release/omp-hub/docs/
+          cp docs/screenshots/*.png release/omp-hub/docs/screenshots/
           tar -C release -czf "release/omp-hub-$GITHUB_REF_NAME.tar.gz" omp-hub
           (cd release && sha256sum "omp-hub-$GITHUB_REF_NAME.tar.gz" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
       - name: Smoke-test unpacked archive
