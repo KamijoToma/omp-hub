@@ -17,7 +17,7 @@ function api(path: string, init: RequestInit = {}, ownerId?: string): Promise<Re
 	});
 }
 
-async function socket(machineId: string): Promise<{ ws: WebSocket; take(predicate: (frame: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> }> {
+async function socket(machineId: string, version = "0.13.0"): Promise<{ ws: WebSocket; take(predicate: (frame: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> }> {
 	const ws = new WebSocket(`${hub.url.replace(/^http/, "ws")}/agent`, { headers: { authorization: "Bearer fleet-test" } });
 	const frames: Record<string, unknown>[] = [];
 	ws.addEventListener("message", event => {
@@ -27,7 +27,7 @@ async function socket(machineId: string): Promise<{ ws: WebSocket; take(predicat
 	ws.addEventListener("open", () => ready.resolve(), { once: true });
 	ws.addEventListener("error", () => ready.reject(new Error("socket failed")), { once: true });
 	await ready.promise;
-	ws.send(JSON.stringify({ t: "hello", machineId, name: machineId, version: "0.12.0" }));
+	ws.send(JSON.stringify({ t: "hello", machineId, name: machineId, version }));
 	const take = async (predicate: (frame: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
 		const deadline = Date.now() + 3000;
 		for (;;) {
@@ -217,6 +217,32 @@ describe("namespace-scoped fleet control", () => {
 		} finally { agent.ws.close(); }
 	});
 
+	test("mixed 0.12 and 0.13 daemons cannot exchange incompatible message cursors", async () => {
+		const modern = await socket("m_tail_modern");
+		const legacy = await socket("m_tail_legacy", "0.12.0");
+		try {
+			const namespaceId = await createNamespace("paging-upgrade");
+			const modernOwner = await live(modern, "m_tail_modern", { superagent: true, namespaceId });
+			const legacyWorker = await live(legacy, "m_tail_legacy", { namespaceId });
+			const legacyWorkerRead = await api(`/api/fleet/sessions/${legacyWorker}/messages`, {}, modernOwner);
+			expect(legacyWorkerRead.status).toBe(409);
+			expect(await legacyWorkerRead.json()).toEqual({
+				error: "fleet message paging requires agent 0.13.0+ on operator and worker machines",
+			});
+
+			const legacyOwner = await live(legacy, "m_tail_legacy", { superagent: true, namespaceId });
+			const modernWorker = await live(modern, "m_tail_modern", { namespaceId });
+			const legacyOwnerRead = await api(`/api/fleet/sessions/${modernWorker}/messages`, {}, legacyOwner);
+			expect(legacyOwnerRead.status).toBe(409);
+			expect(await legacyOwnerRead.json()).toEqual({
+				error: "fleet message paging requires agent 0.13.0+ on operator and worker machines",
+			});
+		} finally {
+			modern.ws.close();
+			legacy.ws.close();
+		}
+	});
+
 	test("moving a worker during an in-flight history read withholds the stale response", async () => {
 		const agent = await socket("m_read_race");
 		try {
@@ -235,6 +261,119 @@ describe("namespace-scoped fleet control", () => {
 			const response = await reading;
 			expect(response.status).toBe(409);
 			expect(await response.json()).toEqual({ error: "session membership changed" });
+		} finally { agent.ws.close(); }
+	});
+
+	test("fleet search cannot see another namespace or bypass the 0.14 operator/worker upgrade", async () => {
+		const modern = await socket("m_search_modern", "0.14.0");
+		const legacy = await socket("m_search_legacy", "0.13.0");
+		try {
+			const namespaceId = await createNamespace("search-upgrade");
+			const privateNamespace = await createNamespace("search-private");
+			const modernOwner = await live(modern, "m_search_modern", { superagent: true, namespaceId });
+			const modernWorker = await live(modern, "m_search_modern", { namespaceId });
+			const privateWorker = await live(modern, "m_search_modern", { namespaceId: privateNamespace });
+			const legacyWorker = await live(legacy, "m_search_legacy", { namespaceId });
+			const legacyOwner = await live(legacy, "m_search_legacy", { superagent: true, namespaceId });
+			const forbidden = await api(`/api/fleet/sessions/${privateWorker}/search?query=secret`, {}, modernOwner);
+			expect(forbidden.status).toBe(404);
+			expect(await forbidden.json()).toEqual({ error: "session not found" });
+			for (const [worker, owner] of [[legacyWorker, modernOwner], [modernWorker, legacyOwner]] as const) {
+				const response = await api(`/api/fleet/sessions/${worker}/search?query=secret`, {}, owner);
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({
+					error: "fleet message search requires agent 0.14.0+ on operator and worker machines",
+				});
+			}
+			expect((await api(`/api/machines/m_search_modern/search?query=secret`, {}, modernOwner)).status).toBe(404);
+		} finally {
+			modern.ws.close();
+			legacy.ws.close();
+		}
+	});
+
+	test("fleet search rejects malformed ranges and parameters before reaching worker history", async () => {
+		const agent = await socket("m_search_invalid", "0.14.0");
+		try {
+			const namespaceId = await createNamespace("search-invalid");
+			const owner = await live(agent, "m_search_invalid", { superagent: true, namespaceId });
+			const worker = await live(agent, "m_search_invalid", { namespaceId });
+			const url = `/api/fleet/sessions/${worker}/search`;
+			for (const [suffix, message] of [
+				["", "query, from, or to is required"],
+				["?query=%20%20", "query must be 1–256 characters"],
+				[`?query=${"a".repeat(257)}`, "query must be 1–256 characters"],
+				["?from=2026-02-30T12%3A00%3A00Z", "from must be an ISO-8601 timestamp with timezone"],
+				["?to=2026-02-01T12%3A00%3A00", "to must be an ISO-8601 timestamp with timezone"],
+				["?from=2026-02-01T12%3A00%3A00Z&to=2026-02-01T12%3A00%3A00Z", "from must be before to"],
+				["?from=2026-02-02T12%3A00%3A00Z&to=2026-02-01T12%3A00%3A00Z", "from must be before to"],
+				["?from=2026-09-30T10%3A00%3A00%2B02%3A00&to=2026-09-30T08%3A00%3A00Z", "from must be before to"],
+				["?query=git&limit=51", "limit must be between 1 and 50"],
+				["?query=git&cursor=", "invalid cursor"],
+				[`?query=git&cursor=${"x".repeat(129)}`, "invalid cursor"],
+				["?query=git&query=other", "invalid search parameters"],
+				["?query=git&path=%2Fetc%2Fpasswd", "invalid search parameters"],
+			] as const) {
+				const response = await api(`${url}${suffix}`, {}, owner);
+				expect(response.status).toBe(400);
+				expect(await response.json()).toEqual({ error: message });
+			}
+		} finally { agent.ws.close(); }
+	});
+
+	test("moving a worker mid-search never exposes old-namespace hits", async () => {
+		const agent = await socket("m_search_race", "0.14.0");
+		try {
+			const oldNamespace = await createNamespace("search-race-old");
+			const newNamespace = await createNamespace("search-race-new");
+			const owner = await live(agent, "m_search_race", { superagent: true, namespaceId: oldNamespace });
+			const worker = await live(agent, "m_search_race", { namespaceId: oldNamespace });
+			const reading = api(`/api/fleet/sessions/${worker}/search?query=private`, {}, owner);
+			const cmd = await agent.take(frame => frame.t === "cmd" && frame.cmd === "fleet-search-messages" && frame.id === worker);
+			const moved = await api(`/api/sessions/${worker}/namespace`, {
+				method: "PUT", body: JSON.stringify({ namespaceId: newNamespace, expectedVersion: 1 }),
+			});
+			expect(moved.status).toBe(200);
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true, data: {
+				hits: [{ id: "private", timestamp: "2026-09-30T12:00:00Z", role: "assistant", source: "text",
+					snippet: "private result" }], nextCursor: "private", hasMore: false, leafId: "private",
+			} }));
+			const response = await reading;
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "session membership changed" });
+		} finally { agent.ws.close(); }
+	});
+
+	test("terminal search uses only the registered session file and reports history and stale-cursor failures", async () => {
+		const agent = await socket("m_search_terminal", "0.14.0");
+		try {
+			const namespaceId = await createNamespace("search-terminal");
+			const owner = await live(agent, "m_search_terminal", { superagent: true, namespaceId });
+			const worker = await live(agent, "m_search_terminal", { namespaceId });
+			agent.ws.send(JSON.stringify({ t: "session-exit", id: worker, code: 0, reason: "done" }));
+			const deadline = Date.now() + 3000;
+			for (;;) {
+				const record = await (await api(`/api/sessions/${worker}`)).json() as { session: { status: string } };
+				if (record.session.status === "exited") break;
+				if (Date.now() > deadline) throw new Error("worker did not exit");
+				await new Promise<void>(resolve => setImmediate(resolve));
+			}
+			const url = `/api/fleet/sessions/${worker}/search`;
+			const unreadable = api(`${url}?query=git%20merge&from=2026-09-30T00%3A00%3A00Z&limit=3`, {}, owner);
+			const command = await agent.take(frame => frame.t === "cmd" && frame.cmd === "search-session-messages");
+			expect(command).toMatchObject({ path: "/tmp/agent/sessions/test.jsonl",
+				query: "git merge", from: "2026-09-30T00:00:00Z", pageLimit: 3 });
+			expect(command.id).toBeUndefined();
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: command.reqId, ok: false, error: "could not open session history" }));
+			const failure = await unreadable;
+			expect(failure.status).toBe(502);
+			expect(await failure.json()).toEqual({ error: "could not open session history" });
+			const stale = api(`${url}?to=2026-09-30T00%3A00%3A00Z&cursor=old`, {}, owner);
+			const next = await agent.take(frame => frame.t === "cmd" && frame.cmd === "search-session-messages" && frame.cursor === "old");
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: next.reqId, ok: false, error: "cursor is not on the active branch" }));
+			const conflict = await stale;
+			expect(conflict.status).toBe(409);
+			expect(await conflict.json()).toEqual({ error: "cursor is not on the active branch" });
 		} finally { agent.ws.close(); }
 	});
 

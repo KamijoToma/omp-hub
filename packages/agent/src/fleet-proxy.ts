@@ -17,12 +17,14 @@ export function isAllowedFleetPath(method: string, rawPath: string): boolean {
 	if (segments[1] !== "api" || segments[2] !== "fleet") return false;
 	const [, , , resource, id, action] = segments;
 	if (segments.length >= 5 && resource === "sessions" && (!id || !/^s_[A-Za-z0-9_-]+$/.test(id))) return false;
-	if (url.search && !(method === "GET" && segments.length === 6 && resource === "sessions" && action === "messages")) return false;
-	if (url.search && [...url.searchParams.keys()].some(key => key !== "cursor" && key !== "limit")) return false;
+	if (url.search && !(method === "GET" && segments.length === 6 && resource === "sessions" &&
+		(action === "messages" || action === "search"))) return false;
+	if (url.search && [...url.searchParams.keys()].some(key =>
+		action === "search" ? !["query", "from", "to", "cursor", "limit"].includes(key) : key !== "cursor" && key !== "limit")) return false;
 	if (method === "GET") {
 		if (segments.length === 4) return resource === "machines" || resource === "sessions" || resource === "events";
 		if (segments.length === 5) return resource === "sessions";
-		return segments.length === 6 && resource === "sessions" && ["messages", "input"].includes(action!);
+		return segments.length === 6 && resource === "sessions" && ["messages", "search", "input"].includes(action!);
 	}
 	if (method !== "POST") return false;
 	if (segments.length === 4) return resource === "sessions" || resource === "notices";
@@ -108,7 +110,7 @@ export async function handleFleetRequest(request: FleetProxyRequest, deps: Fleet
 			: pathname.endsWith("/input") ? ["requestId", "answer"]
 			: pathname === "/api/fleet/notices" ? ["message", "urgency", "sessionId"] : [];
 		body = Object.fromEntries(keys.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
-	} else body = request.body;
+	} else body = method === "GET" ? undefined : request.body;
 
 	const doFetch = deps.fetch ?? fetch;
 	try {

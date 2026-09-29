@@ -107,6 +107,7 @@ export type SessionCmdName =
 	| "cycle-model"
 	| "get-settings"
 	| "fleet-get-messages"
+	| "fleet-search-messages"
 	| "fleet-get-input"
 	| "fleet-answer-input"
 	| "fleet-message"
@@ -115,7 +116,7 @@ export type SessionCmdName =
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "get-subscriptions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "search-session-messages" | "get-subscriptions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -207,8 +208,11 @@ export interface CmdRequest {
 	settingId?: string;
 	/** `set-setting` override value (JSON-safe); `null` clears it (protocol §2, 0.9.0+). */
 	value?: unknown;
-	/** Fleet session message cursor or pending UI request identity. */
+	/** Fleet message page cursor (an active-branch entry id), or pending UI request identity. */
 	cursor?: string;
+	/** Fleet message-search time bounds (ISO-8601 timestamps with timezone). */
+	from?: string;
+	to?: string;
 	requestId?: string;
 	answer?: string;
 	clearQueue?: boolean;
@@ -351,6 +355,20 @@ export function supportsFleetNamespace(version: string | null): boolean {
 	if (version === null) return false;
 	const triple = versionTriple(version);
 	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 12));
+}
+
+/** Backward paging starts with the newest messages only on 0.13.0+ daemons. */
+export function supportsRecentFleetMessages(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 13));
+}
+
+/** Message search requires both participants to understand time bounds and backward hit cursors. */
+export function supportsFleetMessageSearch(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 14));
 }
 
 function parseLinks(value: unknown): SessionLinks | undefined {

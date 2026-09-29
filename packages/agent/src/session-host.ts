@@ -42,7 +42,7 @@ import type * as ServiceTierConfig from "@oh-my-pi/pi-coding-agent/config/servic
 import type * as AdvisorDiscovery from "@oh-my-pi/pi-coding-agent/advisor/config";
 import type * as SettingsGateway from "./settings-gateway";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
-import { createFleetClient, pageFleetMessages } from "./fleet-client";
+import { createFleetClient, pageFleetMessages, searchFleetMessages } from "./fleet-client";
 import { buildFleetTools } from "./fleet-tools";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
@@ -134,6 +134,10 @@ export type CommandFrame = {
 	/** Fleet transcript page cursor and bound. */
 	cursor?: string;
 	pageLimit?: number;
+	/** Search the active fleet branch: optional literal needle and timestamp bounds. */
+	query?: string;
+	from?: string;
+	to?: string;
 	/** Fleet UI response correlation. */
 	requestId?: string;
 	answer?: string;
@@ -1188,6 +1192,10 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 		}
 		case "fleet-get-messages":
 			return pageFleetMessages(session.sessionManager, frame.cursor, frame.pageLimit);
+		case "fleet-search-messages":
+			return searchFleetMessages(session.sessionManager, {
+				query: frame.query, from: frame.from, to: frame.to, cursor: frame.cursor, limit: frame.pageLimit,
+			});
 		case "fleet-get-input":
 			return { pending: ui?.getPendingInput() ?? [] };
 		case "fleet-answer-input": {
