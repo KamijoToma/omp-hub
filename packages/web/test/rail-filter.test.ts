@@ -1,12 +1,13 @@
 /**
- * `rail-filter` — the per-browser ended-session fold behind the rail and
+ * `rail-filter` — the per-browser folded-groups toggle behind the rail and
  * quick switcher: the toggle persists to localStorage, `isEndedStatus`
  * classifies terminal records, `partitionEnded` splits a filtered
- * listing while keeping order, and `railRowsOrdered` composes the final
- * row order (ended fold with the on-screen session exempt).
+ * listing while keeping order, `railRowsOrdered` composes the final
+ * row order (ended fold with the on-screen session exempt), and
+ * `extrasLabel` renders the single merged ended/hidden toggle label.
  */
 import { describe, expect, test } from "bun:test";
-import { isEndedStatus, partitionEnded, railRowsOrdered, setShowEnded } from "../src/hub/rail-filter";
+import { extrasLabel, isEndedStatus, partitionEnded, railRowsOrdered, setShowExtras } from "../src/hub/rail-filter";
 import type { SessionStatus } from "../src/hub/api";
 
 // Installed after the module-level load() ran against an absent localStorage —
@@ -35,14 +36,14 @@ describe("rail filter", () => {
 	});
 
 	test("the fold toggle persists to localStorage", () => {
-		setShowEnded(true);
+		setShowExtras(true);
 		expect(backing.get(KEY)).toBe("1");
 
 		// Idempotent writes.
-		setShowEnded(true);
+		setShowExtras(true);
 		expect(backing.get(KEY)).toBe("1");
 
-		setShowEnded(false);
+		setShowExtras(false);
 		expect(backing.get(KEY)).toBe("0");
 	});
 
@@ -73,5 +74,20 @@ describe("rail filter", () => {
 
 		// The on-screen row never folds even when it is the only ended one.
 		expect(railRowsOrdered([row("only", "exited")], false, "only").map(item => item.id)).toEqual(["only"]);
+	});
+
+	test("extrasLabel merges the ended and hidden counts into one toggle label", () => {
+		// Collapsed: counts what a click reveals; zero groups are omitted.
+		expect(extrasLabel(16, 0, false)).toBe("16 ended — show");
+		expect(extrasLabel(0, 3, false)).toBe("3 hidden — show");
+		expect(extrasLabel(16, 3, false)).toBe("16 ended · 3 hidden — show");
+
+		// Expanded: says what is shown.
+		expect(extrasLabel(16, 3, true)).toBe("showing 16 ended · 3 hidden — back");
+		expect(extrasLabel(16, 0, true)).toBe("showing 16 ended — back");
+
+		// Nothing to reveal: no toggle at all.
+		expect(extrasLabel(0, 0, false)).toBeNull();
+		expect(extrasLabel(0, 0, true)).toBeNull();
 	});
 });

@@ -2442,12 +2442,12 @@
 	opacity: 0.55;
 }
 
-/** Terminal rows shown behind the "N ended — show" fold: dimmed, sunk. */
+/** Terminal rows shown behind the "N ended · M hidden — show" fold: dimmed, sunk. */
 .hb-nav-ended {
 	opacity: 0.55;
 }
 
-.hb-hidden-toggle {
+.hb-extras-toggle {
 	align-self: flex-start;
 	padding: 2px 0;
 	color: var(--fg-muted);
@@ -2457,8 +2457,17 @@
 	text-decoration: underline dotted;
 }
 
-.hb-hidden-toggle:hover {
+.hb-extras-toggle:hover {
 	color: var(--fg);
+}
+
+/** The "hidden" group label inside the revealed extras list. */
+.hb-nav-extras-label {
+	padding: 10px 12px 2px;
+	color: var(--fg-muted);
+	font-size: 10.5px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
 }
 
 .hb-nav-badge {

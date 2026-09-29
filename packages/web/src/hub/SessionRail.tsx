@@ -14,14 +14,14 @@
  */
 import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, RotateCcw, Settings2, Sparkles, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename, restartSession } from "./api";
 import { clientPool } from "./client-pool";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
-import { isEndedStatus, railRowsOrdered, setShowEnded, useShowEnded } from "./rail-filter";
+import { extrasLabel, isEndedStatus, railRowsOrdered, setShowExtras, useShowExtras } from "./rail-filter";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
@@ -237,18 +237,24 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 	const hitOf = (session: SessionRecord): SessionMessageHit | undefined =>
 		session.sessionFile ? msgMatches?.[session.sessionFile] : undefined;
 	const hidden = useHiddenSessions();
-	const showEnded = useShowEnded();
-	const [showHiddenRows, setShowHiddenRows] = useState(false);
+	const showExtras = useShowExtras();
 	// Ended rows fold by default and sink below the active ones; the session
 	// currently on screen never folds away — its row must not vanish under
-	// the viewer.
+	// the viewer. The same toggle reveals this browser's hidden rows in their
+	// own group below the list.
 	const ordered = useMemo(
-		() => railRowsOrdered(filtered, showEnded, currentId),
-		[filtered, showEnded, currentId],
+		() => railRowsOrdered(filtered, showExtras, currentId),
+		[filtered, showExtras, currentId],
 	);
 	const endedCount = useMemo(() => filtered.reduce((n, s) => n + (isEndedStatus(s.status) ? 1 : 0), 0), [filtered]);
-	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(ordered, hidden), [ordered, hidden]);
-	const rows = showHiddenRows ? hiddenRows : visible;
+	const { visible } = useMemo(() => partitionHidden(ordered, hidden), [ordered, hidden]);
+	// Hidden rows come from the whole filtered listing (not the fold-ordered
+	// one) so the toggle's hidden count does not flap with the fold state.
+	const hiddenRows = useMemo(() => partitionHidden(filtered, hidden).hidden, [filtered, hidden]);
+	const toggleLabel = extrasLabel(endedCount, hiddenRows.length, showExtras);
+	// One flat list: active + shown ended, then (when revealed) the hidden
+	// group, introduced by a small label row inside the same list.
+	const rows = showExtras && hiddenRows.length > 0 ? [...visible, ...hiddenRows] : visible;
 	// Two-step delete: the first click arms the row, the second (within the
 	// arm window) confirms. No modal, no accidental deletes.
 	const [deleting, setDeleting] = useState<string | null>(null);
@@ -257,11 +263,6 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 		const timer = setTimeout(() => setDeleting(null), 3000);
 		return () => clearTimeout(timer);
 	}, [deleting]);
-	// Un-hiding (or deleting) the last hidden row would strand the picker on an
-	// empty hidden view with the toggle gone — drop back to the main list.
-	useEffect(() => {
-		if (showHiddenRows && hiddenRows.length === 0) setShowHiddenRows(false);
-	}, [showHiddenRows, hiddenRows.length]);
 	const renames = onRename !== undefined;
 	const deletes = onDeleted !== undefined;
 
@@ -310,14 +311,9 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 			{sessions === null && !error && <p className="hb-empty">loading…</p>}
 			{sessions === null && error && <p className="hb-empty">{error}</p>}
 			{sessions !== null && filtered.length === 0 && <p className="hb-empty">no matching sessions</p>}
-			{endedCount > 0 && (
-				<button type="button" className="hb-hidden-toggle" onClick={() => setShowEnded(!showEnded)}>
-					{showEnded ? `showing ${endedCount} ended — back` : `${endedCount} ended — show`}
-				</button>
-			)}
-			{hiddenRows.length > 0 && (
-				<button type="button" className="hb-hidden-toggle" onClick={() => setShowHiddenRows(value => !value)}>
-					{showHiddenRows ? `showing ${hiddenRows.length} hidden — back` : `${hiddenRows.length} hidden — show`}
+			{toggleLabel !== null && (
+				<button type="button" className="hb-extras-toggle" onClick={() => setShowExtras(!showExtras)}>
+					{toggleLabel}
 				</button>
 			)}
 			{rows.length > 0 && (
@@ -325,6 +321,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 					{rows.map(session => {
 						const current = session.id === currentId;
 						const isHiddenRow = hidden.has(session.id);
+						const firstHidden = showExtras && isHiddenRow && session.id === hiddenRows[0]?.id;
 						const completed = completedSet.has(session.id);
 						const badge =
 							session.activity?.inputRequired === true
@@ -337,18 +334,24 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 											? "done"
 										: null;
 						return (
-							<li key={session.id}>
+							<Fragment key={session.id}>
+							{firstHidden && (
+								<li className="hb-nav-extras-label" aria-hidden="true">
+									hidden
+								</li>
+							)}
+							<li>
 								<div
-									className={
-										current
-											? "hb-nav-row-wrap hb-nav-current"
-											: isHiddenRow
-												? "hb-nav-row-wrap hb-nav-hidden"
-												: isEndedStatus(session.status)
-													? "hb-nav-row-wrap hb-nav-ended"
-													: "hb-nav-row-wrap"
-									}
-								>
+										className={
+											current
+												? "hb-nav-row-wrap hb-nav-current"
+												: isHiddenRow
+													? "hb-nav-row-wrap hb-nav-hidden"
+													: isEndedStatus(session.status)
+														? "hb-nav-row-wrap hb-nav-ended"
+														: "hb-nav-row-wrap"
+										}
+									>
 									<button
 										type="button"
 										className="hb-nav-row"
@@ -450,6 +453,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 									)}
 								</div>
 							</li>
+							</Fragment>
 						);
 					})}
 				</ul>
