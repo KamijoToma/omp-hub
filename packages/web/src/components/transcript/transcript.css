@@ -674,3 +674,93 @@
 		max-width: 92%;
 	}
 }
+
+/* ---- math (KaTeX) ---- */
+
+.tr-md .katex-display {
+	margin: 8px 0;
+	/* Wide equations scroll instead of overflowing the transcript. */
+	overflow-x: auto;
+	overflow-y: hidden;
+	padding: 2px 0;
+}
+
+/* ---- mermaid diagrams ---- */
+
+/* Pre-hydration this is the fenced source; the svg replaces the content. */
+.tr-md .tr-md-mermaid {
+	margin: 8px 0;
+	padding: 8px;
+	border-radius: var(--radius-sm);
+	background: var(--bg);
+	text-align: center;
+	overflow-x: auto;
+}
+
+.tr-md .tr-md-mermaid svg {
+	max-width: 100%;
+	height: auto;
+}
+
+/* Unparseable source: show it verbatim instead of a blank box. */
+.tr-md .tr-md-mermaid--err {
+	color: var(--err);
+	font-family: var(--font-mono);
+	font-size: 12px;
+	text-align: left;
+	white-space: pre-wrap;
+}
+
+/* ---- syntax tokens (highlight.js, scoped to markdown code blocks) ----
+ * Same monochrome-plus-accent palette as tool-render.css. */
+
+.tr-md pre .hljs-comment,
+.tr-md pre .hljs-quote {
+	color: var(--fg-faint);
+	font-style: italic;
+}
+
+.tr-md pre .hljs-keyword,
+.tr-md pre .hljs-selector-tag,
+.tr-md pre .hljs-section,
+.tr-md pre .hljs-name,
+.tr-md pre .hljs-tag {
+	color: color-mix(in oklch, var(--accent) 72%, var(--fg));
+}
+
+.tr-md pre .hljs-string,
+.tr-md pre .hljs-regexp,
+.tr-md pre .hljs-addition {
+	color: var(--ok);
+}
+
+.tr-md pre .hljs-number,
+.tr-md pre .hljs-literal,
+.tr-md pre .hljs-symbol,
+.tr-md pre .hljs-bullet,
+.tr-md pre .hljs-link,
+.tr-md pre .hljs-meta {
+	color: var(--warn);
+}
+
+.tr-md pre .hljs-title,
+.tr-md pre .hljs-attr,
+.tr-md pre .hljs-attribute,
+.tr-md pre .hljs-selector-id,
+.tr-md pre .hljs-selector-class,
+.tr-md pre .hljs-type,
+.tr-md pre .hljs-built_in {
+	color: color-mix(in oklch, var(--fg) 80%, var(--accent));
+}
+
+.tr-md pre .hljs-deletion {
+	color: var(--err);
+}
+
+.tr-md pre .hljs-emphasis {
+	font-style: italic;
+}
+
+.tr-md pre .hljs-strong {
+	font-weight: 600;
+}
