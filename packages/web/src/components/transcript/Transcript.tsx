@@ -10,10 +10,10 @@ import { stripSystemNotice } from "../../lib/system-notice";
 import { LateDiagnostics } from "./LateDiagnostics";
 import { ChevronRight, History } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtDuration, fmtTokens } from "../../lib/format";
-import { setTranscriptMode, useTranscriptMode } from "../../lib/transcript-mode";
+import { useTranscriptMode } from "../../lib/transcript-mode";
 import { summarizeTurn } from "../../lib/turn-summary";
 import { fmtUsageCost, outputTokensPerSecond, usageDetail } from "../../lib/usage";
 import type { ToolRenderHost } from "../../tool-render";
@@ -147,7 +147,6 @@ function buildTurnGroups(model: {
 					if (agent === null) agent = openAgent();
 					agent.entries.push(entry);
 				} else if (msg.role === "user") {
-					if (bodyOnly && msg.synthetic === true) break;
 					if (msg.synthetic === true && agent !== null) {
 						// System-injected prompt (steering / auto-continue) mid-run:
 						// an inline row inside the running turn, not a new bubble.
@@ -647,11 +646,18 @@ function TurnGroupView({
 				const rewindTarget = last === undefined ? undefined : rewind?.targets.get(last.id);
 				return (
 					<div className={`tr-turn tr-turn--agent tr-turn--body${group.live ? " tr-turn--live" : ""}`}>
-						{group.entries.map(entry =>
-							entry.type === "message" && entry.message.role === "assistant"
-								? <BodyText key={entry.id} message={entry.message} />
-								: null,
-						)}
+						{group.entries.map(entry => {
+							if (entry.type !== "message") return null;
+							// Model text collapses to BodyText, but the turn's own
+							// synthetic prompts (steering / auto-continue) stay
+							// visible: the mode only narrows agent output, never
+							// user input.
+							if (entry.message.role === "assistant") return <BodyText key={entry.id} message={entry.message} />;
+							if (entry.message.role === "user" && entry.message.synthetic === true) {
+								return <Fragment key={entry.id}>{entryRow(entry)}</Fragment>;
+							}
+							return null;
+						})}
 						{group.ghost !== null && <BodyText message={group.ghost} />}
 						<div className="tr-footnote" title="Approximate sum of whole model requests, not exclusive thinking time; tool execution is excluded.">
 							{group.live ? "working…" : summary.modelMs === null ? "think time unavailable" : `think for ~${fmtDuration(summary.modelMs)}`}
@@ -803,17 +809,6 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				}
 			}}
 		>
-			<div className="tr-mode-bar">
-				<button
-					type="button"
-					className="tr-mode-switch"
-					aria-label="only show model answers"
-					aria-pressed={bodyOnly}
-					onClick={() => setTranscriptMode(bodyOnly ? "full" : "body")}
-				>
-					{bodyOnly ? "Only answers" : "Full transcript"}
-				</button>
-			</div>
 			{hasMoreHistory && (
 				<button type="button" className="tr-history" disabled={historyLoading} onClick={requestOlder}>
 					{historyLoading ? "loading older messages…" : historyError ?? "load older messages"}

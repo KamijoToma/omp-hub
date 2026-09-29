@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import type { GuestClient } from "../../lib/client";
 import { fmtCost, fmtDuration, fmtTokens } from "../../lib/format";
 import { decideTranscriptPoll } from "../../lib/transcript-poll";
-import { useTranscriptMode } from "../../lib/transcript-mode";
 import type { TranscriptProps } from "../transcript/Transcript";
 import { Transcript } from "../transcript/Transcript";
 
@@ -23,7 +22,6 @@ export function AgentDrawer(props: {
 	onClose(): void;
 }): ReactNode {
 	const { agent, progress, client, readOnly, host, onClose } = props;
-	const transcriptMode = useTranscriptMode();
 	const [entries, setEntries] = useState<readonly SessionEntry[]>([]);
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
@@ -138,7 +136,7 @@ export function AgentDrawer(props: {
 					</button>
 				</div>
 			</header>
-			{transcriptMode === "full" && p ? (
+			{p ? (
 				<div className="ag-stats">
 					<span className="ag-stat">
 						<span className="ag-stat-label">tok</span>
