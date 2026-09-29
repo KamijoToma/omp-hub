@@ -96,6 +96,10 @@ Guest prompts arrive through collab (`prompt` frames) and land via
 `session.promptCustomMessage({customType:"collab-prompt", …})` — handled entirely by
 `CollabHost`; the child does not proxy prompts itself in the MVP.
 
+The encrypted-relay history integration test supplies an isolated SDK model backed
+by a local OpenAI-compatible responder. This keeps its live guest-prompt and
+pagination assertions independent of the developer's credentials or CI secrets.
+
 ### 3. Web (`packages/web`)
 
 Vendored copy of `@oh-my-pi/collab-web` (MIT) plus a hub layer. Rationale: the guest client
@@ -123,10 +127,13 @@ Hub additions:
   `/s/<id>` selects a session in the same `HubFrame`, `/join` is an arbitrary-link
   guest (vendored connect screen), and `/usage/<machineId>` remains separate.
 - Token gate: token in `localStorage["omp-hub.token"]`, sent as `Authorization: Bearer`.
-- New tab: live machine list (`/api/machines`), full start form (machine, profile,
-  cwd, name, prompt, tools/superagent), and per-machine history with resume and
-  message search. The persistent rail owns the hub session list (`/api/sessions`
-  every 2s), status/selection, stop vs delete, and copyable attach/view links.
+- New tab: live machine list (`/api/machines`), namespace create/list and
+  selection for a full start form (machine, profile, cwd, name, prompt,
+  tools/superagent), plus per-machine history with resume and message search.
+  The persistent rail owns the hub session list (`/api/sessions` every 2s),
+  status/selection, stop vs delete, copyable attach/view links, and live-session
+  namespace moves through its Manage dialog. Deleting the current row selects
+  the next visible session, falling back to New with no survivors.
 - Session registry polling is shared by the rail and an authenticated
   `WarmSessions` coordinator. It keeps at most six writable `GuestClient`
   replicas connected across route changes, choosing the visible session first,
@@ -156,6 +163,17 @@ Hub additions:
   settings stay tied to the current live session. The dialog becomes a
   scrollable bottom sheet on phones; the unauthenticated `/join` page has no
   hub-settings entry.
+- The transcript's browser-local `omp.transcript-mode` defaults to `full`.
+  Its sticky switch works on hub sessions, `/join`, and subagent transcripts;
+  the authenticated settings center exposes the same choice. `body` keeps
+  user prompts and model text, hiding reasoning, tool details, transcript
+  metadata and the session stats strip without changing collab data. One
+  footnote per agent turn counts distinct tool-call ids and sums host-reported
+  **whole model request** durations (approximate, not exclusive thinking time
+  and excluding tool execution). Missing timing remains unknown; incomplete
+  history is marked until older entries load. Errors retain a short status,
+  and the full view remains one tap away.
+
 - `HubAlerts` stays mounted across authenticated routes and consumes the shared
   sessions-store poll; the persistent frame also tracks completed sessions while
   New is selected. Rail and settings notification toggles share a browser-local
@@ -178,6 +196,22 @@ Hub additions:
 - The authenticated machine history endpoint lists recent sessions from the daemon's omp store
   across projects, including paths, titles and first-message excerpts; all token holders can
   browse and resume them. Use a dedicated OS account to isolate private history.
+- **Fleet namespaces are a hub control-plane boundary.** A superagent child exposes
+  only the SDK-supplied `fleet_*` tools (`restrictToolNames` and
+  `allowRestrictedCustomTools`); the daemon permits only `/api/fleet/*`, supplies
+  its real child id as the owner, and the hub checks current membership on
+  each operation. Workers outside that namespace return 404 to its tools.
+  Admin users still hold the global `HUB_TOKEN`; namespaces are not per-user
+  ACLs or process/filesystem isolation. A manually shared collab write link
+  remains a capability even after namespace reassignment — rotating existing
+  links or isolating OS accounts is required for strict revocation.
+- **Fleet state is durable separately from the registry snapshot.** A sibling
+  `${HUB_STATE_FILE}.fleet.sqlite` stores namespace membership, control and
+  unread subscribed events. Persist the state directory as a unit; restore
+  without a membership row is fail-closed. Old daemon builds retain their
+  pre-namespace fleet proxy allowlist. Upgrade every daemon, stop old
+  superagents, and rotate `HUB_TOKEN` if an old daemon may still possess it;
+  otherwise do not treat namespaces as an isolation guarantee.
 - Relay endpoints stay unauthenticated for upstream wire compatibility; room IDs are random and
   payloads are AES-GCM sealed. There is no host-identity proof or global room quota: a viewer
   with a room link can claim the host slot after a disconnect, and an unauthenticated client can

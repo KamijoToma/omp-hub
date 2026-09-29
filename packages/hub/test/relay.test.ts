@@ -223,6 +223,26 @@ describe("relay", () => {
 		}
 	});
 
+	test("browser navigations to /r/* join links redirect to the web join UI", async () => {
+		const fetchCore = (init: RequestInit): Response | Promise<Response> | undefined =>
+			hub.core.fetch(new Request(`${httpBase}/r/jointestaaaa.k3y12345`, init), hub.server);
+
+		const get = await fetchCore({ headers: { accept: "text/html,application/xhtml+xml" } });
+		expect(get).toBeInstanceOf(Response);
+		expect((get as Response).status).toBe(302);
+		expect((get as Response).headers.get("location")).toBe(
+			`${httpBase}/#${new URL(httpBase).host}/r/jointestaaaa.k3y12345`,
+		);
+
+		const head = await fetchCore({ method: "HEAD", headers: { accept: "text/html" } });
+		expect(head).toBeInstanceOf(Response);
+		expect((head as Response).status).toBe(302);
+
+		// Non-browser clients (no HTML accept) keep the frozen relay rejections.
+		const plain = await fetch(`${httpBase}/r/jointestaaaa.k3y12345`);
+		expect(plain.status).toBe(404);
+	});
+
 	test("/healthz answers ok without auth", async () => {
 		const response = await fetch(`${httpBase}/healthz`);
 		expect(response.status).toBe(200);

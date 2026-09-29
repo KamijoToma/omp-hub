@@ -1,6 +1,6 @@
 import path from "node:path";
 import { isCompiledAgent } from "./native-mode";
-import { defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
+import { applyProfileSelection, defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
 import type { SubscriptionUsage } from "./subscriptions-worker";
 
 /** Longer than the ordinary command budget: providers may require multiple remote quota requests. */
@@ -28,12 +28,7 @@ export async function getSubscriptions(rawProfile: unknown, profilesRoot = defau
 	}
 	if (profile && !(await profileExists(profile, profilesRoot))) throw new Error("profile not found");
 	const env: Record<string, string | undefined> = { ...process.env };
-	delete env.OMP_PROFILE;
-	delete env.PI_PROFILE;
-	if (profile) {
-		env.OMP_PROFILE = profile;
-		env.PI_PROFILE = profile;
-	}
+	applyProfileSelection(env, profile);
 	const child = Bun.spawn(subscriptionWorkerCommand(), {
 		env,
 		stdout: "pipe",

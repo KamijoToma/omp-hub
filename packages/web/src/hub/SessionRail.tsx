@@ -10,6 +10,7 @@ import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename, restartSession } from "./api";
 import { clientPool } from "./client-pool";
+import { forgetComposerDraft } from "./composer-draft";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { extrasLabel, isEndedStatus, railRowsOrdered, setShowExtras, useShowExtras } from "./rail-filter";
@@ -28,19 +29,20 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
 };
 
 /** Dot states beyond the registry status: activity refinements + local completion. */
-type RailDotState = SessionStatus | "input" | "working" | "done";
+type RailDotState = SessionStatus | "input" | "working" | "done" | "unreachable";
 
 const DOT_LABEL: Record<RailDotState, string> = {
 	...STATUS_LABEL,
 	input: "needs input",
 	working: "working",
 	done: "task completed",
+	unreachable: "unreachable",
 };
 
 /**
  * Filter a hub session listing: case-insensitive substring on name, cwd,
- * machine, id, or profile. An absent profile reads as `"default"`, matching
- * the resume picker and the New tab's history filter.
+ * machine, id, profile, namespace, or controller. An absent profile reads as
+ * "default", matching the resume picker and the New tab's history filter.
  */
 export function filterHubSessions(sessions: readonly SessionRecord[], query: string): SessionRecord[] {
 	const needle = query.trim().toLowerCase();
@@ -51,7 +53,9 @@ export function filterHubSessions(sessions: readonly SessionRecord[], query: str
 			session.cwd.toLowerCase().includes(needle) ||
 			session.machineName.toLowerCase().includes(needle) ||
 			session.id.toLowerCase().includes(needle) ||
-			(session.profile ?? "default").toLowerCase().includes(needle),
+			(session.profile ?? "default").toLowerCase().includes(needle) ||
+			(session.namespaceId ?? "").toLowerCase().includes(needle) ||
+			(session.controllerId ?? "").toLowerCase().includes(needle),
 	);
 }
 
@@ -266,6 +270,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, o
 				() => {
 					sessionsStore.forget(session.id);
 					clientPool.discard(session.id);
+					forgetComposerDraft(session.id);
 					onDeleted?.(session);
 				},
 				(err: unknown) => pushToast("error", errorText(err)),
@@ -298,7 +303,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, o
 				type="text"
 				value={filter}
 				onChange={e => setFilter(e.target.value)}
-				placeholder="filter by name, directory, machine, profile, or messages"
+				placeholder="filter by name, directory, machine, namespace, controller, profile, or messages"
 				spellCheck={false}
 				autoComplete="off"
 			/>
@@ -317,16 +322,13 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, o
 						const isHiddenRow = hidden.has(session.id);
 						const firstHidden = showExtras && isHiddenRow && session.id === hiddenRows[0]?.id;
 						const completed = completedSet.has(session.id);
-						const badge =
-							session.activity?.inputRequired === true
-								? "input"
-								: session.activity?.handoff === true
-									? "handoff"
-									: session.activity?.working === true
-										? "working"
-										: completed
-											? "done"
-										: null;
+						let badge: "input" | "handoff" | "working" | "done" | null = null;
+						if (!session.unreachable) {
+							if (session.activity?.inputRequired) badge = "input";
+							else if (session.activity?.handoff) badge = "handoff";
+							else if (session.activity?.working) badge = "working";
+							else if (completed) badge = "done";
+						}
 						return (
 							<Fragment key={session.id}>
 							{firstHidden && (
@@ -365,9 +367,10 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, o
 										}
 									>
 										<span className="hb-nav-row-head">
-											<span className={`hb-dot hb-dot-${session.status}`} aria-label={STATUS_LABEL[session.status]} />
+											<span className={`hb-dot hb-dot-${session.unreachable ? "unreachable" : session.status}`} aria-label={session.unreachable ? "unreachable" : STATUS_LABEL[session.status]} />
 											<span className="hb-nav-name">{session.name}</span>
-											{session.status !== "live" && <span className="hb-status">{STATUS_LABEL[session.status]}</span>}
+											{(session.unreachable || session.status !== "live") &&
+												<span className="hb-status">{session.unreachable ? "unreachable" : STATUS_LABEL[session.status]}</span>}
 											{badge !== null && <span className={`hb-nav-badge hb-nav-badge-${badge}`}>{badge}</span>}
 										</span>
 										<span className="hb-nav-meta">
@@ -375,6 +378,8 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, o
 												{shortenPath(session.cwd)}
 											</span>
 											<span className="hb-mono">{session.machineName}</span>
+											{session.namespaceId && <span className="hb-mono" title="fleet namespace">{session.namespaceId}</span>}
+											{session.controllerId && <span className="hb-mono" title="fleet controller">controller: {session.controllerId}</span>}
 											<RailTime session={session} />
 										</span>
 										{hitOf(session) !== undefined && (
@@ -491,6 +496,7 @@ export function railGlyphLabel(session: SessionRecord): string {
 /** Collapsed-strip dot state: live sessions refine to activity + local completion. */
 function railDotState(session: SessionRecord, completed: ReadonlySet<string>): RailDotState {
 	if (session.status !== "live") return session.status;
+	if (session.unreachable) return "unreachable";
 	if (session.activity?.inputRequired === true) return "input";
 	// Handoff generation is a model call with `isStreaming` false — still busy.
 	if (session.activity?.handoff === true) return "working";
@@ -503,16 +509,12 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 	const label = railGlyphLabel(session);
 	const completed = useCompletedSessions();
 	const dot = railDotState(session, completed);
-	const activity =
-		session.activity?.inputRequired === true
-			? " · needs input"
-			: session.activity?.handoff === true
-				? " · handoff"
-				: session.activity?.working === true
-					? " · working"
-					: dot === "done"
-						? " · done"
-					: "";
+	let activity = "";
+	if (session.unreachable) activity = " · unreachable";
+	else if (session.activity?.inputRequired) activity = " · needs input";
+	else if (session.activity?.handoff) activity = " · handoff";
+	else if (session.activity?.working) activity = " · working";
+	else if (dot === "done") activity = " · done";
 	return (
 		<li>
 			<button
@@ -520,7 +522,7 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 				className={current ? "hb-rail-row hb-rail-current" : "hb-rail-row"}
 				onClick={() => onSwitch(session.id)}
 				aria-current={current ? "page" : undefined}
-				title={`${session.name} · ${STATUS_LABEL[session.status]}${activity}`}
+				title={`${session.name} · ${STATUS_LABEL[session.status]}${session.namespaceId ? ` · namespace ${session.namespaceId}` : ""}${session.controllerId ? ` · controller ${session.controllerId}` : ""}${activity}`}
 			>
 				<span className="hb-rail-glyph" style={{ background: `hsl(${glyphHue(session.id)} 42% 40%)` }} aria-hidden="true">
 					{label}
@@ -546,6 +548,11 @@ export interface SessionRailProps {
 	onNew(): void;
 	/** Switches to another session; the page owns navigation and warnings. */
 	onSwitch(sessionId: string): void;
+	/**
+	 * Fires after a picker-row delete succeeds; the frame replaces the deleted
+	 * current session with another visible session or the pinned New tab.
+	 */
+	onDeleted?(session: SessionRecord): void;
 	/** Cross-session alert toggle state (persisted; see `session-alerts.ts`). */
 	alertsOn: boolean;
 	/** Flips the alert toggle; the page owns permission prompting and polling. */
@@ -554,7 +561,7 @@ export interface SessionRailProps {
 }
 
 /** The docked/overlay session drawer: collapsed icon strip or the full picker. */
-export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSwitch, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
+export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSwitch, onDeleted, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
 	const hidden = useHiddenSessions();
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
@@ -632,10 +639,7 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSw
 								onPick={pick}
 								onRename={openRename}
 								onActions={setActions}
-								onDeleted={session => {
-									// Deleting the session you are attached to leaves the page.
-									if (session.id === currentId) onNew();
-								}}
+								onDeleted={onDeleted}
 							/>
 						</div>
 					</>

@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
+import type { SessionRecord } from "./api";
 import { HomePage } from "./HomePage";
+import { useHiddenSessions } from "./hidden-sessions";
 import { clearCompletedSession, useCompletedSessionTracker } from "./rail-completion";
+import { pickFallbackSessionId } from "./rail-filter";
 import { navigate } from "./router";
 import { SessionPage } from "./SessionPage";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { requestAlertPermission, setAlertsEnabled, useAlertsEnabled } from "./session-alerts";
+import { sessionsStore } from "./sessions-store";
 import { steerPendingCount } from "./steering-queue";
 import { pushToast } from "./toasts";
 
@@ -84,6 +88,16 @@ export function HubFrame({ id, onLogout, onOpenSettings }: HubFrameProps): React
 		navigate("/");
 	}, [id, warnPending]);
 
+	// The registry has already forgotten this row when the callback runs.
+	// Replace the dead URL with another visible session, or the pinned New tab.
+	const hidden = useHiddenSessions();
+	const handleDeleted = useCallback((session: SessionRecord): void => {
+		if (id === null || session.id !== id) return;
+		setSwitcherOpen(false);
+		const next = pickFallbackSessionId(id, sessionsStore.getSnapshot().sessions, hidden);
+		navigate(next === null ? "/" : `/s/${next}`, true);
+	}, [id, hidden]);
+
 	// The New tab has no visited session; completions there remain visible in the rail.
 	useCompletedSessionTracker(id ?? "");
 	useEffect(() => {
@@ -110,6 +124,7 @@ export function HubFrame({ id, onLogout, onOpenSettings }: HubFrameProps): React
 				onToggleExpanded={toggleRailExpanded}
 				onNew={openNew}
 				onSwitch={switchSession}
+				onDeleted={handleDeleted}
 				alertsOn={alertsOn}
 				onToggleAlerts={toggleAlerts}
 				onOpenSettings={() => onOpenSettings("browser")}
@@ -130,9 +145,7 @@ export function HubFrame({ id, onLogout, onOpenSettings }: HubFrameProps): React
 						onOpenSettings("browser");
 					}}
 					onClose={() => setSwitcherOpen(false)}
-					onDeleted={session => {
-						if (session.id === id) openNew();
-					}}
+					onDeleted={handleDeleted}
 				/>
 			)}
 		</div>

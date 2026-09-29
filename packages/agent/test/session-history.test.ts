@@ -18,8 +18,40 @@ async function until(what: string, predicate: () => boolean): Promise<void> {
 }
 
 test("browser guest sees the newest page first and can page back over the real encrypted relay", async () => {
+	const requests: string[] = [];
 	const root = await mkdtemp(path.join(tmpdir(), "omp-history-"));
 	const cwd = path.join(root, "project");
+	const agentDir = path.join(root, "agent");
+	await mkdir(agentDir);
+	const provider = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			if (new URL(request.url).pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
+			requests.push(await request.text());
+			const chunk = {
+				id: "history-test-reply",
+				object: "chat.completion.chunk",
+				created: 0,
+				model: "history-local",
+				choices: [{ index: 0, delta: { role: "assistant", content: "offline history reply" }, finish_reason: "stop" }],
+			};
+			return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+				headers: { "content-type": "text/event-stream" },
+			});
+		},
+	});
+	await writeFile(path.join(agentDir, "models.json"), JSON.stringify({
+		providers: {
+			"history-test": {
+				api: "openai-completions",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+				apiKey: "offline-test-key",
+				models: [{ id: "history-local", name: "History local", reasoning: false, input: ["text"],
+					contextWindow: 32768, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+			},
+		},
+	}));
 	await mkdir(cwd);
 	const sessionFile = path.join(root, "history.jsonl");
 	const lines = [JSON.stringify({
@@ -51,7 +83,7 @@ test("browser guest sees the newest page first and can page back over the real e
 	let guest: GuestClient | undefined;
 	let viewer: GuestClient | undefined;
 	try {
-		await supervisor.spawn({ id: "s_history01", cwd, sessionFile, relayUrl: hub.url, webUrl: "" });
+		await supervisor.spawn({ id: "s_history01", cwd, agentDir, sessionFile, relayUrl: hub.url, webUrl: "" });
 		const payload = await ready.promise;
 		guest = new GuestClient(payload.links.full, "history-test");
 		guest.connect();
@@ -63,8 +95,18 @@ test("browser guest sees the newest page first and can page back over the real e
 		expect(snap.entries.some(entry => entry.id === "entry-0")).toBe(false);
 		expect(snap.hasMoreHistory).toBe(true);
 		expect(snap.readOnly).toBe(false);
+		const selected = await supervisor.cmd("s_history01", {
+			reqId: "c_history_model", cmd: "set-model", provider: "history-test", modelId: "history-local",
+		});
+		expect(selected).toMatchObject({ ok: true, data: { switched: true } });
 		guest.sendPrompt("browser interaction before loading history");
-		await until("live guest prompt", () => JSON.stringify(guest!.getSnapshot().entries.at(-1)).includes("browser interaction before loading history"));
+		await until("live guest prompt", () => guest!.getSnapshot().entries.some(entry =>
+			entry.type === "custom_message" && entry.customType === "collab-prompt" &&
+			JSON.stringify(entry).includes("browser interaction before loading history")));
+		await until("offline assistant reply", () => guest!.getSnapshot().entries.some(entry =>
+			entry.type === "message" && entry.message.role === "assistant" &&
+			JSON.stringify(entry).includes("offline history reply")));
+		expect(requests.some(body => body.includes("browser interaction before loading history"))).toBe(true);
 		snap = guest.getSnapshot();
 		expect(snap.hasMoreHistory).toBe(true);
 
@@ -97,6 +139,7 @@ test("browser guest sees the newest page first and can page back over the real e
 		guest?.close();
 		await supervisor.stopAll("history test done");
 		hub.stop();
+		provider.stop(true);
 		await rm(root, { recursive: true, force: true });
 	}
 }, 120_000);

@@ -5,6 +5,7 @@ import { errorText, stopSession, type SessionRecord } from "./api";
 import { LinksSection } from "./LinksModal";
 import { Modal } from "./Modal";
 import { sessionsStore } from "./sessions-store";
+import { SessionNamespaceControl } from "./SessionNamespaceControl";
 import { pushToast } from "./toasts";
 
 /** Stop preserves the hub record; delete in the rail remains a separate action. */
@@ -14,7 +15,7 @@ export function SessionActionsModal({ record, onClose }: { record: SessionRecord
 	const canStop = record.status === "live" || record.status === "starting";
 
 	const stop = (): void => {
-		if (stopping || !canStop) return;
+		if (stopping || !canStop || record.unreachable) return;
 		setStopping(true);
 		setError(null);
 		void stopSession(record.id).then(
@@ -34,13 +35,20 @@ export function SessionActionsModal({ record, onClose }: { record: SessionRecord
 		<Modal title={`Manage ${record.name}`} onClose={onClose}>
 			{canStop && (
 				<div className="hb-session-manage-stop">
-					<button type="button" className="sh-btn sh-btn-stop" onClick={stop} disabled={stopping}>
+					<button
+						type="button"
+						className="sh-btn sh-btn-stop"
+						onClick={stop}
+						disabled={stopping || record.unreachable === true}
+						title={record.unreachable ? "machine is offline; stop after it reconnects" : undefined}
+					>
 						<Square size={12} aria-hidden="true" />
 						{stopping ? "stopping…" : "Stop session"}
 					</button>
 					<p className="hb-card-note">Stops the agent but keeps this session in the hub list for restart.</p>
 				</div>
 			)}
+			{record.status === "live" && <SessionNamespaceControl record={record} />}
 			{error && <div className="sh-connect-error" role="alert">{error}</div>}
 			<LinksSection record={record} />
 			<p className="hb-card-note">Anyone with an attach link can prompt this session; the view link is read-only.</p>

@@ -26,7 +26,7 @@ function fixtureSupervisor(fleet?: NonNullable<ConstructorParameters<typeof Supe
 }
 
 test("superagent child's fleet-req is proxied and answered with the handler's payload", async () => {
-	const calls: Array<{ reqId: string; method: string; path: string; body?: unknown }> = [];
+	const calls: Array<{ ownerId: string; reqId: string; method: string; path: string; body?: unknown }> = [];
 	const { supervisor, ready } = fixtureSupervisor(async req => {
 		calls.push(req);
 		return { ok: true, status: 200, body: { machines: [{ id: "m1" }] } };
@@ -44,10 +44,10 @@ test("superagent child's fleet-req is proxied and answered with the handler's pa
 		reqId: "c_fleet1",
 		cmd: "emit-fleet-req",
 		method: "GET",
-		path: "/api/machines",
+		path: "/api/fleet/machines",
 	});
 	expect(ack.ok).toBe(true);
-	expect(calls).toEqual([{ reqId: "fleet_c_fleet1", method: "GET", path: "/api/machines" }]);
+	expect(calls).toEqual([{ ownerId: "s_fleet_ok", reqId: "fleet_c_fleet1", method: "GET", path: "/api/fleet/machines" }]);
 	expect(ack).toEqual({
 		ok: true,
 		data: { t: "fleet-res", reqId: "fleet_c_fleet1", ok: true, status: 200, body: { machines: [{ id: "m1" }] } },
@@ -67,7 +67,7 @@ test("non-superagent child's fleet-req gets the refusal", async () => {
 		reqId: "c_fleet2",
 		cmd: "emit-fleet-req",
 		method: "GET",
-		path: "/api/sessions",
+		path: "/api/fleet/sessions",
 	});
 	expect(ack).toEqual({
 		ok: true,
@@ -94,7 +94,7 @@ test("a throwing fleet handler answers ok:false exactly once", async () => {
 		reqId: "c_fleet3",
 		cmd: "emit-fleet-req",
 		method: "POST",
-		path: "/api/notices",
+		path: "/api/fleet/notices",
 		body: { message: "hi" },
 	});
 	expect(ack).toEqual({
@@ -103,4 +103,21 @@ test("a throwing fleet handler answers ok:false exactly once", async () => {
 	});
 
 	await supervisor.stopAll("fleet throw test done");
+});
+
+test("worker event identity is the actual child, never a forged frame id", async () => {
+	const event = Promise.withResolvers<{ id: string; kind: string; requestId?: string }>();
+	const supervisor = new Supervisor({
+		onReady: () => {},
+		onError: () => {},
+		onExit: () => {},
+		onFleetEvent: (id, frame) => event.resolve({ id, kind: frame.kind, requestId: frame.requestId }),
+	}, createLogger("fleet-events-test"), { hostEntry: FIXTURE });
+	await supervisor.spawn({ id: "s_real", cwd: import.meta.dir, relayUrl: "ws://127.0.0.1:1", webUrl: "" });
+	expect(await supervisor.cmd("s_real", { reqId: "r1", cmd: "emit-fleet-event" })).toEqual({
+		ok: true, data: { emitted: true },
+	});
+	expect(await event.promise).toEqual({ id: "s_real", kind: "input_required", requestId: "ask_1" });
+	expect(supervisor.notifyFleet("s_real", { id: "event1" })).toBe(false);
+	await supervisor.stopAll("fleet event test done");
 });

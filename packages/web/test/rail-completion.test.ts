@@ -26,6 +26,8 @@ function record(overrides: Partial<SessionRecord>): SessionRecord {
 		machineName: "dev-machine",
 		cwd: "/home/sky/omp-hub",
 		name: "auth refactor",
+		namespaceId: null,
+		membershipVersion: 0,
 		status: "live",
 		startedAt: 0,
 		...overrides,
@@ -71,6 +73,10 @@ describe("diffCompletedSessions", () => {
 
 	test("does not mark a working→exited transition (status dot covers it)", () => {
 		expect(diffCompletedSessions([WORKING], [record({ status: "exited" })])).toEqual([]);
+	});
+
+	test("a daemon disconnect does not mark an unfinished worker as completed", () => {
+		expect(diffCompletedSessions([WORKING], [record({ unreachable: true, activity: undefined })])).toEqual([]);
 	});
 
 	test("brand-new records are baseline, not edges", () => {

@@ -14,6 +14,8 @@ function record(overrides: Partial<SessionRecord>): SessionRecord {
 		machineName: "dev-machine",
 		cwd: "/srv/api",
 		name: "api work",
+		namespaceId: null,
+		membershipVersion: 0,
 		status: "live",
 		startedAt: Date.now(),
 		...overrides,

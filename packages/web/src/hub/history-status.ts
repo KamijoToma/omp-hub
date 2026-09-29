@@ -8,7 +8,7 @@
 import type { MachineSession, SessionRecord } from "./api";
 
 /** Agent state shown on one history card row. */
-export type HistoryStatusKind = "working" | "input" | "idle";
+export type HistoryStatusKind = "working" | "input" | "idle" | "unreachable";
 
 export interface HistoryStatus {
 	/** Hub session id backing the row. */
@@ -19,7 +19,7 @@ export interface HistoryStatus {
 /**
  * State of the live hub session holding `entry`'s file, or null when none
  * exists on `machineId` (never started from the hub, or already exited).
- * `input` outranks `working`; absent activity (older agents) reads as idle.
+ * `unreachable` outranks activity; otherwise `input` outranks `working`.
  */
 export function historyStatus(
 	entry: Pick<MachineSession, "path">,
@@ -31,6 +31,7 @@ export function historyStatus(
 			session.machineId === machineId && session.status === "live" && session.sessionFile === entry.path,
 	);
 	if (!live) return null;
+	if (live.unreachable) return { sessionId: live.id, kind: "unreachable" };
 	if (live.activity?.inputRequired === true) return { sessionId: live.id, kind: "input" };
 	if (live.activity?.working === true) return { sessionId: live.id, kind: "working" };
 	return { sessionId: live.id, kind: "idle" };

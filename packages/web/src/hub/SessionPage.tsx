@@ -12,6 +12,7 @@ import { pushToast, useLocalToasts } from "./toasts";
 import { relTime } from "../lib/format";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { clientPool } from "./client-pool";
+
 import { SessionView } from "./SessionView";
 
 export interface SessionPageProps {
@@ -53,6 +54,8 @@ function SessionStatusCard({ id, record, loadError, onNew }: { id: string; recor
 			<div className="hb-card hb-status-card">
 				<div className="hb-card-title">{record?.name ?? "session"}</div>
 				{record && <div className="hb-card-note hb-mono">{record.cwd}</div>}
+				{record?.namespaceId && <div className="hb-card-note">namespace: {record.namespaceId}</div>}
+				{record?.controllerId && <div className="hb-card-note">controller: {record.controllerId}</div>}
 				{record === null && loadError === null && (
 					<>
 						<div className="sh-connect-sub">Loading session…</div>

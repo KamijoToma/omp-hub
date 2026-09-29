@@ -2,11 +2,12 @@
  * MCP management commands against the real session host (docs/protocol.md §2
  * `mcp-*`): config add/remove/enable/list round-trip the user and project
  * `mcp.json` files the SDK discovery reads, and secrets (env values, tokens,
- * URL queries) never ride the reply. The child's user-scope path resolves
- * through `PI_CODING_AGENT_DIR`, so the tests run against an isolated agent
- * dir. The relay is an in-process WS stub; the live session starts with no
- * servers configured, so `mcp-list` rows carry no live section until the
- * configs exist — which is exactly the "apply on restart" story the modal
+ * URL queries) never ride the reply. The child runs under an isolated `HOME`
+ * (the supervisor strips profile-selecting env, so the agent dir cannot be
+ * redirected that way), keeping user- and project-scope configs out of the
+ * real `~/.omp`. The relay is an in-process WS stub; the live session starts
+ * with no servers configured, so `mcp-list` rows carry no live section until
+ * the configs exist — which is exactly the "apply on restart" story the modal
  * tells.
  */
 
@@ -26,7 +27,9 @@ interface CommandOutcome {
 }
 
 function configOf(root: string, scope: "user" | "project"): string {
-	return scope === "user" ? path.join(root, "agent", "mcp.json") : path.join(root, "project", ".omp", "mcp.json");
+	return scope === "user"
+		? path.join(root, "home", ".omp", "agent", "mcp.json")
+		: path.join(root, "project", ".omp", "mcp.json");
 }
 
 test("session host manages MCP server config via mcp-* commands", async () => {
@@ -42,12 +45,18 @@ test("session host manages MCP server config via mcp-* commands", async () => {
 	});
 
 	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-mcp-host-"));
+	const agentDir = path.join(root, "home", ".omp", "agent");
 	await mkdir(path.join(root, "project"), { recursive: true });
-	await mkdir(path.join(root, "agent"), { recursive: true });
+	await mkdir(agentDir, { recursive: true });
 
-	// The child resolves `getMCPConfigPath("user")` from this env var at module
-	// load (pi-utils dirs); the supervisor forwards the test process env.
-	process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
+	// The supervisor strips profile-selecting env (OMP_PROFILE/PI_PROFILE/
+	// PI_CODING_AGENT_DIR) from every child by design, so the child's agent dir
+	// cannot be redirected through the environment. Isolate the child's home
+	// instead: pi-utils resolves every dir-affecting path (user-scope
+	// `getMCPConfigPath("user")` included) under this HOME, and the spawn
+	// config's explicit agentDir points at the same directory.
+	const savedHome = process.env.HOME;
+	process.env.HOME = path.join(root, "home");
 
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const exits: string[] = [];
@@ -65,7 +74,7 @@ test("session host manages MCP server config via mcp-* commands", async () => {
 		await supervisor.spawn({
 			id: "s_mcp001",
 			cwd: path.join(root, "project"),
-			agentDir: path.join(root, "agent"),
+			agentDir,
 			relayUrl: `ws://127.0.0.1:${relay.port}`,
 			webUrl: "",
 		});
@@ -233,7 +242,8 @@ test("session host manages MCP server config via mcp-* commands", async () => {
 		const alive = await cmd("c_mcp19", { cmd: "get-state" });
 		expect(alive.ok).toBe(true);
 	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
+		if (savedHome === undefined) delete process.env.HOME;
+		else process.env.HOME = savedHome;
 		await supervisor.stopAll("mcp test done");
 		relay.stop(true);
 		await rm(root, { recursive: true, force: true });

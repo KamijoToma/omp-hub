@@ -14,6 +14,13 @@ export interface SessionLinks {
 	webView: string;
 }
 
+/** Fleet namespace managed by a hub administrator. Null machineIds allows every machine. */
+export interface NamespaceRecord {
+	id: string;
+	name: string;
+	machineIds: string[] | null;
+}
+
 export interface SessionRecord {
 	id: string;
 	machineId: string;
@@ -26,6 +33,14 @@ export interface SessionRecord {
 	superagent?: true;
 	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
 	tools?: string[];
+	/** Null means this session is outside the fleet. */
+	namespaceId: string | null;
+	/** Incremented on each namespace membership change; use for conditional moves. */
+	membershipVersion: number;
+	/** Session currently allowed to control this worker, if any. */
+	controllerId?: string;
+	/** The daemon socket is down; the child may still be running. */
+	unreachable?: true;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -63,6 +78,8 @@ export interface StartSessionRequest {
 	superagent?: boolean;
 	/** Restrict the session to exactly these tools (protocol §2 `start.tools`); omitted means the default set. */
 	tools?: string[];
+	/** Fleet namespace for this session; required for superagents. */
+	namespaceId?: string;
 	/**
 	 * Arm the one-shot prewalk hand-off at startup (protocol §2 `start.prewalk`,
 	 * 0.9.0+): `true` targets the SDK default (`@smol`), a string is an explicit
@@ -468,6 +485,23 @@ export async function getSession(id: string): Promise<SessionRecord> {
 	return (await api<{ session: SessionRecord }>(`/api/sessions/${encodeURIComponent(id)}`)).session;
 }
 
+export async function getNamespaces(): Promise<NamespaceRecord[]> {
+	return (await api<{ namespaces: NamespaceRecord[] }>("/api/namespaces")).namespaces;
+}
+
+export async function createNamespace(name: string, machineIds?: string[] | null): Promise<NamespaceRecord> {
+	const body = machineIds === undefined ? { name } : { name, machineIds };
+	return (await api<{ namespace: NamespaceRecord }>("/api/namespaces", { method: "POST", body: JSON.stringify(body) })).namespace;
+}
+
+export async function setSessionNamespace(id: string, namespaceId: string | null, expectedVersion: number): Promise<SessionRecord> {
+	const reply = await api<{ session: SessionRecord }>(`/api/sessions/${encodeURIComponent(id)}/namespace`, {
+		method: "PUT",
+		body: JSON.stringify({ namespaceId, expectedVersion }),
+	});
+	return reply.session;
+}
+
 export async function startSession(input: StartSessionRequest): Promise<SessionRecord> {
 	const body: StartSessionRequest = { machineId: input.machineId, cwd: input.cwd };
 	if (input.name) body.name = input.name;
@@ -475,6 +509,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	if (input.superagent) body.superagent = true;
+	if (input.namespaceId !== undefined) body.namespaceId = input.namespaceId;
 	if (input.tools?.length) body.tools = input.tools;
 	if (input.prewalk !== undefined) body.prewalk = input.prewalk;
 	if (input.planYolo !== undefined) body.planYolo = input.planYolo;

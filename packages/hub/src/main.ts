@@ -46,10 +46,15 @@ log.info(`web dist: ${hub.cfg.webDist}`);
 log.info(`state file: ${hub.cfg.stateFile ?? "off"}`);
 if (tlsConfigured(hub.cfg)) log.info(`tls: ${hub.cfg.tlsCert} + ${hub.cfg.tlsKey}`);
 
+let shuttingDown = false;
 const shutdown = (signal: string): void => {
+	if (shuttingDown) return;
+	shuttingDown = true;
 	log.info(`${signal} received — shutting down`);
-	void hub.flushState().finally(() => {
-		hub.stop();
+	void hub.core.shutdown().catch(err => {
+		log.error(`shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+	}).finally(() => {
+		hub.server.stop(true);
 		process.exit(0);
 	});
 };
@@ -90,7 +95,9 @@ async function startWatch(current: Hub, watchOverrides: Partial<Config>): Promis
 			const reloadable = live.server as unknown as ReloadableServer<HubSocketData>;
 			reloadable.reload({ fetch: (req, srv) => next.fetch(req, srv), websocket: next.websocket });
 			await live.core.stopTimers();
+			next.start();
 			live = hubView(live.server, next);
+			hub = live; // signal shutdown must use the swapped core, not the drained one
 			log.info("hot reload complete — handlers swapped, sockets kept");
 		} catch (err) {
 			log.error(`hot reload failed (keeping the previous build): ${err instanceof Error ? err.message : String(err)}`);

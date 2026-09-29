@@ -5,6 +5,7 @@
  * `start`/`stop` dispatch back to a named machine.
  */
 import { derivePublicBase, type Config } from "./config";
+import type { FleetEvent, FleetState } from "./fleet-state";
 import { log } from "./log";
 import { isTerminalStatus, randomId, type SessionLinks, type SessionStatus, type SessionStore } from "./sessions";
 
@@ -69,7 +70,9 @@ export type AgentCommand =
 	| { t: "stop"; id: string; reason?: string }
 	| { t: "ping"; ts: number }
 	| ({ t: "cmd" } & CmdRequest)
-	| { t: "usage-req"; reqId: string; method: "GET" | "HEAD" | "POST"; path: string; bodyB64?: string };
+	| { t: "usage-req"; reqId: string; method: "GET" | "HEAD" | "POST"; path: string; bodyB64?: string }
+	| { t: "fleet-notification"; id: string; event: FleetEvent }
+	| { t: "session-event-ack"; eventId: string };
 
 /** Session commands a session child answers (protocol §2 "Session commands"). */
 export type SessionCmdName =
@@ -103,10 +106,15 @@ export type SessionCmdName =
 	| "pause"
 	| "cycle-model"
 	| "get-settings"
+	| "fleet-get-messages"
+	| "fleet-get-input"
+	| "fleet-answer-input"
+	| "fleet-message"
+	| "fleet-interrupt"
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "get-subscriptions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "get-subscriptions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -123,7 +131,7 @@ export interface CmdRequest {
 	id?: string;
 	reqId: string;
 	cmd: CmdName;
-	/** `list-dir` target directory; omitted lists the agent user's home. */
+	/** `list-dir` directory or `read-session-messages` managed session file. */
 	path?: string;
 	/** `list-sessions` project filter; omitted lists every project. */
 	cwd?: string;
@@ -198,6 +206,14 @@ export interface CmdRequest {
 	settingId?: string;
 	/** `set-setting` override value (JSON-safe); `null` clears it (protocol §2, 0.9.0+). */
 	value?: unknown;
+	/** Fleet session message cursor or pending UI request identity. */
+	cursor?: string;
+	requestId?: string;
+	answer?: string;
+	clearQueue?: boolean;
+	/** Fleet message page size. */
+	pageLimit?: number;
+	messageMode?: "start" | "steer" | "follow_up";
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */
@@ -230,6 +246,8 @@ interface Connection {
 	version: string;
 	connectedAt: number;
 	lastHb: number;
+	/** Sessions present at hello or reissued under the same id; eligible for heartbeat reconciliation. */
+	preexistingIds: Set<string>;
 }
 
 /** One live agent connection, handed over between hub cores on hot reload. */
@@ -239,7 +257,13 @@ export interface AdoptedConnection {
 	version: string;
 	connectedAt: number;
 	lastHb: number;
+	preexistingIds: Set<string>;
 }
+export interface FleetRecoveryState {
+	events: FleetEvent[];
+	owners: string[];
+}
+
 
 /** One in-flight `cmd`, keyed by `reqId` until the agent answers or the timeout fires. */
 interface PendingCmd {
@@ -314,6 +338,20 @@ function num(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** `x.y.z` triple of a daemon version; null for unknown or test-only versions. */
+export function versionTriple(version: string): [number, number, number] | null {
+	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+	if (!match) return null;
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Old daemons still proxy unrestricted /api/* fleet requests and are unsafe as operators. */
+export function supportsFleetNamespace(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 12));
+}
+
 function parseLinks(value: unknown): SessionLinks | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const raw = value as Frame;
@@ -328,24 +366,35 @@ function parseLinks(value: unknown): SessionLinks | undefined {
 export class AgentRegistry {
 	readonly #cfg: Config;
 	readonly #sessions: SessionStore;
+	readonly #fleet: FleetState;
 	readonly #machines = new Map<string, MachineState>();
 	readonly #connections = new Map<string, Connection>();
 	readonly #pending = new Map<string, PendingCmd>();
+	/** Sent this connection; unacked inbox entries replay after reconnect, not on every heartbeat. */
+	readonly #fleetDelivered = new Set<string>();
+	/** Terminal/unreachable events cannot be source-retried; keep them until SQLite accepts. */
+	readonly #pendingDerivedEvents = new Map<string, FleetEvent>();
+	readonly #pendingOwnerCleanup = new Set<string>();
 	#watchdog: Timer | null = null;
 	#pinger: Timer | null = null;
+	#stopped = false;
+	#nextFleetPruneAt = Date.now() + 60 * 60 * 1000;
 
-	constructor(cfg: Config, sessions: SessionStore) {
+	constructor(cfg: Config, sessions: SessionStore, fleet: FleetState) {
 		this.#cfg = cfg;
 		this.#sessions = sessions;
+		this.#fleet = fleet;
 	}
 
 	/** Starts the heartbeat watchdog and the ping ticker. */
 	start(): void {
+		this.#stopped = false;
 		this.#watchdog ??= setInterval(() => this.#sweep(), WATCHDOG_INTERVAL_MS);
 		this.#pinger ??= setInterval(() => this.#pingAll(), PING_INTERVAL_MS);
 	}
 
 	stop(): void {
+		this.#stopped = true;
 		if (this.#watchdog !== null) clearInterval(this.#watchdog);
 		if (this.#pinger !== null) clearInterval(this.#pinger);
 		this.#watchdog = null;
@@ -397,6 +446,8 @@ export class AgentRegistry {
 			case "hb": {
 				conn.lastHb = Date.now();
 				this.#reconcileSessions(conn, frame.sessions);
+				this.#replayFleet(machineId);
+				this.retryFleetEvents();
 				return;
 			}
 			case "pong":
@@ -404,10 +455,11 @@ export class AgentRegistry {
 				return;
 			case "session-ready": {
 				const id = str(frame.id);
-				if (!id) return;
+				const record = id ? this.#sessions.get(id) : undefined;
+				if (!record || record.machineId !== machineId || isTerminalStatus(record.status)) return;
 				const links = parseLinks(frame.links);
 				const pid = num(frame.pid);
-				this.#sessions.markReady(id, {
+				this.#sessions.markReady(record.id, {
 					sessionFile: str(frame.sessionFile),
 					pid: pid === undefined ? undefined : Math.trunc(pid),
 					links,
@@ -416,21 +468,27 @@ export class AgentRegistry {
 			}
 			case "session-error": {
 				const id = str(frame.id);
-				if (!id) return;
-				this.#sessions.markFailed(id, str(frame.error) ?? "session failed");
+				const record = id ? this.#sessions.get(id) : undefined;
+				if (!record || record.machineId !== machineId || isTerminalStatus(record.status)) return;
+				this.#sessions.markFailed(record.id, str(frame.error) ?? "session failed");
+				this.#sessionEnded(record.id, "session_failed", str(frame.eventId));
 				return;
 			}
 			case "session-exit": {
 				const id = str(frame.id);
-				if (!id) return;
-				this.#sessions.markExited(id, str(frame.reason) ?? "session exited");
+				const record = id ? this.#sessions.get(id) : undefined;
+				if (!record || record.machineId !== machineId || isTerminalStatus(record.status)) return;
+				this.#sessions.markExited(record.id, str(frame.reason) ?? "session exited");
+				this.#sessionEnded(record.id, "session_exited", str(frame.eventId));
 				return;
 			}
 			case "session-activity": {
 				// Malformed samples are dropped, never guessed (protocol §2).
 				const id = str(frame.id);
-				if (!id || typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") return;
-				this.#sessions.setActivity(id, {
+				const record = id ? this.#sessions.get(id) : undefined;
+				if (!record || record.machineId !== machineId || isTerminalStatus(record.status) ||
+					typeof frame.working !== "boolean" || typeof frame.inputRequired !== "boolean") return;
+				this.#sessions.setActivity(record.id, {
 					working: frame.working,
 					inputRequired: frame.inputRequired,
 					// §2 `handoff` bit; absent on older agents and cleared by the next
@@ -441,7 +499,37 @@ export class AgentRegistry {
 				// the registry label follows it like a `rename`. Absent/blank leaves
 				// the label untouched — older agents never send the field.
 				const name = str(frame.name);
-				if (name) this.#sessions.rename(id, name);
+				if (name) this.#sessions.rename(record.id, name);
+				return;
+			}
+			case "session-event": {
+				const id = str(frame.id);
+				const eventId = str(frame.eventId);
+				const kind = str(frame.kind);
+				const record = id ? this.#sessions.get(id) : undefined;
+				if (!record || record.machineId !== machineId || !eventId || !kind ||
+					(kind !== "input_required" && kind !== "input_resolved" && kind !== "turn_finished" &&
+					kind !== "operation_failed" && kind !== "session_exited" && kind !== "session_failed")) return;
+				const requestId = str(frame.requestId);
+				const leafId = str(frame.leafId);
+				const operationId = str(frame.operationId);
+				const error = str(frame.error);
+				const event: FleetEvent = {
+					id: eventId,
+					sessionId: record.id,
+					kind,
+					createdAt: Date.now(),
+					...(requestId ? { requestId } : {}),
+					...(leafId ? { leafId } : {}),
+					...(operationId ? { operationId } : {}),
+					...(error ? { error: error.slice(0, 2000) } : {}),
+				};
+				if (!this.#queueFleetEvent(event)) return; // no ack: daemon retries after storage recovers
+				try {
+					ws.send(JSON.stringify({ t: "session-event-ack", eventId } satisfies AgentCommand));
+				} catch {
+					// Already persisted. The daemon retries this id after reconnect.
+				}
 				return;
 			}
 			case "cmd-result": {
@@ -478,6 +566,7 @@ export class AgentRegistry {
 	}
 
 	handleClose(ws: AgentSocket): void {
+		if (this.#stopped) return;
 		const machineId = ws.data.machineId;
 		if (machineId === null) return;
 		const conn = this.#connections.get(machineId);
@@ -488,11 +577,11 @@ export class AgentRegistry {
 		const plan = this.#armResumePlan(machineId);
 		const machine = this.#machines.get(machineId);
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(machineId, plan ? "daemon upgrade" : "agent disconnected");
-		log.info(
-			`machine ${machineId}: agent disconnected (${exited.length} session(s) exited)` +
-				(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
-		);
+		const changed = plan
+			? this.#sessions.exitSessionsFor(machineId, "daemon upgrade")
+			: this.#sessions.markUnreachableFor(machineId);
+		this.#fleetDisconnected(machineId);
+		log.info(`machine ${machineId}: agent disconnected (${changed.length} session(s) ${plan ? "exited for upgrade" : "unreachable"})`);
 	}
 
 	/** Sends one command frame; false when the agent is offline or the write fails. */
@@ -626,6 +715,116 @@ export class AgentRegistry {
 		return this.#connections.has(machineId);
 	}
 
+	/** Reissued ids must become reconcile candidates even if terminal at hello. */
+	trackReissuedSession(machineId: string, id: string): void {
+		this.#connections.get(machineId)?.preexistingIds.add(id);
+	}
+
+	/** Remove an acknowledged notification from the connection-local replay fence. */
+	forgetFleetDelivery(ownerId: string, eventId: string): void {
+		this.#fleetDelivered.delete(`${ownerId}:${eventId}`);
+	}
+
+	/** Push an unread fleet event to a scoped subscriber, without exposing collab links. */
+	notifyFleet(ownerId: string, event: FleetEvent): boolean {
+		const owner = this.#sessions.get(ownerId);
+		const worker = this.#sessions.get(event.sessionId);
+		if (!owner || !worker || owner.status !== "live" || owner.superagent !== true || !owner.namespaceId) return false;
+		if (event.kind !== "namespace_revoked" && owner.namespaceId !== worker.namespaceId) return false;
+		const key = `${ownerId}:${event.id}`;
+		if (this.#fleetDelivered.has(key)) return true;
+		if (!this.send(owner.machineId, { t: "fleet-notification", id: ownerId, event })) return false;
+		this.#fleetDelivered.add(key);
+		return true;
+	}
+
+	#queueFleetEvent(event: FleetEvent): boolean {
+		const worker = this.#sessions.get(event.sessionId);
+		if (!worker) return true;
+		try {
+			const namespaceId = this.#fleet.membership(worker.id).namespaceId;
+			if (!namespaceId) return true;
+			const recipients = this.#fleet.enqueue(event, ownerId => {
+				const owner = this.#sessions.get(ownerId);
+				return owner?.status === "live" && owner.superagent === true &&
+					this.#fleet.membership(ownerId).namespaceId === namespaceId;
+			});
+			for (const ownerId of recipients) this.notifyFleet(ownerId, event);
+			return true;
+		} catch (err) {
+			log.error(`fleet event ${event.id} could not be persisted: ${err instanceof Error ? err.message : String(err)}`);
+			return false;
+		}
+	}
+
+	/** Retry derived lifecycle events and owner cleanup after transient fleet-store failures. */
+	retryFleetEvents(): void {
+		for (const [id, event] of this.#pendingDerivedEvents) {
+			if (this.#queueFleetEvent(event)) this.#pendingDerivedEvents.delete(id);
+		}
+		for (const ownerId of this.#pendingOwnerCleanup) this.#releaseOwner(ownerId);
+	}
+
+	drainFleetRecovery(): FleetRecoveryState {
+		const state = { events: [...this.#pendingDerivedEvents.values()], owners: [...this.#pendingOwnerCleanup] };
+		this.#pendingDerivedEvents.clear();
+		this.#pendingOwnerCleanup.clear();
+		return state;
+	}
+
+	adoptFleetRecovery(state: FleetRecoveryState): void {
+		for (const event of state.events) this.#pendingDerivedEvents.set(event.id, event);
+		for (const ownerId of state.owners) this.#pendingOwnerCleanup.add(ownerId);
+		this.retryFleetEvents();
+	}
+
+	#queueDerived(event: FleetEvent): void {
+		if (!this.#queueFleetEvent(event)) this.#pendingDerivedEvents.set(event.id, event);
+	}
+
+	#releaseOwner(ownerId: string): void {
+		try {
+			this.#fleet.removeOwner(ownerId);
+			this.#pendingOwnerCleanup.delete(ownerId);
+			for (const worker of this.#sessions.list()) {
+				if (worker.controllerId === ownerId) this.#sessions.applyMembership(worker.id, this.#fleet.membership(worker.id));
+			}
+		} catch (err) {
+			this.#pendingOwnerCleanup.add(ownerId);
+			log.error(`fleet controller ${ownerId} could not be released: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	#sessionEnded(id: string, kind: "session_exited" | "session_failed", sourceEventId?: string): void {
+		const record = this.#sessions.get(id);
+		if (!record) return;
+		this.#queueDerived({ id: sourceEventId ?? randomId("e_"), sessionId: id, kind, createdAt: Date.now() });
+		if (record.superagent === true) this.#releaseOwner(id);
+	}
+
+	#fleetDisconnected(machineId: string): void {
+		for (const key of this.#fleetDelivered) {
+			const ownerId = key.slice(0, key.indexOf(":"));
+			if (this.#sessions.get(ownerId)?.machineId === machineId) this.#fleetDelivered.delete(key);
+		}
+		for (const record of this.#sessions.list()) {
+			if (record.machineId === machineId && record.unreachable) {
+				this.#queueDerived({ id: randomId("e_"), sessionId: record.id, kind: "session_unreachable", createdAt: Date.now() });
+			}
+		}
+	}
+
+	#replayFleet(machineId: string): void {
+		try {
+			for (const owner of this.#sessions.list()) {
+				if (owner.machineId !== machineId || owner.superagent !== true || owner.status !== "live") continue;
+				for (const event of this.#fleet.events(owner.id)) this.notifyFleet(owner.id, event);
+			}
+		} catch (err) {
+			log.error(`fleet replay for ${machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
 	/** Settles every pending command of a machine whose socket is gone or replaced. */
 	#failPending(machineId: string, error: string): void {
 		for (const [reqId, pending] of [...this.#pending]) {
@@ -684,9 +883,9 @@ export class AgentRegistry {
 	 * Upgrade-restart reconcile (protocol §3): heartbeats carry the daemon's
 	 * child list, so snapshot-restored records the daemon no longer knows about
 	 * (its own restart, a lost child) flip to a terminal state instead of
-	 * staying `live` forever. Only records created before this agent connection
-	 * took part — anything started afterwards follows the normal flow, and an
-	 * absent id is only meaningful once this connection has children to report.
+	 * staying `live` forever. Reconcile only ids present at connection time or
+	 * explicitly reissued under that id; new sessions on this connection follow
+	 * their normal lifecycle until a subsequent reconnect.
 	 */
 	#reconcileSessions(conn: Connection, reported: unknown): void {
 		const statuses = parseHbSessions(reported);
@@ -702,19 +901,23 @@ export class AgentRegistry {
 		}
 		for (const record of this.#sessions.list()) {
 			if (record.machineId !== conn.machineId || isTerminalStatus(record.status)) continue;
-			if (record.startedAt >= conn.connectedAt) continue;
-			// A same-id user restart (§3 `POST /api/sessions/:id/restart`) re-arms
-			// an old-id record while the connection stays up; the heartbeat that
-			// races the fresh child's spawn must not retire it (restart grace).
+			if (!conn.preexistingIds.has(record.id)) continue;
+			// A same-id restart re-arms an old record while this connection stays up.
+			// Do not retire it until the new child has had time to appear in heartbeats.
 			if (this.#sessions.inRestartGrace(record.id)) continue;
 			if (exempt?.has(record.id)) continue;
 			const status = statuses.get(record.id);
 			if (status === undefined) {
 				this.#sessions.markExited(record.id, "agent heartbeat: no such child");
+				this.#sessionEnded(record.id, "session_exited");
 			} else if (status === "exited") {
 				this.#sessions.markExited(record.id, "agent heartbeat");
+				this.#sessionEnded(record.id, "session_exited");
 			} else if (status === "failed") {
 				this.#sessions.markFailed(record.id, "agent heartbeat");
+				this.#sessionEnded(record.id, "session_failed");
+			} else {
+				record.unreachable = undefined;
 			}
 		}
 	}
@@ -737,6 +940,10 @@ export class AgentRegistry {
 			const record = this.#sessions.get(id);
 			if (!record?.sessionFile) continue;
 			if (statuses.get(id) !== undefined) continue;
+			if (record.superagent && (!record.namespaceId || !supportsFleetNamespace(conn.version))) {
+				log.warn(`machine ${conn.machineId}: refusing to resume scoped operator ${id} on an incompatible daemon`);
+				continue;
+			}
 			const fresh = this.#sessions.reissue(id);
 			if (!fresh?.sessionFile) continue;
 			const sent = this.send(conn.machineId, {
@@ -752,6 +959,7 @@ export class AgentRegistry {
 				webUrl: conn.ws.data.httpBase,
 			});
 			if (sent) {
+				conn.preexistingIds.add(fresh.id);
 				reissued.add(fresh.id);
 			} else {
 				this.#sessions.markFailed(fresh.id, "daemon restart: agent offline");
@@ -800,11 +1008,11 @@ export class AgentRegistry {
 			// socket tears down — this replacement path, not handleClose, is what
 			// runs then, so the resume plan must arm here too.
 			const plan = this.#armResumePlan(machineId);
-			const exited = this.#sessions.exitSessionsFor(machineId, plan ? "daemon upgrade" : "agent replaced");
-			log.warn(
-				`machine ${machineId}: replaced by a new connection (${exited.length} session(s) exited)` +
-					(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
-			);
+			const changed = plan
+				? this.#sessions.exitSessionsFor(machineId, "daemon upgrade")
+				: this.#sessions.markUnreachableFor(machineId);
+			this.#fleetDisconnected(machineId);
+			log.warn(`machine ${machineId}: replaced by a new connection (${changed.length} session(s) ${plan ? "exited for upgrade" : "unreachable"})`);
 			try {
 				previous.ws.close(4000, "agent replaced");
 			} catch {
@@ -822,7 +1030,10 @@ export class AgentRegistry {
 		} else {
 			this.#machines.set(machineId, { machineId, name, connectedAt: now, connected: true, tmpdir });
 		}
-		this.#connections.set(machineId, { ws, machineId, version, connectedAt: now, lastHb: now });
+		const preexistingIds = new Set(this.#sessions.list()
+			.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
+			.map(record => record.id));
+		this.#connections.set(machineId, { ws, machineId, version, connectedAt: now, lastHb: now, preexistingIds });
 
 		const welcome: AgentCommand = { t: "welcome", relayUrl: ws.data.wsBase, webUrl: ws.data.httpBase };
 		try {
@@ -852,6 +1063,18 @@ export class AgentRegistry {
 				log.warn(`machine ${machine.machineId}: daemon restart resume plan expired — the fresh daemon never reconnected`);
 			}
 		}
+		this.retryFleetEvents();
+		if (now >= this.#nextFleetPruneAt) {
+			try {
+				const known = new Set(this.#sessions.list().map(record => record.id));
+				const pruned = this.#fleet.pruneOrphans(known);
+				if (pruned > 0) log.info(`pruned ${pruned} orphaned fleet session(s)`);
+				this.#nextFleetPruneAt = now + 60 * 60 * 1000;
+			} catch (err) {
+				log.warn(`fleet pruning failed: ${err instanceof Error ? err.message : String(err)}`);
+				this.#nextFleetPruneAt = now + 60_000;
+			}
+		}
 	}
 
 	#pingAll(): void {
@@ -873,7 +1096,9 @@ export class AgentRegistry {
 		const plan = this.#armResumePlan(conn.machineId);
 		const machine = this.#machines.get(conn.machineId);
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(conn.machineId, plan ? "daemon upgrade" : reason);
+		const changed = plan
+			? this.#sessions.exitSessionsFor(conn.machineId, "daemon upgrade")
+			: this.#sessions.markUnreachableFor(conn.machineId);
 		try {
 			// 1001 (going away), NOT 4000: the agent treats 4000 as fatal and
 			// permanently stops reconnecting — right for "agent replaced" (the
@@ -884,9 +1109,9 @@ export class AgentRegistry {
 			// Already closing.
 		}
 		log.warn(
-			`machine ${conn.machineId}: offline (${reason}); ${exited.length} session(s) exited` +
-				(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
+			`machine ${conn.machineId}: offline (${reason}); ${changed.length} session(s) ${plan ? "exited for upgrade" : "unreachable"}`,
 		);
+		this.#fleetDisconnected(conn.machineId);
 	}
 
 	/**

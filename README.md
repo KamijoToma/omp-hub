@@ -40,14 +40,17 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
   Switch with the persistent rail or Ctrl+K, with activity indicators and optional
   browser notifications. Rename, restart, hide (this browser only), stop or delete
   sessions from the rail; stop retains the hub record, while saved omp files also
-  survive deletion. Copy full-control or view-only links for any listed session.
-  Search session lists/history by metadata and prompt/assistant message text.
+  survive deletion. Manage a live row to copy full-control/view-only links or
+  assign its fleet namespace with explicit transcript-sharing consent. Search
+  session lists/history by metadata and prompt/assistant message text.
 - **Work in the browser:** Stream transcripts and tool results, send or interrupt prompts, handle
   interactive dialogs and manage subagents. Use full-control or view-only links to attach an omp client.
 - **Control the agent:** Choose models, thinking level and role assignments; use session-scoped
   advanced settings, modes (plan, advisor, goal and loop), and MCP servers (config edits apply to
-  new sessions). At start, optionally whitelist tools or enable **superagent** fleet controls to
-  start, stop and message other sessions. No whitelist means the default, unrestricted tool set.
+  new sessions). At start, optionally whitelist tools or enable **superagent**
+  fleet controls scoped to a required namespace; superagents use fleet-only
+  tools to start, stop and message other sessions. An empty whitelist keeps the
+  default tool set for ordinary sessions.
 - **Operate the fleet:** See machine usage and restart an agent daemon from the dashboard to load
   new code: its session children stop and resume from saved transcripts under their existing IDs.
   The authenticated hub restart API hands over machine/session records from `hub-state.json` (the

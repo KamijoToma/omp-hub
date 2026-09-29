@@ -1,7 +1,8 @@
 /**
  * omp-hub server entry — one Bun process, one port (docs/architecture.md §1).
  *
- * Routing order: `/healthz` → `/agent` upgrade → `/r/` upgrade → `/api/*` → static SPA.
+ * Routing order: `/healthz` → `/agent` upgrade → `/r/` (browser navigations 302 to the web
+ * join UI; WebSocket upgrades hit the relay) → `/api/*` → static SPA.
  *
  * Construction is split from binding ({@link buildHub} vs {@link startHub}) so
  * the dev `--watch` mode can build a fresh core and swap it into the live
@@ -10,10 +11,11 @@
  */
 import { closeSync, openSync } from "node:fs";
 import path from "node:path";
-import type { AdoptedConnection, AgentRegistry, AgentSocket, AgentSocketData, MachineRecord } from "./agents";
+import type { AdoptedConnection, AgentRegistry, AgentSocket, AgentSocketData, FleetRecoveryState, MachineRecord } from "./agents";
 import { AgentRegistry as AgentsRegistry } from "./agents";
 import { handleApi } from "./api";
-import { loadConfig, tlsConfigured, type Config } from "./config";
+import { derivePublicBase, loadConfig, tlsConfigured, type Config } from "./config";
+import { FleetState, type FleetStateSnapshot } from "./fleet-state";
 import { log } from "./log";
 import { NoticeStore } from "./notices";
 import { CollabRelay, type RelayRoom, type RelaySocket, type RelaySocketData } from "./relay";
@@ -31,6 +33,7 @@ export interface Hub {
 	readonly cfg: Config;
 	readonly server: Bun.Server<HubSocketData>;
 	readonly sessions: SessionStore;
+	readonly fleet: FleetState;
 	readonly agents: AgentRegistry;
 	readonly relay: CollabRelay;
 	/** The constructed core behind the handlers — the hot-reload handover point. */
@@ -53,13 +56,14 @@ export interface HubCore {
 	readonly cfg: Config;
 	readonly sessions: SessionStore;
 	readonly agents: AgentRegistry;
+	readonly fleet: FleetState;
 	readonly relay: CollabRelay;
 	fetch(req: Request, srv: Bun.Server<HubSocketData>): Response | Promise<Response> | undefined;
 	readonly websocket: Bun.WebSocketHandler<HubSocketData>;
 	/** Set by the bound hub; the `/api/hub/restart` endpoint invokes it. */
 	onRestart: (() => void) | null;
 	start(): void;
-	/** Stops timers and flushes the snapshot; sockets are left alone (handover). */
+	/** Stops timers and closes the old fleet store; after handover, never flushes an empty registry. */
 	stopTimers(): Promise<void>;
 	flushState(): Promise<void>;
 	/** Timers + snapshot flush + socket teardown — the full shutdown work. */
@@ -74,6 +78,8 @@ export interface HubCore {
 export interface AdoptedHubState {
 	machines: MachineRecord[];
 	sessions: SessionRecord[];
+	fleetState: FleetStateSnapshot;
+	fleetRecovery: FleetRecoveryState;
 	agentConnections: AdoptedConnection[];
 	rooms: Map<string, RelayRoom>;
 }
@@ -83,19 +89,46 @@ export interface AdoptedHubState {
 const asRelaySocket = (ws: Bun.ServerWebSocket<HubSocketData>): RelaySocket => ws as unknown as RelaySocket;
 const asAgentSocket = (ws: Bun.ServerWebSocket<HubSocketData>): AgentSocket => ws as unknown as AgentSocket;
 
+/**
+ * Plain browser navigation: real relay clients (omp host/guest, the web app's
+ * `GuestClient`) always send `Upgrade: websocket`. A browser that merely opens a
+ * collab link would otherwise get the relay's text/plain 404/426 rejections, which
+ * iOS Safari presents as a "document.txt" download instead of a page.
+ */
+function isBrowserNavigation(req: Request): boolean {
+	if (req.method !== "GET" && req.method !== "HEAD") return false;
+	if ((req.headers.get("upgrade") ?? "").trim().toLowerCase() === "websocket") return false;
+	return (req.headers.get("accept") ?? "").includes("text/html");
+}
+
+/**
+ * Send browsers that open the bare collab link (`<host>/r/<roomId>.<key>`) to the
+ * web join UI. The target hash uses the exact `<host><path>` format of the hub's
+ * `web` links, so the join screen receives identical credentials. The relay's
+ * `?role=` query is dropped — it is relay-internal and the web app infers the
+ * role from the key.
+ */
+function joinRedirect(req: Request, cfg: Config): Response {
+	const { pathname } = new URL(req.url);
+	const { origin, host } = new URL(derivePublicBase(req, cfg).httpBase);
+	return new Response(null, { status: 302, headers: { location: `${origin}/#${host}${pathname}` } });
+}
+
 export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?: boolean } = {}): HubCore {
 	const cfg: Config = { ...loadConfig(), ...overrides };
 	if (!cfg.token.trim()) throw new Error("HUB_TOKEN is required before starting the hub");
 	const sessions = new SessionStore();
 	const notices = new NoticeStore();
 	const relay = new CollabRelay();
-	const agents = new AgentsRegistry(cfg, sessions);
+	const fleet = new FleetState(cfg.stateFile === null ? null : `${cfg.stateFile}.fleet.sqlite`);
+	const agents = new AgentsRegistry(cfg, sessions, fleet);
 
 	const state: StatePersistence | null = cfg.stateFile === null ? null : new StatePersistence(cfg.stateFile);
 	if (state !== null && opts.restoreState !== false) {
 		const snapshot = loadStateSnapshot(cfg.stateFile!);
 		if (snapshot !== null) {
 			sessions.adopt(snapshot.sessions);
+			for (const record of sessions.list()) sessions.applyMembership(record.id, fleet.membership(record.id));
 			// Machines re-register through `hello`; the restored flag is a lie
 			// until then, and `connected: false` is what the API should report.
 			agents.adoptMachines(snapshot.machines.map((machine) => ({ ...machine, connected: false })));
@@ -106,19 +139,24 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 	}
 
 	let stateTimer: Timer | null = null;
+	let handedOver = false;
 	const core: HubCore = {
 		cfg,
 		sessions,
 		agents,
 		relay,
+		fleet,
 		onRestart: null,
 		fetch(req, srv): Response | Promise<Response> | undefined {
 			const pathname = new URL(req.url).pathname;
 			if (pathname === "/healthz") return new Response("ok");
 			if (pathname === "/agent" || pathname === "/agent/") return agents.handleUpgrade(req, srv);
-			if (pathname.startsWith("/r/")) return relay.handleUpgrade(req, srv);
+			if (pathname.startsWith("/r/")) {
+				if (isBrowserNavigation(req)) return joinRedirect(req, cfg);
+				return relay.handleUpgrade(req, srv);
+			}
 			if (pathname === "/api" || pathname.startsWith("/api/")) {
-				return handleApi(req, { cfg, sessions, agents, notices, restart: core.onRestart ?? undefined });
+				return handleApi(req, { cfg, sessions, agents, notices, fleet, restart: core.onRestart ?? undefined });
 			}
 			return serveStatic(req, cfg);
 		},
@@ -144,8 +182,9 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 			}
 		},
 		async stopTimers(): Promise<void> {
-			await core.flushState();
+			if (!handedOver) await core.flushState();
 			agents.stop();
+			fleet.close();
 			if (stateTimer !== null) {
 				clearInterval(stateTimer);
 				stateTimer = null;
@@ -155,8 +194,10 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 			if (state !== null) await state.sync(agents.listMachines(), sessions.list());
 		},
 		async shutdown(): Promise<void> {
-			await core.flushState();
+			if (!handedOver) await core.flushState();
+			agents.retryFleetEvents();
 			agents.stop();
+			fleet.close();
 			if (stateTimer !== null) {
 				clearInterval(stateTimer);
 				stateTimer = null;
@@ -169,8 +210,11 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 				sessions: sessions.list(),
 				agentConnections: agents.drainConnections(),
 				rooms: relay.drainRooms(),
+				fleetState: fleet.snapshot(),
+				fleetRecovery: agents.drainFleetRecovery(),
 			};
 			// Records moved by reference: the old core must let them go.
+			handedOver = true;
 			sessions.adopt([]);
 			return drained;
 		},
@@ -179,7 +223,10 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 			// the adoption and the handler swap in the caller.
 			agents.adoptMachines(previous.machines);
 			sessions.adopt(previous.sessions);
+			fleet.restore(previous.fleetState);
+			for (const record of sessions.list()) sessions.applyMembership(record.id, fleet.membership(record.id));
 			agents.adoptConnections(previous.agentConnections);
+			agents.adoptFleetRecovery(previous.fleetRecovery);
 			relay.adoptRooms(previous.rooms);
 		},
 	};
@@ -202,6 +249,7 @@ export function hubView(server: Bun.Server<HubSocketData>, core: HubCore): Hub {
 		sessions: core.sessions,
 		agents: core.agents,
 		relay: core.relay,
+		fleet: core.fleet,
 		core,
 		get port() {
 			// Bun types the port as optional (unix-socket listeners); the hub always binds TCP.

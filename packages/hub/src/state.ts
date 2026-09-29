@@ -10,7 +10,7 @@
  * carries live links/keys — treat it like the registry itself: sensitive.
  */
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./log";
 import type { MachineRecord } from "./agents";
@@ -98,7 +98,8 @@ export class StatePersistence {
 		try {
 			const tmp = `${this.file}.tmp-${process.pid}`;
 			await mkdir(path.dirname(this.file), { recursive: true });
-			await writeFile(tmp, content);
+			await writeFile(tmp, content, { mode: 0o600 });
+			await chmod(tmp, 0o600);
 			await rename(tmp, this.file);
 			this.#lastWritten = content;
 		} catch (err) {

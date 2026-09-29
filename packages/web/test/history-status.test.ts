@@ -14,6 +14,8 @@ function record(overrides: Partial<SessionRecord>): SessionRecord {
 		machineName: "dev-machine",
 		cwd: "/home/sky/proj",
 		name: "auth refactor",
+		namespaceId: null,
+		membershipVersion: 0,
 		status: "live",
 		startedAt: 0,
 		...overrides,
@@ -58,5 +60,11 @@ describe("historyStatus", () => {
 			sessionId: "s_a",
 			kind: "idle",
 		});
+	});
+
+	test("an unreachable daemon is not a healthy idle session", () => {
+		const live = record({ sessionFile: ENTRY.path, unreachable: true,
+			activity: { working: true, inputRequired: true, updatedAt: 0 } });
+		expect(historyStatus(ENTRY, "m1", [live])).toEqual({ sessionId: "s_a", kind: "unreachable" });
 	});
 });

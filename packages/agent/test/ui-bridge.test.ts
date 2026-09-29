@@ -1,12 +1,4 @@
-/**
- * Collab UI bridge (ui-bridge.ts): maps `askDialog`/`select`/`editor` onto
- * `CollabHost.requestGuestUi` round trips. The host is a scripted double — the
- * request/response contract is what matters here, not a live relay; a real
- * child needs credentials and the full SDK to boot.
- *
- * Answer scripts queue guest responses in order; every request the bridge
- * raises is recorded with the draft and the signal it was handed.
- */
+/** Headless UI bridge behavioral tests: guest/controller answer races and ask steps. */
 
 import { expect, test } from "bun:test";
 import type { CollabHost, CollabGuestUiResult } from "@oh-my-pi/pi-coding-agent/collab/host";
@@ -153,30 +145,67 @@ test("guest cancellation and unavailable teardown deny the dialog", async () => 
 	expect(
 		await createCollabUiBridge(() => host(unavailable)).askDialog!([question()], NO_OPTIONS),
 	).toBeUndefined();
-
-	const refused = new FakeHost();
-	refused.refuse();
-	expect(
-		await createCollabUiBridge(() => host(refused)).askDialog!([question()], NO_OPTIONS),
-	).toBeUndefined();
-	expect(refused.requests).toHaveLength(0);
 });
 
-test("no collab host: deny without constructing requests", async () => {
-	const fake = new FakeHost("staging");
+test("controller can answer without a guest; pending input resolves and events correlate", async () => {
+	const events: Array<{ kind: string; requestId: string }> = [];
+	const emptyRoom = { requestGuestUi: () => new Promise<CollabGuestUiResult>(() => {}) } as unknown as CollabHost;
+	const bridge = createCollabUiBridge(() => emptyRoom, event => events.push(event));
+	const result = bridge.askDialog!([question()], NO_OPTIONS);
+	const [pending] = bridge.getPendingInput();
+	expect(pending?.kind).toBe("select");
+	expect(pending?.options).toEqual(["staging", "production", "Other (type your own)", "Chat about this"]);
+	expect(bridge.answerInput(pending!.requestId, "missing")).toBe(false);
+	expect(bridge.answerInput(pending!.requestId, "production")).toBe(true);
+	expect((await result)?.kind).toBe("submit");
+	expect(bridge.getPendingInput()).toEqual([]);
+	expect(bridge.answerInput(pending!.requestId, "staging")).toBe(false);
+	expect(events).toEqual([
+		{ kind: "input_required", requestId: pending!.requestId },
+		{ kind: "input_resolved", requestId: pending!.requestId },
+	]);
+});
+
+test("controller answer cancels guests; a guest answer rejects stale controller answers", async () => {
+	let aborted = false;
+	let guestResolve!: (value: CollabGuestUiResult) => void;
+	const guest = {
+		requestGuestUi(_draft: CollabUiRequestDraft, signal?: AbortSignal) {
+			signal?.addEventListener("abort", () => { aborted = true; }, { once: true });
+			return new Promise<CollabGuestUiResult>(resolve => { guestResolve = resolve; });
+		},
+	} as unknown as CollabHost;
+	const bridge = createCollabUiBridge(() => guest);
+	const choosing = bridge.select("pick", ["yes", "no"]);
+	const requestId = bridge.getPendingInput()[0]!.requestId;
+	expect(bridge.answerInput(requestId, "yes")).toBe(true);
+	expect(await choosing).toBe("yes");
+	expect(aborted).toBe(true);
+	const another = bridge.select("pick", ["yes", "no"]);
+	const nextId = bridge.getPendingInput()[0]!.requestId;
+	guestResolve({ kind: "answered", value: "no" });
+	expect(await another).toBe("no");
+	expect(bridge.answerInput(nextId, "yes")).toBe(false);
+});
+
+test("without a live collab room the headless host denies instead of stranding an ask", async () => {
 	const bridge = createCollabUiBridge(() => undefined);
 	expect(await bridge.askDialog!([question()], NO_OPTIONS)).toBeUndefined();
-	expect(await bridge.select("pick", ["a", "b"], NO_OPTIONS)).toBeUndefined();
-	expect(await bridge.editor("text", undefined, NO_OPTIONS)).toBeUndefined();
-	expect(fake.requests).toHaveLength(0);
+	expect(bridge.getPendingInput()).toEqual([]);
+	const fake = new FakeHost();
+	fake.refuse();
+	expect(await createCollabUiBridge(() => host(fake)).editor("blocked")).toBeUndefined();
 });
 
-test("caller abort signal is forwarded so CollabHost settles the request", async () => {
-	const fake = new FakeHost("staging");
-	const bridge = createCollabUiBridge(() => host(fake));
+test("caller abort settles a pending guest request", async () => {
 	const controller = new AbortController();
-	await bridge.askDialog!([question()], { signal: controller.signal });
-	expect(fake.signals[0]).toBe(controller.signal);
+	const guest = { requestGuestUi: () => new Promise<CollabGuestUiResult>(() => {}) } as unknown as CollabHost;
+	const bridge = createCollabUiBridge(() => guest);
+	const result = bridge.editor("text", undefined, { signal: controller.signal });
+	expect(bridge.getPendingInput()).toHaveLength(1);
+	controller.abort();
+	expect(await result).toBeUndefined();
+	expect(bridge.getPendingInput()).toHaveLength(0);
 });
 
 test("labels colliding with reserved actions are disambiguated on the wire and mapped back", async () => {
@@ -218,7 +247,7 @@ test("plain select mirrors options and maps the answered display label back", as
 		{ label: "x", description: "fast" },
 		"y",
 	]);
-	expect(fake.signals[0]).toBeUndefined();
+	expect(fake.signals[0]).toBeInstanceOf(AbortSignal);
 });
 
 test("editor round trip returns the guest text", async () => {
@@ -229,8 +258,9 @@ test("editor round trip returns the guest text", async () => {
 	expect(request).toEqual({ kind: "editor", title: "note", prefill: "original" });
 });
 
-test("stub members keep default-deny headless semantics", async () => {
-	const bridge = createCollabUiBridge(() => new FakeHost() as unknown as CollabHost);
-	expect(await bridge.confirm("title", "body")).toBe(false);
-	expect(await bridge.input("title")).toBeUndefined();
+test("confirm and input use the same guest surface", async () => {
+	const bridge = createCollabUiBridge(() => host(new FakeHost("Yes")));
+	expect(await bridge.confirm("deploy", "now?")).toBe(true);
+	const text = createCollabUiBridge(() => host(new FakeHost("manual"))).input("reason");
+	expect(await text).toBe("manual");
 });
