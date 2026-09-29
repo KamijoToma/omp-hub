@@ -41,7 +41,7 @@ jobs:
 
   agent:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -50,6 +50,16 @@ jobs:
       - run: bun --cwd=packages/agent install --frozen-lockfile
       - run: bun --cwd=packages/agent run typecheck
       - run: bun --cwd=packages/agent test
+      - name: Build Linux x64 native agent bundle
+        run: bun packages/agent/scripts/build-native.ts --out-dir native-dist
+      - name: Exercise isolated native session, usage and restart
+        run: bun packages/agent/test/fixtures/native-smoke.ts native-dist
+      - uses: actions/upload-artifact@v4
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          name: native-linux-x64
+          path: native-dist/
+          if-no-files-found: error
 
   release:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
@@ -84,6 +94,14 @@ jobs:
         with:
           name: web-bundle
           path: release-web
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          path: native-linux-x64
+      - name: Check downloaded native agent bundle
+        run: |
+          chmod +x native-linux-x64/omp-hub-agent{,-session,-stats}
+          bun packages/agent/test/fixtures/native-smoke.ts native-linux-x64
       - name: Assemble release archive and checksum
         run: |
           mkdir -p release/omp-hub/packages/{hub,agent,web} release/omp-hub/licenses
@@ -92,8 +110,10 @@ jobs:
           cp -a release-web/dist release/omp-hub/packages/web/dist
           cp -a release-web/licenses/. release/omp-hub/licenses/
           cp README.md LICENSE release/omp-hub/
+          cp packages/agent/README.md native-linux-x64/README.md
+          tar -C native-linux-x64 -czf "release/omp-hub-agent-linux-x64-$GITHUB_REF_NAME.tar.gz" .
           tar -C release -czf "release/omp-hub-$GITHUB_REF_NAME.tar.gz" omp-hub
-          (cd release && sha256sum "omp-hub-$GITHUB_REF_NAME.tar.gz" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+          (cd release && sha256sum "omp-hub-$GITHUB_REF_NAME.tar.gz" "omp-hub-agent-linux-x64-$GITHUB_REF_NAME.tar.gz" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
       - name: Smoke-test unpacked archive
         run: |
           mkdir -p release/smoke
@@ -141,4 +161,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release/omp-hub-${{ github.ref_name }}.tar.gz
+            release/omp-hub-agent-linux-x64-${{ github.ref_name }}.tar.gz
             release/SHA256SUMS.txt
