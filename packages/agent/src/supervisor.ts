@@ -36,6 +36,10 @@ export interface SessionConfig {
 	superagent?: true;
 	/** 0.9.0: callable-tool whitelist (protocol §2 `start.tools`); the child restricts the SDK session to it. */
 	tools?: string[];
+	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */
+	prewalk?: boolean | string;
+	/** 0.9.0: start in plan mode with the hand-off target; `true` = `@smol`, a string = explicit pattern. */
+	planYolo?: boolean | string;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;

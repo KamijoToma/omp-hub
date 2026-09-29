@@ -18,6 +18,7 @@ import { Modal } from "./Modal";
 import { ModelPickerView } from "./ModelPicker";
 import { ThinkingPickerView } from "./ThinkingPicker";
 import { useAgentState } from "./use-agent-state";
+import { AdvancedSettings } from "./AdvancedSettings";
 
 /** Vendored theme store handles (see `src/lib/theme.ts`). */
 export interface ThemeControls {
@@ -34,12 +35,13 @@ export interface SettingsModalProps {
 	onClose(): void;
 }
 
-type SettingsView = "main" | "model" | "thinking";
+type SettingsView = "main" | "model" | "thinking" | "advanced";
 
 const VIEW_TITLE: Record<SettingsView, string> = {
 	main: "Settings",
 	model: "Model",
 	thinking: "Thinking",
+	advanced: "Advanced",
 };
 
 export function SettingsModal({ sessionId, record, theme, notify, onClose }: SettingsModalProps): ReactNode {
@@ -67,6 +69,8 @@ export function SettingsModal({ sessionId, record, theme, notify, onClose }: Set
 				<ModelPickerView load={load} sessionId={sessionId} notify={notify} onClose={onClose} />
 			) : view === "thinking" ? (
 				<ThinkingPickerView load={load} sessionId={sessionId} notify={notify} onClose={onClose} />
+			) : view === "advanced" ? (
+				<AdvancedSettings sessionId={sessionId} notify={notify} />
 			) : (
 				<>
 					<section className="hb-modal-section">
@@ -101,6 +105,16 @@ export function SettingsModal({ sessionId, record, theme, notify, onClose }: Set
 							</span>
 							<button type="button" className="sh-btn" onClick={() => setView("thinking")} disabled={failed}>
 								Change
+							</button>
+						</div>
+					</section>
+
+					<section className="hb-modal-section">
+						<h3 className="hb-card-title">Advanced</h3>
+						<div className="hb-modal-row">
+							<span className="hb-modal-value">session settings — runtime overrides, not persisted</span>
+							<button type="button" className="sh-btn" onClick={() => setView("advanced")}>
+								Open
 							</button>
 						</div>
 					</section>

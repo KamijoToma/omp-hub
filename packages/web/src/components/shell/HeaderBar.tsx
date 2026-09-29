@@ -44,6 +44,15 @@ export interface HeaderBarProps {
 	 * mirror, protocol §3); shows the running chip. Absent on `/join`.
 	 */
 	handoffRunning?: boolean;
+	/**
+	 * Advanced session modes (docs/protocol.md §2 `AgentState`, 0.9.0+), polled
+	 * from `GET …/agent-state`; each chip renders only while active. Absent on
+	 * `/join`, where the hub AgentState is not polled.
+	 */
+	prewalkTarget?: string;
+	planEnabled?: boolean;
+	advisorEnabled?: boolean;
+	paused?: boolean;
 }
 
 /** Gauge track + percentage; shared by the read-only span and the hub button. */
@@ -70,6 +79,10 @@ export function HeaderBar({
 	onOpenContext,
 	onRename,
 	handoffRunning,
+	prewalkTarget,
+	planEnabled,
+	advisorEnabled,
+	paused,
 }: HeaderBarProps): ReactNode {
 	const { header, state, phase, readOnly } = snapshot;
 	const activeRole = activeModelRole(snapshot.entries, state?.model);
@@ -147,6 +160,18 @@ export function HeaderBar({
 					>
 						<LoaderCircle size={11} className="sh-chip-handoff-icon" aria-hidden="true" />
 						handoff
+					</span>
+				)}
+				{paused && <span className="sh-chip sh-chip-advanced" title="agent loop paused — /pause resumes">paused</span>}
+				{prewalkTarget && (
+					<span className="sh-chip sh-chip-advanced" title={`prewalk hand-off armed → ${prewalkTarget} — /prewalk restart re-arms`}>
+						prewalk → {prewalkTarget}
+					</span>
+				)}
+				{planEnabled && <span className="sh-chip sh-chip-advanced" title="plan mode on — read-only until /plan off">plan</span>}
+				{advisorEnabled && (
+					<span className="sh-chip sh-chip-advanced" title="second-model advisor on — /advisor turns it off">
+						advisor
 					</span>
 				)}
 				{readOnly && (
