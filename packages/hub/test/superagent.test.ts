@@ -62,7 +62,7 @@ interface FakeAgent {
 	wait<T>(match: (frame: Record<string, unknown>) => T | undefined, what: string): Promise<T>;
 }
 
-async function connectAgent(ctx: Ctx, machineId: string, name: string): Promise<FakeAgent> {
+async function connectAgent(ctx: Ctx, machineId: string, name: string, version = "0.12.0"): Promise<FakeAgent> {
 	const ws = new WebSocket(`${ctx.ws}/agent`, { headers: { authorization: "Bearer t" } });
 	const frames: Record<string, unknown>[] = [];
 	let cursor = 0;
@@ -88,7 +88,7 @@ async function connectAgent(ctx: Ctx, machineId: string, name: string): Promise<
 		}
 	};
 
-	ws.send(JSON.stringify({ t: "hello", name, machineId, version: "test" }));
+	ws.send(JSON.stringify({ t: "hello", name, machineId, version }));
 	await wait((frame) => (frame.t === "welcome" ? frame : undefined), "welcome");
 	return { ws, wait };
 }
@@ -122,16 +122,23 @@ async function answerCmd(agent: FakeAgent, cmd: string, result: Record<string, u
 }
 
 describe("superagent sessions", () => {
-	test("superagent:true rides the start frame and echoes on the record", async () => {
+	test("a scoped superagent starts only on a namespace-capable machine", async () => {
 		const agent = await connectAgent(main, "m-sa", "sa-machine");
-		const session = await startSession(main, "m-sa", { superagent: true });
+		const created = await api(main, "/api/namespaces", { method: "POST", body: JSON.stringify({ name: "operator-session" }) });
+		const data = await created.json();
+		if (!data || typeof data !== "object" || !("namespace" in data) ||
+			!data.namespace || typeof data.namespace !== "object" || !("id" in data.namespace) || typeof data.namespace.id !== "string") {
+			throw new Error("namespace creation did not return an id");
+		}
+		const namespaceId = data.namespace.id;
+		const session = await startSession(main, "m-sa", { superagent: true, namespaceId });
 		const frame = await agent.wait((f) => (f.t === "start" ? f : undefined), "start frame");
 		expect(frame.superagent).toBe(true);
 		agent.ws.send(JSON.stringify({ t: "session-ready", id: session.id, links: LINKS }));
 
 		const detail = await api(main, `/api/sessions/${session.id}`);
 		const record = ((await detail.json()) as { session: SessionJson }).session;
-		expect(record.superagent).toBe(true);
+		expect(record).toMatchObject({ superagent: true, namespaceId });
 	});
 
 	test("a plain start carries no superagent field", async () => {
@@ -150,6 +157,24 @@ describe("superagent sessions", () => {
 		});
 		expect(created.status).toBe(400);
 		expect(await created.json()).toEqual({ error: "superagent must be a boolean" });
+	});
+
+	test("rejects unscoped operators and 0.11.0 daemons before dispatch", async () => {
+		const old = await connectAgent(main, "m-sa-old", "old-machine", "0.11.0");
+		const noNamespace = await api(main, "/api/sessions", { method: "POST",
+			body: JSON.stringify({ machineId: "m-sa-old", cwd: "/srv/sa", superagent: true }) });
+		expect(noNamespace.status).toBe(400);
+		const ns = await api(main, "/api/namespaces", { method: "POST", body: JSON.stringify({ name: "legacy-refusal" }) });
+		const data = await ns.json();
+		if (!data || typeof data !== "object" || !("namespace" in data) ||
+			!data.namespace || typeof data.namespace !== "object" || !("id" in data.namespace) || typeof data.namespace.id !== "string") {
+			throw new Error("namespace creation did not return an id");
+		}
+		const refused = await api(main, "/api/sessions", { method: "POST",
+			body: JSON.stringify({ machineId: "m-sa-old", cwd: "/srv/sa", superagent: true, namespaceId: data.namespace.id }) });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ error: "machine daemon must be upgraded for namespace-scoped superagents" });
+		old.ws.close();
 	});
 });
 

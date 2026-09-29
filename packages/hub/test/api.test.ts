@@ -20,6 +20,7 @@ interface SessionJson {
 	profile?: string;
 	tools?: string[];
 	status: string;
+	unreachable?: true;
 	startedAt: number;
 	exitedAt?: number;
 	exitReason?: string;
@@ -669,21 +670,22 @@ describe("hub api", () => {
 		expect(listed.sessions.find((record) => record.machineId === "m-prof-bad")).toBeUndefined();
 	});
 
-	test("agent disconnect drops the machine to connected:false and exits its sessions", async () => {
+	test("agent disconnect marks sessions unreachable without falsely reporting completion", async () => {
 		const { agent } = await connectAgent("m-drop", "drop-machine");
 		const session = await startSession("m-drop", "/srv/dropped");
 		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
 
 		agent.ws.close();
-		const exited = await waitForStatus(session.id, "exited");
-		expect(exited.exitReason).toBe("agent disconnected");
 		expect(await waitForMachine("m-drop", false)).toEqual({
 			machineId: "m-drop",
 			name: "drop-machine",
 			connected: false,
 			connectedAt: expect.any(Number),
-			sessionCount: 0,
+			sessionCount: 1,
 		});
+		const unreachable = await sessionJson(session.id);
+		expect(unreachable).toMatchObject({ status: "starting", unreachable: true });
+		expect(unreachable.exitReason).toBeUndefined();
 
 		// A known but offline machine cannot start sessions.
 		const offline = await api("/api/sessions", {
@@ -692,18 +694,24 @@ describe("hub api", () => {
 		});
 		expect(offline.status).toBe(404);
 		expect(await offline.json()).toEqual({ error: "machine offline" });
+		const refusedStop = await api(`/api/sessions/${session.id}/stop`, { method: "POST" });
+		expect(refusedStop.status).toBe(502);
+		expect(await refusedStop.json()).toEqual({ error: "agent offline" });
+		expect(await sessionJson(session.id)).toMatchObject({ status: "starting", unreachable: true });
 	});
 
-	test("a new connection with the same machineId replaces the old one", async () => {
+	test("a replacement connection reconciles a missing child on its heartbeat", async () => {
 		const first = await connectAgent("m-dup", "dup-machine");
 		const session = await startSession("m-dup", "/srv/dup");
 		await first.agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
 
 		const second = await connectAgent("m-dup", "dup-machine");
-		const replaced = await waitForStatus(session.id, "exited");
-		expect(replaced.exitReason).toBe("agent replaced");
+		expect(await waitForMachine("m-dup", true)).toMatchObject({ sessionCount: 1, name: "dup-machine" });
+		expect(await sessionJson(session.id)).toMatchObject({ status: "starting", unreachable: true });
+		second.agent.ws.send(JSON.stringify({ t: "hb", ts: Date.now(), sessions: [] }));
+		const missing = await waitForStatus(session.id, "exited");
+		expect(missing.exitReason).toBe("agent heartbeat: no such child");
 		expect(second.welcome.relayUrl).toBe(wsBase);
-		expect(await waitForMachine("m-dup", true)).toMatchObject({ sessionCount: 0, name: "dup-machine" });
 
 		second.agent.ws.close();
 	});

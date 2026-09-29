@@ -85,6 +85,8 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 			<div className="hb-card hb-status-card">
 				<div className="hb-card-title">{record?.name ?? "session"}</div>
 				{record && <div className="hb-card-note hb-mono">{record.cwd}</div>}
+				{record?.namespaceId && <div className="hb-card-note">namespace: {record.namespaceId}</div>}
+				{record?.controllerId && <div className="hb-card-note">controller: {record.controllerId}</div>}
 				{record === null && loadError === null && (
 					<>
 						<div className="sh-connect-sub">Loading session…</div>

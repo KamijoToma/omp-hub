@@ -35,6 +35,13 @@ export interface SessionRecord {
 	superagent?: true;
 	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
 	tools?: string[];
+	/** Fleet control scope; null sessions are invisible to superagents. */
+	namespaceId: string | null;
+	/** Incremented on assignment and control transfer to fence stale actions. */
+	membershipVersion: number;
+	controllerId?: string;
+	/** A disconnected daemon is not proof that its children finished. */
+	unreachable?: true;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -57,6 +64,7 @@ export interface CreateSessionInput {
 	superagent?: true;
 	/** Callable-tool whitelist (protocol §2 `start.tools`); pre-validated by the API layer. */
 	tools?: string[];
+	namespaceId?: string | null;
 }
 
 export interface SessionReadyInput {
@@ -110,6 +118,8 @@ export class SessionStore {
 			...(input.profile ? { profile: input.profile } : {}),
 			...(input.superagent ? { superagent: true as const } : {}),
 			...(input.tools ? { tools: input.tools } : {}),
+			namespaceId: input.namespaceId ?? null,
+			membershipVersion: 0,
 			status: "starting",
 			startedAt: Date.now(),
 		};
@@ -147,6 +157,8 @@ export class SessionStore {
 		this.#reissuedAt.clear();
 		this.#sequence = 0;
 		for (const record of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
+			record.namespaceId ??= null;
+			record.membershipVersion ??= 0;
 			this.#sessions.set(record.id, record);
 			this.#order.set(record.id, this.#sequence++);
 		}
@@ -169,6 +181,7 @@ export class SessionStore {
 		if (ready.sessionFile !== undefined) record.sessionFile = ready.sessionFile;
 		if (ready.pid !== undefined) record.pid = ready.pid;
 		if (ready.links !== undefined) record.links = ready.links;
+		record.unreachable = undefined;
 		return record;
 	}
 
@@ -177,6 +190,7 @@ export class SessionStore {
 		const record = this.#sessions.get(id);
 		if (!record || isTerminalStatus(record.status)) return record;
 		record.activity = { ...activity, updatedAt: Date.now() };
+		record.unreachable = undefined;
 		return record;
 	}
 
@@ -197,6 +211,7 @@ export class SessionStore {
 		record.error = error;
 		record.exitedAt = Date.now();
 		record.activity = undefined;
+		record.unreachable = undefined;
 		return record;
 	}
 
@@ -208,6 +223,7 @@ export class SessionStore {
 		record.exitedAt = Date.now();
 		record.activity = undefined;
 		if (reason) record.exitReason = reason;
+		record.unreachable = undefined;
 		return record;
 	}
 
@@ -218,9 +234,8 @@ export class SessionStore {
 	 * id, keeping panel pages and links stable. Identity fields (cwd, name,
 	 * profile, sessionFile, superagent) survive; volatile child state (links,
 	 * pid, activity, exit fields) clears and refills from `session-ready`.
-	 * `startedAt` deliberately stays: the reconcile watermark (`startedAt <
-	 * connectedAt`) must keep treating the resumed record as pre-connection, so
-	 * later heartbeats still retire it if the resumed child dies quietly.
+	 * `startedAt` stays stable across resumes; the agent registry's
+	 * pre-connection id set keeps these records eligible for reconciliation.
 	 *
 	 * `requireSessionFile` (default true) keeps the daemon-restart contract: a
 	 * record that never reached `session-ready` has no transcript to resume, so
@@ -237,6 +252,7 @@ export class SessionStore {
 		record.activity = undefined;
 		record.exitedAt = undefined;
 		record.exitReason = undefined;
+		record.unreachable = undefined;
 		record.error = undefined;
 		this.#reissuedAt.set(id, Date.now());
 		return record;
@@ -256,6 +272,28 @@ export class SessionStore {
 			return false;
 		}
 		return true;
+	}
+
+	/** Apply the durable fleet membership after a user move or a registry restore. */
+	applyMembership(id: string, membership: { namespaceId: string | null; membershipVersion: number; controllerId?: string }): SessionRecord | undefined {
+		const record = this.#sessions.get(id);
+		if (!record) return undefined;
+		record.namespaceId = membership.namespaceId;
+		record.membershipVersion = membership.membershipVersion;
+		record.controllerId = membership.controllerId;
+		return record;
+	}
+
+	/** An interrupted daemon link does not prove its children have exited. */
+	markUnreachableFor(machineId: string): string[] {
+		const ids: string[] = [];
+		for (const record of this.#sessions.values()) {
+			if (record.machineId !== machineId || isTerminalStatus(record.status)) continue;
+			record.unreachable = true;
+			record.activity = undefined;
+			ids.push(record.id);
+		}
+		return ids;
 	}
 
 	/** Marks every non-terminal session of a machine exited; returns the affected ids. */

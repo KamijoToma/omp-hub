@@ -102,7 +102,16 @@ export interface UsageReqFrame {
 	profile?: string;
 }
 
-export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame | UsageReqFrame;
+export type HubFrame = WelcomeFrame | StartFrame | StopFrame | PingFrame | CmdFrame | UsageReqFrame | FleetNotificationFrame | SessionEventAckFrame;
+export interface FleetNotificationFrame {
+	t: "fleet-notification";
+	id: string;
+	event: unknown;
+}
+export interface SessionEventAckFrame {
+	t: "session-event-ack";
+	eventId: string;
+}
 
 export interface HelloFrame {
 	t: "hello";
@@ -131,6 +140,7 @@ export interface SessionErrorFrame {
 	t: "session-error";
 	id: string;
 	error: string;
+	eventId?: string;
 }
 
 export interface SessionExitFrame {
@@ -138,6 +148,7 @@ export interface SessionExitFrame {
 	id: string;
 	code: number | null;
 	reason: string;
+	eventId?: string;
 }
 
 export interface PongFrame {
@@ -179,8 +190,18 @@ export interface SessionActivityFrame {
 	/** SDK session name (auto-titles included); absent/blank leaves the registry label untouched. */
 	name?: string;
 }
+export interface SessionEventFrame {
+	t: "session-event";
+	id: string;
+	eventId: string;
+	kind: "input_required" | "input_resolved" | "turn_finished" | "operation_failed" | "session_exited" | "session_failed";
+	requestId?: string;
+	leafId?: string;
+	operationId?: string;
+	error?: string;
+}
 
-export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | SessionActivityFrame | CmdResultFrame | UsageResultFrame;
+export type AgentFrame = SessionReadyFrame | SessionErrorFrame | SessionExitFrame | SessionActivityFrame | CmdResultFrame | UsageResultFrame | SessionEventFrame;
 
 /** Every frame on the agent → hub wire. */
 export type OutboundFrame = HelloFrame | HeartbeatFrame | PongFrame | AgentFrame;
@@ -197,6 +218,8 @@ export interface HubClientOptions {
 	onCmd(frame: CmdFrame): void;
 	/** Machine-level usage proxy request (protocol §2); the handler answers with `usage-res`. */
 	onUsage(frame: UsageReqFrame): void;
+	onFleetNotification?(frame: FleetNotificationFrame): void;
+	onSessionEventAck?(eventId: string): void;
 	onWelcome?: (frame: WelcomeFrame) => void;
 	log: Logger;
 	heartbeatMs?: number;
@@ -232,6 +255,8 @@ export class HubClient {
 	#reconnectTimer?: Timer;
 	#heartbeatTimer?: Timer;
 	#pending: AgentFrame[] = [];
+	/** Unacked events are resent after every reconnect until hub persistence acks. */
+	#unackedEvents = new Map<string, SessionEventFrame>();
 
 	constructor(options: HubClientOptions) {
 		this.#options = options;
@@ -256,6 +281,7 @@ export class HubClient {
 		this.#clearReconnect();
 		this.#clearHeartbeat();
 		this.#pending = [];
+		this.#unackedEvents.clear();
 		const socket = this.#socket;
 		this.#socket = null;
 		this.#connected = false;
@@ -271,11 +297,17 @@ export class HubClient {
 
 	/** Send a frame; queued (bounded) while the socket is down. */
 	send(frame: AgentFrame): void {
-		if (this.#sendNow(frame)) return;
 		if (this.#closed) {
 			this.#log.warn(`dropping ${frame.t} frame for ${frameIdForLog(frame)}: hub connection closed`);
 			return;
 		}
+		if (frame.t === "session-event") {
+			this.#unackedEvents.set(frame.eventId, frame);
+			if (this.#unackedEvents.size > 1024) this.#log.warn("fleet event ack backlog exceeds 1024");
+			this.#sendNow(frame);
+			return;
+		}
+		if (this.#sendNow(frame)) return;
 		if (this.#pending.length >= MAX_QUEUED_FRAMES) {
 			const dropped = this.#pending.shift();
 			this.#log.warn(`hub frame queue full; dropped ${dropped?.t ?? "frame"} for ${dropped ? frameIdForLog(dropped) : "?"}`);
@@ -329,6 +361,7 @@ export class HubClient {
 			const queued = this.#pending;
 			this.#pending = [];
 			for (const frame of queued) this.send(frame);
+			for (const frame of this.#unackedEvents.values()) this.#sendNow(frame);
 		};
 
 		socket.onmessage = event => {
@@ -374,6 +407,9 @@ export class HubClient {
 		const interval = this.#options.heartbeatMs ?? HEARTBEAT_MS;
 		this.#heartbeatTimer = setInterval(() => {
 			this.#sendNow({ t: "hb", ts: Date.now(), sessions: this.#options.sessions() });
+			// A hub storage failure intentionally withholds the ack. Retry while
+			// connected too; reconnect must not be required for recovery.
+			for (const event of this.#unackedEvents.values()) this.#sendNow(event);
 		}, interval);
 	}
 
@@ -422,6 +458,17 @@ export class HubClient {
 				return;
 			case "ping":
 				this.#sendNow({ t: "pong", ts: frame.ts });
+				return;
+			case "fleet-notification":
+				if (typeof frame.id === "string" && frame.event && typeof frame.event === "object") {
+					this.#dispatch(() => this.#options.onFleetNotification?.(frame));
+				}
+				return;
+			case "session-event-ack":
+				if (typeof frame.eventId === "string") {
+					this.#unackedEvents.delete(frame.eventId);
+					this.#options.onSessionEventAck?.(frame.eventId);
+				}
 				return;
 			default:
 				this.#log.debug(`ignoring unknown frame from hub: ${String((frame as { t?: string }).t)}`);

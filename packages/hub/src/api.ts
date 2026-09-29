@@ -4,14 +4,17 @@
  */
 import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
+import { FleetMoveInProgressError, type FleetEvent, type FleetState } from "./fleet-state";
+import { log } from "./log";
 import { normalizeProfileName } from "./profiles";
-import { isTerminalStatus, type SessionStore } from "./sessions";
+import { isTerminalStatus, randomId, type SessionRecord, type SessionStore } from "./sessions";
 import type { NoticeStore } from "./notices";
 
 export interface ApiContext {
 	readonly cfg: Config;
 	readonly sessions: SessionStore;
 	readonly agents: AgentRegistry;
+	readonly fleet: FleetState;
 	readonly notices: NoticeStore;
 	/** Set by the bound hub; absent in library/tests. Invoked before the reply returns. */
 	readonly restart?: () => void;
@@ -50,6 +53,7 @@ const MCP_REMOVE_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/remove$/;
 const MCP_ENABLED_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/enabled$/;
 const MCP_TEST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/test$/;
 const PROMPT_PATH_RE = /^\/api\/sessions\/([^/]+)\/prompt$/;
+const SESSION_NAMESPACE_PATH_RE = /^\/api\/sessions\/([^/]+)\/namespace$/;
 /** Advanced session modes (protocol §3, 0.9.0+). */
 const PREWALK_PATH_RE = /^\/api\/sessions\/([^/]+)\/prewalk$/;
 const PLAN_PATH_RE = /^\/api\/sessions\/([^/]+)\/plan$/;
@@ -113,7 +117,29 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 		return json({ ok: true, version: ctx.cfg.version });
 	}
 	if (!authorized(req, ctx.cfg)) return json({ error: "unauthorized" }, 401);
-
+	if (route === "/api/namespaces") {
+		try {
+			if (req.method === "GET") return json({ namespaces: ctx.fleet.listNamespaces() });
+			if (req.method === "POST") return await createNamespace(req, ctx);
+		} catch (err) {
+			return fleetStateFailure(err);
+		}
+	}
+	const membership = SESSION_NAMESPACE_PATH_RE.exec(route);
+	if (membership && req.method === "PUT") {
+		try {
+			return await assignNamespace(decodeURIComponent(membership[1]!), req, ctx);
+		} catch (err) {
+			return fleetStateFailure(err);
+		}
+	}
+	if (route.startsWith("/api/fleet/")) {
+		try {
+			return await handleFleetApi(route, req, ctx);
+		} catch (err) {
+			return fleetStateFailure(err);
+		}
+	}
 	if (req.method === "GET" && route === "/api/machines") {
 		return json({ machines: ctx.agents.listMachines() });
 	}
@@ -314,9 +340,114 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	return json({ error: "not found" }, 404);
 }
 
-async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
+/** Keep SQLite/transport failures opaque to callers while retaining a diagnostic. */
+function fleetStateFailure(err: unknown): Response {
+	if (err instanceof FleetMoveInProgressError) return json({ error: err.message }, 409);
+	log.error(`fleet state unavailable: ${err instanceof Error ? err.message : String(err)}`);
+	return json({ error: "fleet state unavailable" }, 503);
+}
+
+/** Namespace administration is root-token-only; it is never reachable through the fleet proxy. */
+async function createNamespace(req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (!body) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name")?.trim();
+	if (!name || name.length > 100) return json({ error: "name must be 1–100 characters" }, 400);
+	if (ctx.fleet.listNamespaces().some(entry => entry.name.toLowerCase() === name.toLowerCase())) {
+		return json({ error: "namespace already exists" }, 409);
+	}
+	const rawMachines = body.machineIds;
+	if (rawMachines !== undefined && rawMachines !== null &&
+		(!Array.isArray(rawMachines) || rawMachines.some(id => typeof id !== "string" || !ctx.agents.getMachine(id)))) {
+		return json({ error: "machineIds must contain known machine ids" }, 400);
+	}
+	const machineIds = Array.isArray(rawMachines) ? [...new Set(rawMachines as string[])] : null;
+	return json({ namespace: ctx.fleet.createNamespace(name, machineIds) }, 201);
+}
+
+/** A notification write failure must not turn an already-committed move/start into a false HTTP failure. */
+function notifyOrEscalate(ownerId: string, event: FleetEvent, ctx: ApiContext): void {
+	try {
+		if (ctx.fleet.enqueueFor(ownerId, event)) ctx.agents.notifyFleet(ownerId, event);
+	} catch (err) {
+		log.error(`fleet notification ${event.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+		ctx.notices.add({ message: `Fleet event for session ${event.sessionId} could not be queued; inspect the hub state store.`,
+			urgency: "warn", sessionId: event.sessionId });
+	}
+}
+
+/** A newly visible worker wakes operators so they can claim/watch it. */
+function announceAttachedWorker(worker: SessionRecord, ctx: ApiContext): void {
+	if (!worker.namespaceId || worker.superagent) return;
+	for (const operator of ctx.sessions.list()) {
+		if (operator.superagent !== true || operator.status !== "live" || operator.namespaceId !== worker.namespaceId) continue;
+		const event = { id: randomId("e_"), sessionId: worker.id, kind: "session_attached", createdAt: Date.now() };
+		notifyOrEscalate(operator.id, event, ctx);
+	}
+}
+
+/** A move revokes access, watches and the current controller in one durable transaction. */
+async function assignNamespace(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const record = ctx.sessions.get(id);
+	if (!record) return json({ error: "session not found" }, 404);
+	const body = await jsonBody(req);
+	if (!body || !("namespaceId" in body)) return json({ error: "namespaceId is required (null detaches)" }, 400);
+	const namespaceId = body.namespaceId;
+	if (namespaceId !== null && (typeof namespaceId !== "string" || !ctx.fleet.getNamespace(namespaceId))) {
+		return json({ error: "namespace not found" }, 404);
+	}
+	const expected = body.expectedVersion;
+	if (expected !== undefined && (!Number.isSafeInteger(expected) || (expected as number) < 0)) {
+		return json({ error: "expectedVersion must be a non-negative integer" }, 400);
+	}
+	if (record.superagent && record.status === "live" && namespaceId !== null && namespaceId !== record.namespaceId) {
+		return json({ error: "running superagents cannot enter another namespace; start a fresh operator session" }, 409);
+	}
+	const affected = [id];
+	if (record.superagent) {
+		for (const worker of ctx.sessions.list()) {
+			if (worker.controllerId === record.id) affected.push(worker.id);
+		}
+	}
+	return ctx.fleet.moveSessions(affected, () => {
+		if (ctx.sessions.get(id) !== record) return json({ error: "session not found" }, 404);
+		const previousNamespaceId = record.namespaceId;
+		const previousControllerId = record.controllerId;
+		const next = ctx.fleet.assign(id, namespaceId, expected as number | undefined);
+		if (!next) return json({ error: "membership version changed" }, 409);
+		ctx.sessions.applyMembership(id, next);
+		if (record.superagent) {
+			for (const worker of ctx.sessions.list()) {
+				if (worker.controllerId === record.id) ctx.sessions.applyMembership(worker.id, ctx.fleet.membership(worker.id));
+			}
+		}
+		if (namespaceId !== previousNamespaceId) {
+			if (previousControllerId) {
+				const event = { id: randomId("e_"), sessionId: id, kind: "namespace_revoked", createdAt: Date.now() };
+				notifyOrEscalate(previousControllerId, event, ctx);
+			}
+			if (namespaceId !== null) announceAttachedWorker(record, ctx);
+		}
+		return json({ session: record });
+	});
+}
+
+async function createSession(req: Request, ctx: ApiContext, fleetOwner?: SessionRecord): Promise<Response> {
 	const body = await jsonBody(req);
 	if (body === null) return json({ error: "invalid json body" }, 400);
+	if (fleetOwner && Object.keys(body).some(key => !["machineId", "cwd", "name", "prompt", "profile"].includes(key))) {
+		return json({ error: "fleet start accepts machineId, cwd, name, prompt and profile only" }, 400);
+	}
+	// JSON parsing awaits I/O; an admin could revoke the operator during that
+	// await. Bind the start to the operator's current membership, not a stale
+	// authorization decision made before parsing its request.
+	if (fleetOwner) {
+		const scope = ctx.fleet.membership(fleetOwner.id);
+		if (!scope.namespaceId || scope.namespaceId !== fleetOwner.namespaceId ||
+			fleetOwner.status !== "live" || !ctx.agents.isOnline(fleetOwner.machineId)) {
+			return json({ error: "fleet operator unavailable" }, 403);
+		}
+	}
 
 	const machineId = field(body, "machineId");
 	if (!machineId) return json({ error: "machineId is required" }, 400);
@@ -335,6 +466,15 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	const machine = ctx.agents.getMachine(machineId);
 	if (!machine) return json({ error: "machine not found" }, 404);
 	if (!machine.connected) return json({ error: "machine offline" }, 404);
+	const namespaceId = fleetOwner
+		? fleetOwner.namespaceId
+		: body.namespaceId === undefined ? null : body.namespaceId;
+	if (namespaceId !== null && typeof namespaceId !== "string") return json({ error: "invalid namespaceId" }, 400);
+	const namespace = namespaceId === null ? undefined : ctx.fleet.getNamespace(namespaceId);
+	if (namespaceId !== null && !namespace) return json({ error: "namespace not found" }, 404);
+	if (namespace?.machineIds !== null && namespace?.machineIds !== undefined && !namespace.machineIds.includes(machineId)) {
+		return json({ error: "machine is not allowed in this namespace" }, 403);
+	}
 
 	// Optional resume target: present-but-empty is a caller bug, not "start
 	// fresh" — silently degrading a resume click into a blank session would
@@ -351,6 +491,12 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	if (superagent !== undefined && typeof superagent !== "boolean") {
 		return json({ error: "superagent must be a boolean" }, 400);
 	}
+	if (superagent === true) {
+		if (namespaceId === null) return json({ error: "superagent requires namespaceId" }, 400);
+		if (!supportsFleetNamespace(ctx.agents.agentVersion(machineId))) {
+			return json({ error: "machine daemon must be upgraded for namespace-scoped superagents" }, 409);
+		}
+	}
 
 	// Tool whitelist (protocol §2 `start.tools`): a non-empty array of non-empty
 	// strings. Trimmed + deduped (first-seen order) so the record and the start
@@ -366,6 +512,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	const tools = Array.isArray(rawTools)
 		? [...new Set(rawTools.map(name => (name as string).trim()))]
 		: undefined;
+	if (superagent === true && tools !== undefined) return json({ error: "superagent tools are managed by the fleet" }, 400);
 	// Startup hand-offs (0.9.0+): `true` = SDK default target, a string = explicit
 	// model/role pattern; anything else is a caller bug (protocol §2 start.prewalk).
 	const handoff = (key: string): boolean | string | undefined | Response => {
@@ -388,7 +535,25 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		profile,
 		...(superagent === true ? { superagent: true as const } : {}),
 		...(tools === undefined ? {} : { tools }),
+		namespaceId,
 	});
+	try {
+		if (namespaceId !== null) ctx.sessions.applyMembership(record.id, ctx.fleet.assign(record.id, namespaceId)!);
+		if (fleetOwner) {
+			const claim = ctx.fleet.claim(record.id, fleetOwner.id);
+			if (!claim) throw new Error("fleet worker could not be claimed");
+			ctx.sessions.applyMembership(record.id, claim);
+			ctx.fleet.watch(fleetOwner.id, record.id);
+		}
+	} catch (err) {
+		ctx.sessions.delete(record.id);
+		try {
+			ctx.fleet.removeSession(record.id);
+		} catch (cleanupErr) {
+			log.warn(`fleet rollback for ${record.id} failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+		}
+		return fleetStateFailure(err);
+	}
 	const prompt = field(body, "prompt");
 	const base = derivePublicBase(req, ctx.cfg);
 	const dispatched = ctx.agents.send(machineId, {
@@ -407,9 +572,11 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		webUrl: base.httpBase,
 	});
 	if (!dispatched) {
+		ctx.fleet.removeSession(record.id);
 		ctx.sessions.delete(record.id);
 		return json({ error: "machine write failed" }, 502);
 	}
+	if (!fleetOwner && namespaceId !== null) announceAttachedWorker(record, ctx);
 	return json({ session: record }, 202);
 }
 
@@ -419,8 +586,11 @@ function stopSession(id: string, ctx: ApiContext): Response {
 	if (record.status === "exited" || record.status === "failed") {
 		return json({ error: "session already finished" }, 409);
 	}
-	// Best effort: the record flips when the agent reports session-exit.
-	ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user stop" });
+	if (!ctx.agents.isOnline(record.machineId)) return json({ error: "agent offline" }, 502);
+	// The record flips only after the owning daemon reports session-exit.
+	if (!ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user stop" })) {
+		return json({ error: "agent offline" }, 502);
+	}
 	return json({ ok: true });
 }
 
@@ -439,6 +609,12 @@ function restartSession(id: string, req: Request, ctx: ApiContext): Response {
 	const machine = ctx.agents.getMachine(record.machineId);
 	if (!machine) return json({ error: "machine not found" }, 404);
 	if (!machine.connected) return json({ error: "machine offline" }, 404);
+	if (record.superagent) {
+		if (!record.namespaceId) return json({ error: "superagent requires namespaceId" }, 409);
+		if (!supportsFleetNamespace(ctx.agents.agentVersion(record.machineId))) {
+			return json({ error: "machine daemon must be upgraded for namespace-scoped superagents" }, 409);
+		}
+	}
 	const base = derivePublicBase(req, ctx.cfg);
 	const dispatched = ctx.agents.send(record.machineId, {
 		t: "start",
@@ -453,7 +629,9 @@ function restartSession(id: string, req: Request, ctx: ApiContext): Response {
 		webUrl: base.httpBase,
 	});
 	if (!dispatched) return json({ error: "machine write failed" }, 502);
-	return json({ session: ctx.sessions.reissue(id, { requireSessionFile: false }) }, 202);
+	const resumed = ctx.sessions.reissue(id, { requireSessionFile: false });
+	ctx.agents.trackReissuedSession(record.machineId, id);
+	return json({ session: resumed }, 202);
 }
 
 /**
@@ -466,10 +644,20 @@ function restartSession(id: string, req: Request, ctx: ApiContext): Response {
 function deleteSession(id: string, ctx: ApiContext): Response {
 	const record = ctx.sessions.get(id);
 	if (!record) return json({ error: "session not found" }, 404);
+	try {
+		ctx.fleet.removeSession(id);
+	} catch (err) {
+		return fleetStateFailure(err);
+	}
 	if (record.status !== "exited" && record.status !== "failed") {
 		ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user delete" });
 	}
 	ctx.sessions.delete(id);
+	if (record.superagent) {
+		for (const worker of ctx.sessions.list()) {
+			if (worker.controllerId === id) ctx.sessions.applyMembership(worker.id, ctx.fleet.membership(worker.id));
+		}
+	}
 	return json({ ok: true });
 }
 
@@ -525,6 +713,13 @@ function supportsProfileRelay(version: string | null): boolean {
 		: triple[1] !== PROFILE_RELAY_VERSION[1]
 			? triple[1] > PROFILE_RELAY_VERSION[1]
 			: triple[2] >= PROFILE_RELAY_VERSION[2];
+}
+
+/** Old daemons still proxy unrestricted /api/* fleet requests and are unsafe as operators. */
+function supportsFleetNamespace(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 12));
 }
 
 async function usageProxy(machineId: string, rest: string, search: string, req: Request, ctx: ApiContext): Promise<Response> {
@@ -1427,11 +1622,15 @@ function cmdErrorStatus(error: string): number {
 	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
 	// still streaming — the agent's own message tells the caller which.
 	// `handoff` shares the streaming refusal and adds its own in-progress guard.
-	if (error === "Nothing to retry." || error.startsWith("Wait for the current response") || error === "Handoff generation is already in progress.") {
+	if (error === "Nothing to retry." || error.startsWith("Wait for the current response") || error === "Handoff generation is already in progress." ||
+		error === "input request is no longer pending" || error === "cursor is not on the active branch" ||
+		error.startsWith("replacement has queued work") || error.startsWith("session is busy;")) {
 		return 409;
 	}
 	switch (error) {
 		case "unknown session":
+			return 409;
+		case "session history unavailable":
 			return 409;
 		case "no such directory":
 		case "not a directory":
@@ -1441,6 +1640,15 @@ function cmdErrorStatus(error: string): number {
 		case "query too long":
 		case "invalid paths":
 		case "too many paths": // search-sessions caller-input failures (protocol §2 "Machine commands")
+		case "invalid input answer":
+		case "requestId and answer required":
+		case "limit must be between 1 and 100":
+		case "invalid message mode":
+		case "message requires non-blank text":
+		case "replacement text must be non-blank":
+		case "clearQueue must be boolean":
+		case "invalid session file":
+		case "session file is outside managed omp session stores":
 			return 400;
 		case "file too large":
 			return 413;
@@ -1468,4 +1676,194 @@ function cmdErrorStatus(error: string): number {
 function pick(data: unknown, key: string): unknown {
 	if (data === null || typeof data !== "object") return undefined;
 	return (data as Record<string, unknown>)[key];
+}
+
+/** Fleet responses are projections: the registry's full collab links are capabilities, not model data. */
+function fleetSession(record: SessionRecord): Omit<SessionRecord, "links" | "sessionFile" | "pid"> {
+	const { links: _links, sessionFile: _file, pid: _pid, ...safe } = record;
+	return safe;
+}
+
+/**
+ * Every fleet route goes through the daemon-injected owner identity and a live
+ * namespace lookup. The daemon's proxy must never forward ordinary admin routes.
+ */
+async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const ownerId = req.headers.get("x-fleet-owner");
+	const owner = ownerId ? ctx.sessions.get(ownerId) : undefined;
+	const ownerScope = owner ? ctx.fleet.membership(owner.id) : undefined;
+	if (!owner || owner.superagent !== true || owner.status !== "live" || !ownerScope?.namespaceId ||
+		!ctx.agents.isOnline(owner.machineId)) return json({ error: "fleet operator unavailable" }, 403);
+	const namespaceId = ownerScope.namespaceId;
+	const ownerStillInScope = (): boolean =>
+		owner.status === "live" && ctx.agents.isOnline(owner.machineId) &&
+		ctx.fleet.membership(owner.id).namespaceId === namespaceId;
+	const inScope = (record: SessionRecord): boolean => ctx.fleet.membership(record.id).namespaceId === namespaceId;
+	const target = (id: string): SessionRecord | undefined => {
+		const record = ctx.sessions.get(id);
+		return record && inScope(record) ? record : undefined;
+	};
+	const controlled = (record: SessionRecord): boolean =>
+		record.superagent !== true && ctx.fleet.membership(record.id).controllerId === owner.id;
+	const routeParts = route.slice("/api/fleet/".length).split("/");
+
+	if (route === "/api/fleet/machines" && req.method === "GET") {
+		const allowed = ctx.fleet.getNamespace(namespaceId)?.machineIds;
+		const counts = new Map<string, number>();
+		for (const record of ctx.sessions.list()) {
+			if (!inScope(record) || record.status === "exited" || record.status === "failed") continue;
+			counts.set(record.machineId, (counts.get(record.machineId) ?? 0) + 1);
+		}
+		return json({ machines: ctx.agents.listMachines()
+			.filter(machine => allowed === null || allowed?.includes(machine.machineId))
+			.map(({ machineId, name, connected }) =>
+				({ machineId, name, connected, sessionCount: counts.get(machineId) ?? 0 })) });
+	}
+	if (route === "/api/fleet/sessions") {
+		if (req.method === "GET") return json({ sessions: ctx.sessions.list().filter(inScope).map(fleetSession) });
+		if (req.method === "POST") {
+			const response = await createSession(req, ctx, owner);
+			if (response.status >= 400) return response;
+			const payload = await response.json() as { session: SessionRecord };
+			if (!ownerStillInScope() || ctx.fleet.membership(payload.session.id).namespaceId !== namespaceId) {
+				return json({ error: "fleet operator membership changed" }, 409);
+			}
+			return json({ session: fleetSession(payload.session) }, response.status);
+		}
+	}
+	if (route === "/api/fleet/events" && req.method === "GET") {
+		const events = ctx.fleet.events(owner.id).filter(event => {
+			if (event.kind === "namespace_revoked") return true;
+			const worker = target(event.sessionId);
+			return worker !== undefined;
+		});
+		return json({ events });
+	}
+	if (routeParts[0] === "events" && routeParts.length === 3 && routeParts[2] === "ack" && req.method === "POST") {
+		const eventId = decodeURIComponent(routeParts[1]!);
+		ctx.fleet.ack(owner.id, eventId);
+		ctx.agents.forgetFleetDelivery(owner.id, eventId);
+		return json({ ok: true });
+	}
+	if (route === "/api/fleet/notices" && req.method === "POST") {
+		const body = await jsonBody(req);
+		if (!body) return json({ error: "invalid json body" }, 400);
+		if (!ownerStillInScope()) return json({ error: "fleet operator membership changed" }, 409);
+		const sessionId = body.sessionId;
+		if (sessionId !== undefined && (typeof sessionId !== "string" || !target(sessionId))) {
+			return json({ error: "session not found" }, 404);
+		}
+		try {
+			return json({ ok: true, notice: ctx.notices.add({ message: body.message, urgency: body.urgency, sessionId }) });
+		} catch (err) {
+			return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+		}
+	}
+	if (routeParts[0] !== "sessions" || routeParts.length < 2 || routeParts.length > 3) {
+		return json({ error: "not found" }, 404);
+	}
+	const id = decodeURIComponent(routeParts[1]!);
+	const worker = target(id);
+	if (!worker) return json({ error: "session not found" }, 404);
+	const action = routeParts[2];
+	if (action === undefined && req.method === "GET") return json({ session: fleetSession(worker) });
+	if (action === "claim" && req.method === "POST") {
+		if (worker.superagent) return json({ error: "another operator cannot be controlled" }, 403);
+		const membership = ctx.fleet.claim(worker.id, owner.id);
+		if (!membership) return json({ error: "session is controlled by another operator" }, 409);
+		ctx.sessions.applyMembership(worker.id, membership);
+		return json({ ok: true, controllerId: owner.id });
+	}
+	const reading = (req.method === "GET" && (action === "messages" || action === "input")) ||
+		(action === "watch" && req.method === "POST");
+	if (!reading && !controlled(worker)) return json({ error: "claim this session before managing it" }, 403);
+	const version = ctx.fleet.membership(worker.id).membershipVersion;
+	const stillAllowed = (): boolean => {
+		const scope = ctx.fleet.membership(worker.id);
+		return ownerStillInScope() && scope.namespaceId === namespaceId && scope.membershipVersion === version &&
+			(reading || scope.controllerId === owner.id);
+	};
+	if (action === "stop" && req.method === "POST") {
+		return ctx.fleet.mutateWorker(id, async () => stillAllowed()
+			? stopSession(id, ctx)
+			: json({ error: "session membership changed" }, 409));
+	}
+	if (action === "watch" && req.method === "POST") {
+		if (worker.superagent) return json({ error: "operator sessions cannot be watched" }, 403);
+		const subscribed = ctx.fleet.watch(owner.id, id);
+		if (subscribed && worker.status === "live" && ctx.agents.isOnline(worker.machineId)) {
+			const pending = await dispatchCmd(id, "fleet-get-input", {}, ctx);
+			if (pending.ok && stillAllowed() && Array.isArray(pick(pending.data, "pending"))) {
+				for (const input of pick(pending.data, "pending") as Array<{ requestId?: unknown }>) {
+					if (typeof input?.requestId !== "string") continue;
+					const event = { id: randomId("e_"), sessionId: id, kind: "input_required",
+						requestId: input.requestId, createdAt: Date.now() };
+					for (const recipient of ctx.fleet.enqueue(event, candidate => candidate === owner.id)) {
+						ctx.agents.notifyFleet(recipient, event);
+					}
+				}
+			}
+		}
+		return stillAllowed() ? json({ ok: true }) : json({ error: "session membership changed" }, 409);
+	}
+	if (action === "messages" && req.method === "GET") {
+		const query = new URL(req.url).searchParams;
+		const cursor = query.get("cursor") ?? undefined;
+		const rawLimit = query.get("limit");
+		const pageLimit = rawLimit === null ? 30 : Number(rawLimit);
+		if (!Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 100 || (cursor !== undefined && cursor.length > 128)) {
+			return json({ error: "invalid cursor or limit" }, 400);
+		}
+		const result = worker.status === "live"
+			? await dispatchCmd(id, "fleet-get-messages", { cursor, pageLimit }, ctx)
+			: worker.sessionFile && ctx.agents.isOnline(worker.machineId)
+				? await ctx.agents.sendCmd(worker.machineId, { reqId: newCmdReqId(), cmd: "read-session-messages",
+					path: worker.sessionFile, cursor, pageLimit })
+				: { ok: false as const, error: "session history unavailable" };
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		if (!result.ok) return "response" in result ? result.response : json({ error: result.error }, cmdErrorStatus(result.error));
+		return json(result.data);
+	}
+	if (action === "input" && req.method === "GET") {
+		const result = await dispatchCmd(id, "fleet-get-input", {}, ctx);
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		return result.ok ? json(result.data) : result.response;
+	}
+	if (action === "input" && req.method === "POST") {
+		const body = await jsonBody(req);
+		if (!body || typeof body.requestId !== "string" || typeof body.answer !== "string") {
+			return json({ error: "requestId and answer are required" }, 400);
+		}
+		const requestId = body.requestId;
+		const answer = body.answer;
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		const result = await ctx.fleet.mutateWorker(id,
+			() => dispatchCmd(id, "fleet-answer-input", { requestId, answer }, ctx));
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		return result.ok ? json({ ok: true }) : result.response;
+	}
+	if ((action === "message" || action === "interrupt") && req.method === "POST") {
+		const body = await jsonBody(req);
+		if (!body) return json({ error: "invalid json body" }, 400);
+		const text = body.text;
+		if (action === "message" && (typeof text !== "string" || !text.trim())) {
+			return json({ error: "text is required" }, 400);
+		}
+		if (action === "interrupt" && text !== undefined && (typeof text !== "string" || !text.trim())) {
+			return json({ error: "text must be nonblank" }, 400);
+		}
+		if (action === "message" && body.mode !== "start" && body.mode !== "steer" && body.mode !== "follow_up") {
+			return json({ error: "invalid message mode" }, 400);
+		}
+		if (action === "interrupt" && body.clearQueue !== undefined && typeof body.clearQueue !== "boolean") {
+			return json({ error: "clearQueue must be boolean" }, 400);
+		}
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		const result = await ctx.fleet.mutateWorker(id, () =>
+			dispatchCmd(id, action === "message" ? "fleet-message" : "fleet-interrupt",
+				{ ...(text === undefined ? {} : { text: text as string }), ...(action === "message" ? { messageMode: body.mode as "start" | "steer" | "follow_up" } : { clearQueue: body.clearQueue as boolean | undefined }) }, ctx));
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		return result.ok ? json({ ok: true, scheduled: true, operationId: pick(result.data, "operationId") }) : result.response;
+	}
+	return json({ error: "not found" }, 404);
 }

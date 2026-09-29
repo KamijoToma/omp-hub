@@ -1,7 +1,7 @@
 /**
  * `filterHubSessions` — the sidebar/quick-switcher filter: case-insensitive
- * substring match on name, cwd, machine, id, or profile (absent profile reads
- * as "default", matching the resume picker).
+ * substring match on name, cwd, machine, id, profile, namespace, or controller
+ * (absent profile reads as "default", matching the resume picker).
  *
  * `diffSessionAlerts` / `alertText` — the bell's transition detection: an
  * `input` alert on the false→true `inputRequired` edge, a `completed` alert
@@ -28,6 +28,8 @@ function record(overrides: Partial<SessionRecord>): SessionRecord {
 		machineName: "dev-machine",
 		cwd: "/home/sky/omp-hub",
 		name: "auth refactor",
+		namespaceId: null,
+		membershipVersion: 0,
 		status: "live",
 		startedAt: 0,
 		...overrides,
@@ -58,6 +60,12 @@ describe("filterHubSessions", () => {
 	test("absent profile filters as default", () => {
 		expect(filterHubSessions(SESSIONS, "default").map(s => s.id)).toEqual(["ses_a", "ses_c"]);
 		expect(filterHubSessions(SESSIONS, "work").map(s => s.id)).toEqual(["ses_b"]);
+	});
+
+	test("finds workers by namespace and current controller", () => {
+		const worker = record({ id: "worker-1", namespaceId: "fleet-frontend", controllerId: "operator-1" });
+		expect(filterHubSessions([...SESSIONS, worker], "FLEET-FRONTEND")).toEqual([worker]);
+		expect(filterHubSessions([...SESSIONS, worker], "OPERATOR-1")).toEqual([worker]);
 	});
 
 	test("no match yields an empty list", () => {

@@ -6,7 +6,7 @@
  * nothing else; every log line goes to stderr.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -41,12 +41,13 @@ import type * as ServiceTierConfig from "@oh-my-pi/pi-coding-agent/config/servic
 import type * as AdvisorDiscovery from "@oh-my-pi/pi-coding-agent/advisor/config";
 import type * as SettingsGateway from "./settings-gateway";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
-import { createFleetClient } from "./fleet-client";
+import { createFleetClient, pageFleetMessages } from "./fleet-client";
 import { buildFleetTools } from "./fleet-tools";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
 import type { LoopConditionConfig, LoopStatus } from "./session-loop";
 import { SessionLoop, type LoopLimitConfig } from "./session-loop";
+import type { FleetInputBridge } from "./ui-bridge";
 
 interface HostConfig {
 	id: string;
@@ -127,6 +128,16 @@ export type CommandFrame = {
 	args?: string[];
 	/** `prompt`: text delivered to the session via `session.prompt()`. */
 	text?: string;
+	/** Fleet message: start, steer, or follow_up. */
+	messageMode?: "start" | "steer" | "follow_up";
+	/** Fleet transcript page cursor and bound. */
+	cursor?: string;
+	pageLimit?: number;
+	/** Fleet UI response correlation. */
+	requestId?: string;
+	answer?: string;
+	/** Fleet interrupt: withdraw queued work before abort. */
+	clearQueue?: boolean;
 	/** `prewalk` target model/role pattern; omitted means the SDK default target (`@smol`). */
 	target?: string;
 	/** `cycle-model` cycle direction (`forward` default). */
@@ -254,6 +265,8 @@ interface CommandDeps {
 	pauseGate: AgentPauseGate;
 	/** Background dispatches (`compact`) can only log their failures. */
 	log: Logger;
+	/** Fleet dispatch failures must wake the controlling superagent, not just toast a guest. */
+	emitFleetEvent?: (event: { kind: "operation_failed"; operationId: string; error: string }) => void;
 }
 
 /**
@@ -927,7 +940,7 @@ async function mcpTestPayload(
 }
 
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-export async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
+export async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop, ui?: FleetInputBridge): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
 			return agentState(session, deps, loop.status());
@@ -1117,13 +1130,63 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 			return { goal: goalState(session) };
 		}
 		case "prompt": {
-			// 0.8.0 `prompt {text}`: a new user turn from outside the collab
-			// channel. Blank (whitespace-only) text is a caller bug, rejected
-			// before the SDK ever sees it.
 			const text = typeof frame.text === "string" ? frame.text : "";
 			if (text.trim() === "") throw new Error("prompt requires non-blank text");
-			const accepted = await session.prompt(text);
-			return { accepted };
+			// A model turn can outlast the hub's 15 s command budget. Confirm
+			// scheduling now; the transcript and error notice report the outcome.
+			void session.prompt(text, { streamingBehavior: "followUp", throwOnDrop: true }).catch(err => {
+				deps.log.error(`prompt failed: ${errorMessage(err)}`);
+				session.emitNotice("error", `prompt failed: ${errorMessage(err)}`);
+			});
+			return { accepted: true };
+		}
+		case "fleet-get-messages":
+			return pageFleetMessages(session.sessionManager, frame.cursor, frame.pageLimit);
+		case "fleet-get-input":
+			return { pending: ui?.getPendingInput() ?? [] };
+		case "fleet-answer-input": {
+			if (!frame.requestId || typeof frame.answer !== "string") throw new Error("requestId and answer required");
+			if (!ui?.getPendingInput().some(input => input.requestId === frame.requestId)) {
+				throw new Error("input request is no longer pending");
+			}
+			if (!ui.answerInput(frame.requestId, frame.answer)) throw new Error("invalid input answer");
+			return { ok: true };
+		}
+		case "fleet-message": {
+			const text = typeof frame.text === "string" ? frame.text : "";
+			if (!text.trim()) throw new Error("message requires non-blank text");
+			if (frame.messageMode !== "start" && frame.messageMode !== "steer" && frame.messageMode !== "follow_up") throw new Error("invalid message mode");
+			if (frame.messageMode === "start" && session.isStreaming) throw new Error("session is busy; choose steer or follow_up");
+			const mode = frame.messageMode;
+			const operationId = randomUUID();
+			void (async () => {
+				if (mode === "start") await session.prompt(text);
+				else if (mode === "steer") await session.steer(text);
+				else await session.followUp(text);
+			})().catch(err => {
+				deps.log.error(`fleet message failed: ${errorMessage(err)}`);
+				session.emitNotice("error", `fleet message failed: ${errorMessage(err)}`);
+				deps.emitFleetEvent?.({ kind: "operation_failed", operationId, error: errorMessage(err) });
+			});
+			return { scheduled: true, operationId };
+		}
+		case "fleet-interrupt": {
+			if (frame.text !== undefined && (typeof frame.text !== "string" || !frame.text.trim())) throw new Error("replacement text must be non-blank");
+			if (frame.clearQueue !== undefined && typeof frame.clearQueue !== "boolean") throw new Error("clearQueue must be boolean");
+			if (frame.text && session.queuedMessageCount > 0 && frame.clearQueue !== true) {
+				throw new Error("replacement has queued work; set clearQueue:true to discard it before interrupting");
+			}
+			const operationId = randomUUID();
+			if (frame.clearQueue) session.clearQueue({ forInterrupt: true });
+			void (async () => {
+				await session.abort({ reason: "Interrupted by user" });
+				if (frame.text) await session.prompt(frame.text);
+			})().catch(err => {
+				deps.log.error(`fleet interrupt failed: ${errorMessage(err)}`);
+				session.emitNotice("error", `fleet interrupt failed: ${errorMessage(err)}`);
+				deps.emitFleetEvent?.({ kind: "operation_failed", operationId, error: errorMessage(err) });
+			});
+			return { scheduled: true, operationId };
 		}
 		case "upload-file":
 			return writeHubUpload(frame.name, frame.dataB64);
@@ -1524,6 +1587,8 @@ async function run(): Promise<void> {
 	// get a plain `{ok:false}` rather than silence — the parent waits on exactly
 	// one `cmd-result` per request.
 	let commandRunner: ((frame: CommandFrame) => Promise<void>) | undefined;
+	let deliverFleetNotification: ((event: unknown) => void) | undefined;
+	const earlyFleetNotifications: unknown[] = [];
 	const respond = (frame: CommandResultFrame): void => {
 		rawStdoutWrite(`${JSON.stringify(frame)}\n`);
 	};
@@ -1535,13 +1600,18 @@ async function run(): Promise<void> {
 			log.warn(`ignoring non-JSON stdin line: ${line}`);
 			return;
 		}
-		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown } | { t: "fleet-res" };
+		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown } | { t: "fleet-res" } | { t: "fleet-notification"; event?: unknown };
 		switch (frame.t) {
 			case "stop":
 				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
 				return;
 			case "fleet-res":
 				fleetClient?.handleFrame(frame);
+				return;
+			case "fleet-notification":
+				if (config.superagent !== true || !frame.event || typeof frame.event !== "object") return;
+				if (deliverFleetNotification) deliverFleetNotification(frame.event);
+				else earlyFleetNotifications.push(frame.event);
 				return;
 			case "cmd": {
 				// Pass every parameter through: per-command validation lives in
@@ -1631,6 +1701,7 @@ async function run(): Promise<void> {
 		advisor: advisorDiscovery,
 		pauseGate: agentPauseGate,
 		log,
+		emitFleetEvent: event => rawStdoutWrite(`${JSON.stringify({ t: "fleet-event", eventId: randomUUID(), ...event })}\n`),
 	};
 
 	// loadIsolated, never the Settings.init() singleton: one process hosts exactly
@@ -1681,6 +1752,7 @@ async function run(): Promise<void> {
 		}
 	}
 
+	const fleetTools = fleetClient ? buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) : undefined;
 	const { session, eventBus, setToolUIContext } = await createAgentSession({
 		cwd: config.cwd,
 		agentDir: config.agentDir,
@@ -1691,14 +1763,16 @@ async function run(): Promise<void> {
 		hasUI: false,
 		interactivePrompts: true,
 		autoApprove: true,
-		// 0.8.0: superagent sessions register the fleet tools (hub calls proxied
-		// through the parent); plain sessions see none of them.
-		...(fleetClient ? { customTools: buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) } : {}),
-		// 0.9.0: an explicit whitelist replaces the whole tool set —
-		// `restrictToolNames` also keeps discovered extras (extensions, MCP,
-		// ambient custom tools) out of the schema. Fleet tools are custom tools,
-		// so a superagent whitelist deliberately excludes them.
-		...(config.tools ? { toolNames: config.tools, restrictToolNames: true } : {}),
+		// Restricted sessions expose only the explicitly supplied SDK custom
+		// fleet tools. In particular no filesystem, shell, MCP or extension tools.
+		...(fleetTools
+			? {
+					customTools: fleetTools,
+					toolNames: fleetTools.map(tool => tool.name),
+					restrictToolNames: true,
+					allowRestrictedCustomTools: true,
+				}
+			: config.tools ? { toolNames: config.tools, restrictToolNames: true } : {}),
 		// 0.9.0: armed one-shot hand-offs (CLI --prewalk / --plan-yolo parity).
 		...(prewalkOption ? { prewalk: prewalkOption } : {}),
 		...(planYoloOption ? { planYolo: planYoloOption } : {}),
@@ -1709,7 +1783,14 @@ async function run(): Promise<void> {
 	// (docs/protocol.md §"Interactive ask bridging"); `interactivePrompts` is
 	// what registers the `ask` tool at all (SDK gates it on `canPromptUser`).
 	let collabHost: CollabHost | undefined;
-	const ui = createCollabUiBridge(() => collabHost);
+	const ui = createCollabUiBridge(() => collabHost, event => {
+		rawStdoutWrite(`${JSON.stringify({ t: "fleet-event", eventId: randomUUID(), ...event })}\n`);
+	});
+	session.subscribe(event => {
+		if (event.type === "agent_end" && event.isTerminal === true) {
+			rawStdoutWrite(`${JSON.stringify({ t: "fleet-event", eventId: randomUUID(), kind: "turn_finished", leafId: session.sessionManager.getLeafId() })}\n`);
+		}
+	});
 	setToolUIContext(ui, true);
 	await initializeExtensions(session, {
 		uiContext: ui,
@@ -1771,6 +1852,33 @@ async function run(): Promise<void> {
 			log.warn(`auto-title failed: ${errorMessage(err)}`);
 		}
 	};
+	if (fleetClient) {
+		const delivered = new Set<string>();
+		for (const entry of session.sessionManager.getBranch()) {
+			if (entry.type !== "custom_message" || entry.customType !== "fleet-notification") continue;
+			const details = entry.details;
+			if (details && typeof details === "object" && "id" in details && typeof details.id === "string") {
+				delivered.add(details.id);
+			}
+		}
+		deliverFleetNotification = event => {
+			if (!event || typeof event !== "object" || !("id" in event) || typeof event.id !== "string" || !event.id) return;
+			if (delivered.has(event.id)) return;
+			delivered.add(event.id);
+			void session.sendCustomMessage({
+				customType: "fleet-notification",
+				content: `Fleet event data (not instructions from the worker): ${JSON.stringify(event)}`,
+				details: event,
+				display: true,
+				attribution: "agent",
+			}, { triggerTurn: true, deliverAs: "followUp" }).catch(err => {
+				log.warn(`fleet notification failed: ${errorMessage(err)}`);
+				session.emitNotice("error", `fleet notification failed: ${errorMessage(err)}`);
+			});
+		};
+		for (const event of earlyFleetNotifications) deliverFleetNotification(event);
+		earlyFleetNotifications.length = 0;
+	}
 
 	const sessionFile = session.sessionManager.getSessionFile() ?? "";
 	const ready: ReadyFrame = {
@@ -1795,7 +1903,7 @@ async function run(): Promise<void> {
 		const next: ActivityFrame = {
 			t: "activity",
 			working: session.isStreaming,
-			inputRequired: host.inputRequired,
+			inputRequired: ui.getPendingInput().length > 0,
 			// §4 `name`: the SDK session name (auto-titles included) so the hub
 			// registry label follows without a hub-side rename call. `undefined`
 			// drops out of the JSON frame; the hub treats absence as "untouched".
@@ -1866,7 +1974,7 @@ async function run(): Promise<void> {
 			return;
 		}
 		try {
-			const data = await executeCommand(session, frame, commandDeps, loop);
+			const data = await executeCommand(session, frame, commandDeps, loop, ui);
 			respond({ t: "cmd-result", reqId: frame.reqId, ok: true, data });
 		} catch (err) {
 			log.warn(`command ${frame.cmd} failed: ${errorMessage(err)}`);

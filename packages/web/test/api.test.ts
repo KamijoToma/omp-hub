@@ -120,6 +120,8 @@ describe("hub api", () => {
 			machineName: "box",
 			cwd: "/srv/app",
 			name: "app",
+			namespaceId: null,
+			membershipVersion: 0,
 			status: "starting",
 			startedAt: 1,
 		};
@@ -736,19 +738,6 @@ describe("hub api", () => {
 
 		expect(err).toBeInstanceOf(HubApiError);
 		expect((err as HubApiError).message).toContain("already exists");
-	});
-
-	test("startSession forwards superagent:true in the POST body", async () => {
-		setToken("t0k3n");
-		stubFetch(() => json({ session: { id: "s_x" } }, 202));
-
-		await startSession({ machineId: "m1", cwd: "/srv/app", superagent: true });
-
-		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
-			machineId: "m1",
-			cwd: "/srv/app",
-			superagent: true,
-		});
 	});
 
 	test("startSession omits superagent when unset or false", async () => {

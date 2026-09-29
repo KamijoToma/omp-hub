@@ -2,6 +2,16 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.12.0** — namespace-scoped fleet control and closed-loop supervision. Session records
+carry namespace membership and controller version; authenticated users may create namespaces and
+move live workers, while daemon-proxied superagent tools use only `/api/fleet/*` with the parent-
+verified owner id. Structured current-branch/terminal message reads, pending `ask`/select/editor
+responses, start/steer/follow-up/interrupt commands, and durable watched-worker notifications
+span §2–§4. Superagents expose only their SDK-supplied fleet tools; existing unscoped sessions
+remain invisible to fleet tools until an authenticated user assigns them. Upgrade **hub and every
+daemon together**: old daemons retain the legacy `/api/*` proxy allowlist and must not host a
+superagent once namespace isolation is relied on.
+
 Revision **0.11.0** — machine-level live subscription usage. `get-subscriptions`
 (`cmd` without a session id, §2) fetches the current `/usage` provider limits for
 one omp profile, and `GET /api/machines/:id/subscriptions?profile=` (§3) exposes
@@ -100,8 +110,8 @@ daemon; use TLS/WSS outside loopback.
 { t: "hb", ts: number, sessions: { id: string; status: SessionStatus }[] }  // every 15 s
 { t: "session-ready", id: string, sessionFile: string, pid: number,
   links: { full: string; view: string; web: string; webView: string } }
-{ t: "session-error", id: string, error: string }                  // start failed before ready
-{ t: "session-exit",  id: string, code: number | null, reason: string }
+{ t: "session-error", id: string, error: string, eventId?: string } // start failed before ready
+{ t: "session-exit", id: string, code: number | null, reason: string, eventId?: string }
 { t: "session-activity", id: string, working: boolean,
   inputRequired: boolean, name?: string, handoff?: boolean }       // on every change (0.5.0+; optional for consumers);
                                                                    // `name` mirrors the SDK session name when set
@@ -112,6 +122,10 @@ daemon; use TLS/WSS outside loopback.
 { t: "usage-res", reqId: string, ok: true, status: number,
   contentType?: string, bodyB64?: string }                         // answer to usage-req
 { t: "usage-res", reqId: string, ok: false, error: string }
+{ t: "session-event", id: string, eventId: string,
+  kind: "input_required"|"input_resolved"|"turn_finished"|"operation_failed"|"session_exited"|"session_failed",
+  requestId?: string, leafId?: string, operationId?: string, error?: string }
+                                                                  // resent until hub persists and acks eventId
 ```
 
 ### hub → agent
@@ -126,6 +140,8 @@ daemon; use TLS/WSS outside loopback.
   path: string, bodyB64?: string, profile?: string }              // machine-level stats relay;
                                                                   // `profile` (0.5.0+) names the omp
                                                                   // profile whose dashboard serves it
+{ t: "session-event-ack", eventId: string }                        // hub committed the event
+{ t: "fleet-notification", id: string, event: FleetEvent }        // hub → operator daemon
 ```
 
 Semantics:
@@ -148,16 +164,15 @@ Semantics:
   session <id>"`. A session that has exited releases the file for further resumes. A file
   that lives under a named profile's session store should be resumed with the same
   `start.profile`, so config and credentials resolve from the profile that owns it.
-- `start.superagent` (0.8.0+) marks the session as a fleet operator: the child spawns with
-  `config.superagent` and registers the fleet tools (§4 fleet-req), which reach the hub through
-  the daemon's whitelisted proxy — the child never holds `HUB_TOKEN`. Fleet-initiated starts
-  are daemon-rewritten to `superagent: false`, so a superagent cannot mint another superagent.
-- `start.tools` (0.9.0+) whitelists the session's callable tools: the child creates its SDK
-  session with `toolNames` + `restrictToolNames`, so exactly those tools are exposed and
-  discovered extras (extensions, MCP, ambient custom tools) stay out of the schema. Omitted
-  means the default tool set. The whitelist replaces the whole built-in set — a `superagent`
-  session that also names `tools` gets only that list; the fleet tools are custom tools and
-  are not part of it, so the two options should not be combined.
+- `start.superagent` marks a fleet operator. Its child registers the SDK-supplied `fleet_*`
+  tools under `toolNames` + `restrictToolNames` + `allowRestrictedCustomTools`; it has no
+  filesystem/shell/extension/MCP tools. Admin starts must supply `namespaceId`
+  and target a ≥0.12.0 daemon; fleet-initiated starts are always **plain**
+  workers that inherit the operator's namespace.
+- `start.tools` whitelists plain sessions' callable tools: `toolNames` +
+  `restrictToolNames` excludes discovered extensions/MCP/ambient custom tools. Omitted
+  means the default plain-session tool set. A superagent start with `tools` is rejected:
+  its fleet-only tool set is assigned by the host, not supplied by callers.
 - `start.prewalk` / `start.planYolo` (0.9.0+) arm the SDK's one-shot model hand-offs at
   startup (CLI `--prewalk` / `--plan-yolo` parity). `true` targets the SDK default prewalk
   target (the `@smol` role); a string is an explicit model/role pattern. The child resolves
@@ -166,21 +181,19 @@ Semantics:
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - `session-activity` mirrors the child's guest-visible state into the record's `activity`
-  (`working` = the agent turn streams, `inputRequired` = a host dialog waits on a writable
-  guest, `handoff` = a handoff document is generating — a model call with `working` false).
+  (`working` = the agent turn streams, `inputRequired` = a host dialog awaits a writable
+  guest or its fleet controller, `handoff` = a handoff document generates with `working` false).
   Sent only on change; malformed samples are dropped; unknown ids and terminal records ignore
   it; `session-exit`/`-error` clears the field. Older agents never send it, so `activity` stays
   absent — consumers must treat it as optional (and `handoff` too: absent clears the bit).
-- Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
-  reason `"agent lost"`) and closes the socket with **1001** — a live daemon treats that as
-  transient and reconnects. Only protocol violations and the same-machineId replacement
-  (`"agent replaced"`, `"re-hello"`, …) close with **4000**, which the agent treats as fatal
-  and does NOT reconnect from. `ping` must be answered with `pong`; it does not replace `hb`.
-- `hb.sessions` doubles as the upgrade-restart reconcile (0.6.0+): records restored from the
-  state snapshot (§3) that this connection's heartbeat no longer reports — or reports
-  `exited`/`failed` — flip to that terminal state (`"agent heartbeat: no such child"` /
-  `"agent heartbeat"`). Only records created before the agent connected take part; newer ones
-  follow the normal `session-exit` flow.
+- Two missed heartbeats close the agent socket with **1001**. Sessions become `unreachable`
+  without changing their `live`/`starting` status: loss of a daemon link does not prove a
+  task ended. A reconnect's first `hb.sessions` reconciles exactly the session ids known
+  when that socket registered: missing children become `exited` (`"agent heartbeat: no such
+  child"`), reported failures become `failed`, and reported live children clear
+  `unreachable`. This uses an id set, not millisecond timestamp comparisons. A deliberate
+  daemon upgrade still exits/resumes sessions under their existing ids (§3). `ping`/`pong`
+  does not replace heartbeats; protocol violations close with fatal **4000**.
 - `usage-req` → `usage-res` relays one HTTP request to a machine-local omp stats dashboard
   (`127.0.0.1:3847` for the default profile; the agent starts it on demand and reuses a live
   one). `path` must be an absolute path on that dashboard origin; `bodyB64` is POST-only.
@@ -349,10 +362,11 @@ interface LoopStatus {
 - `retry` → `data: { started: boolean }`. Refuses while streaming (`"Wait for the current response
   to finish or abort it before retrying."`); `started: false` means nothing to retry (hub → 409).
   The retried turn itself streams through the normal session channel.
-- `prompt {text}` (0.8.0+) → `data: { accepted: boolean }`. Delivers `text` to the session via
-  `session.prompt()`: a new turn when idle, queued as steering/follow-up while one streams
-  (SDK semantics — the reply never blocks on the turn). `accepted: false` means the SDK
-  dispatched locally without a model turn. Invalid/blank `text` → `ok:false` (hub → 400).
+- `prompt {text}` → `data: { accepted: true }` once a nonblank human prompt is
+  **scheduled**. Idle prompts start a turn; busy prompts use SDK `followUp`, not an
+  unspecified streaming behavior. The command does not wait for the model turn (15 s hub
+  budget); late failures are emitted as guest notices. This acknowledgement is not proof
+  that a model accepted or completed the turn. Blank `text` → `ok:false` (hub → 400).
 - `loop {action, prompt?, limit?, condition?}` → `data: { loop: LoopStatus | null }`. Host-side
   loop engine (session-host re-submits `prompt` after every terminal turn end): `enable` sets or
   replaces prompt/limit/condition; `disable` clears; `pause` keeps config and drops the pending
@@ -638,6 +652,11 @@ interface SessionSearchHit {
 }
 ```
 
+- `read-session-messages {path,cursor?,pageLimit?}` (0.12.0+) reads an exited
+  session's active branch using the SDK's read-only session loader. The hub
+  supplies `path` from the registry, never from the fleet caller; the daemon
+  additionally realpaths and permits only default/named-profile omp session
+  stores. Output uses the same bounded `FleetMessagePage` as live reads.
 
 ## 3. HTTP API (`/api/*`)
 
@@ -656,6 +675,10 @@ interface SessionRecord {
   profile?: string;           // named omp profile; absent ⇒ default profile
   superagent?: true;          // 0.8.0: fleet-operator session (§4 fleet-req); set at start, daemon strips it from fleet-initiated starts
   tools?: string[];           // 0.9.0: callable-tool whitelist (§2 start.tools); absent ⇒ default tool set
+  namespaceId: string | null; // null = no fleet access; hub-controlled, never model-supplied
+  membershipVersion: number;  // incremented on reassignment or controller transfer
+  controllerId?: string;      // one current superagent authorized for writes
+  unreachable?: true;        // daemon disconnected; NOT a terminal task outcome
   status: SessionStatus;
   startedAt: number;          // ms epoch
   exitedAt?: number;
@@ -734,8 +757,8 @@ interface Notice {              // 0.8.0+, in-memory only
 | `POST /api/sessions/:id/cycle` | `{direction?, roleCycle?}` → `{ ok: true, switched, model, thinkingLevel }` (§2 `cycle-model`, 0.9.0+; `roleCycle` 0.10.0+); 400 bad `direction` or non-boolean `roleCycle`; same error set |
 | `GET /api/sessions/:id/settings` | → `{ ok: true, settings: SettingWire[] }` (§2 `get-settings`, 0.9.0+); same error set |
 | `POST /api/sessions/:id/settings` | `{settingId, value}` → `{ ok: true, setting: SettingWire }` (§2 `set-setting`, 0.9.0+; `value: null` clears the override); 400 missing `settingId` or absent `value` key, 400 unknown/disallowed id or type-invalid value (agent-reported); same error set |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent?, tools?, prewalk?, planYolo? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, blank `sessionFile`, malformed `tools`, or a bad `prewalk`/`planYolo` selector (must be boolean or non-empty string). `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`); `tools` (0.9.0+) whitelists the session's callable tools — non-empty array of non-empty strings (§2 `start.tools`, `SessionRecord.tools`); `prewalk` / `planYolo` (0.9.0+, boolean or model/role pattern string) arm the startup hand-offs (§2 `start.prewalk`) |
-| `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
+| `POST /api/sessions` | `{machineId,cwd,name?,prompt?,profile?,sessionFile?,namespaceId?,superagent?,tools?,prewalk?,planYolo?}` → 202 `{session}` (`starting`); 404 unknown/offline machine or namespace; 400 invalid fields or `superagent:true` without `namespaceId`/combined with `tools`; 409 when the target daemon is too old for namespace-scoped superagents. Plain sessions may omit `namespaceId` to stay outside fleet. `profile` chooses the omp profile and `sessionFile` resumes history. Fleet-created workers cannot choose privileged start fields (§3 Namespace and fleet routes) |
+| `POST /api/sessions/:id/stop` | → `{ ok: true }` only when the stop frame reached a connected daemon; 404 unknown id, 409 already exited, 502 offline/send failure |
 | `POST /api/sessions/:id/restart` | → 202 `{ session }` (0.10.0+): restarts a terminal session under its OLD id — re-sends the record's stored `start` fields (`cwd`/`name`/`profile`/`tools`/`superagent`), resuming the session file when one was minted (plain `start.sessionFile`), a fresh start otherwise; the registry record flips back to `starting` via the daemon-restart `reissue` path. 404 unknown id / unknown machine / machine offline; 409 not terminal; 502 agent write failed. The reconcile grants the re-armed record a restart grace window so the heartbeat racing the fresh child's spawn cannot retire it |
 | `POST /api/notices` | `{message, urgency?, sessionId?}` → `{ ok: true, notice }` (0.8.0+): record a human-facing notification; urgency ∈ `"info"|"warn"|"urgent"` (default `"info"`); `sessionId` optionally attributes it to a session record. 400 blank/oversize (>2000 chars) `message` or bad urgency |
 | `GET /api/notices` | → `{ notices: Notice[] }` — newest first, capped at the 50 most recent (0.8.0+). Notices are in-memory only (like the registry beyond the state file: restart drops them); web clients poll this listing for toasts |
@@ -747,14 +770,69 @@ interface Notice {              // 0.8.0+, in-memory only
 - Sessions are pruned: `exited`/`failed` records older than 24 h are dropped hourly (MVP: simple
   cap of 500 records, oldest-exited first).
 
+### Namespace and fleet routes (0.12.0)
+
+Admin routes use the ordinary root bearer token. `GET /api/namespaces` lists
+`{id,name,machineIds}` (`null` permits all machines);
+`POST /api/namespaces {name,machineIds?}` creates one.
+`PUT /api/sessions/:id/namespace` with `{namespaceId:string|null,expectedVersion?}`
+assigns, moves or removes a live worker; a mismatched version returns 409. A running
+superagent cannot be reassigned into another namespace (including from no
+namespace): its model context retains information from the old scope. The home
+page exposes these operations and warns before sharing a worker's old history.
+Admin `POST /api/sessions` accepts `namespaceId`; a scoped superagent cannot
+combine `superagent:true` with caller-supplied `tools`.
+
+The daemon allows its superagent child to request **only** `/api/fleet/*`,
+injects `X-Fleet-Owner` from the supervised child id, and strips caller-supplied
+identity fields. Hub checks a live operator's current namespace per request.
+Lists/per-id reads return only same-namespace records without collab links or
+session-file paths; nonmembers return 404. Claiming a worker gives one
+controller exclusive write rights; other operators in the namespace may
+read/watch.
+
+| Fleet route | Effect / reply |
+|---|---|
+| `GET /api/fleet/machines`, `GET /api/fleet/sessions`, `GET /api/fleet/sessions/:id` | Scoped machine inventory (`sessionCount` includes only this namespace) and sanitized session records |
+| `POST /api/fleet/sessions` | `{machineId,cwd,name?,prompt?,profile?}` → 202 `{session}`; plain worker automatically inherits the operator's namespace, controller and watch |
+| `POST /api/fleet/sessions/:id/claim`, `/watch`, `/stop` | Claim single-writer control, watch events (including a pending-input snapshot), or terminate an owned worker |
+| `GET /api/fleet/sessions/:id/messages?cursor=&limit=` | `{messages,nextCursor,hasMore,leafId}`; current branch, 1–100 entries per page, invalidated cursor → 409; terminal sessions use the machine's read-only command |
+| `GET /api/fleet/sessions/:id/input` | `{pending:[{requestId,kind,title,options?,prefill?}]}` |
+| `POST /api/fleet/sessions/:id/input` | `{requestId,answer}`; first valid answer wins against writable guests, stale request → 409, bad option → 400 |
+| `POST /api/fleet/sessions/:id/message` | `{text,mode:"start"|"steer"|"follow_up"}` → `{ok:true,scheduled:true,operationId}`; scheduling, not completion |
+| `POST /api/fleet/sessions/:id/interrupt` | `{text?,clearQueue?}` → scheduled abort/optional replacement; queued work needs explicit `clearQueue:true` before replacement |
+| `GET /api/fleet/events`, `POST /api/fleet/events/:eventId/ack` | Unacknowledged inbox and idempotent acknowledgement |
+| `POST /api/fleet/notices` | Human notice; optional session attribution must stay in the operator's namespace |
+
+An admin move first fences new fleet mutations and waits for commands already
+dispatched to the worker to acknowledge before committing membership and
+clearing old watches. Competing writes/moves return 409 while the fence is
+active. Work **already scheduled** by an accepted command (a model turn or
+asynchronous abort) may finish afterward; moving cannot undo it or erase
+information already in a model's context. A new namespace receives
+`session_attached` and can claim/watch pending input. Namespace is a fleet
+control boundary, **not** per-human ACL or local OS/user/container isolation.
+
+If the fleet SQLite store cannot commit a mutation or event, HTTP returns a
+JSON `{error:"fleet state unavailable"}` with 503; no worker start frame is
+sent after a failed membership/claim transaction. A source event gets no ack
+until its inbox write succeeds, so the daemon retries it.
+
 ### Hub state & upgrade restart (0.6.0+)
 
 - `HUB_STATE_FILE` — the registry snapshot. Default: `hub-state.json` in the entry's working
   directory; an explicit value (even relative) is resolved against the cwd; the library default
   (tests) keeps persistence off. Content: machines + session records, written atomically
   (tmp + rename) when the registry changes (coalesced, ≤2 s after a mutation) and flushed on
-  graceful stop/restart. The file carries live links/keys — treat it like the registry itself:
+  graceful stop/restart. The file carries live links/keys and is replaced with
+  mode 0600; protect its parent directory and treat it like the registry itself:
   sensitive.
+- The sibling `${HUB_STATE_FILE}.fleet.sqlite` (Bun SQLite, file mode 0600)
+  persists namespaces, membership/controller versions, watches, unread
+  notifications and processed source-event ids. A daemon retry after an owner
+  acknowledgement cannot recreate an inbox event. Deployments must persist
+  its directory together with the JSON registry snapshot. SQLite membership
+  is authoritative on restore; a missing row fails closed to `namespaceId:null`.
 - Boot restores records as-is (`live` stays `live` optimistically; machines start
   `connected: false`) and the first `hb` of each reconnected agent reconciles children it no
   longer has (§2). Collab rooms are **not** persisted: a host socket treats a hub restart as a
@@ -783,8 +861,11 @@ child → parent (stdout, one JSON object per line; non-JSON lines are logs):
                                        // `handoff` is true while the handoff document generates
 { t: "cmd-result", reqId: string, ok: boolean, data?: unknown, error?: string }
 { t: "fleet-req", reqId: string, method: "GET" | "POST", path: string,
-  body?: unknown }                   // 0.8.0+, superagent children only: one whitelisted
-                                     // /api/* call, proxied by the daemon (§4 fleet proxy)
+  body?: unknown }                   // superagent child only; strict /api/fleet/* whitelist
+{ t: "fleet-event", eventId: string,
+  kind: "input_required"|"input_resolved"|"turn_finished"|"operation_failed",
+  requestId?: string, leafId?: string, operationId?: string, error?: string }
+                                     // forwarded by daemon as session-event
 ```
 
 parent → child (stdin):
@@ -793,14 +874,18 @@ parent → child (stdin):
 { t: "stop", reason?: string }         // child: host.stop → session.dispose → exit 0
 { t: "fleet-res", reqId: string, ok: true, status: number, body?: unknown }
                                      // 0.8.0+ answer to fleet-req; ok:false carries `error`
+{ t: "fleet-notification", event: FleetEvent } // unsolicited push to operator child
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
-     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt",
+     |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt"
+     |"fleet-get-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
   action?: string, objective?: string, tokenBudget?: number,
   prompt?: string, limit?: object, condition?: object, enabled?: boolean,
-  name?: string, dataB64?: string, text?: string }
+  name?: string, dataB64?: string, text?: string,
+  cursor?: string, pageLimit?: number, requestId?: string, answer?: string,
+  messageMode?: "start"|"steer"|"follow_up", clearQueue?: boolean }
                                             // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation
 ```
@@ -808,28 +893,36 @@ parent → child (stdin):
 `cmd` semantics are §2's; `get-context` is answered with the same `SessionContext` object
 (numbers only), computed by the child from the SDK's context breakdown.
 
-### Fleet proxy (0.8.0+, superagent children)
+### Fleet proxy and event delivery (0.12.0+, superagent children)
 
-`fleet-req`/`fleet-res` let a superagent session's custom tools reach the hub API without
-holding `HUB_TOKEN`. The daemon (parent) answers every `fleet-req` exactly once:
+`fleet-req`/`fleet-res` reach the hub without putting `HUB_TOKEN` in a child.
+The daemon answers every request exactly once and authorizes only documented
+`GET`/`POST /api/fleet/*` paths (§3); all legacy `/api/sessions/*`, hub control,
+usage and file routes return `{ok:false,error:"fleet: path not allowed"}` without
+network I/O. It attaches `X-Fleet-Owner` using the **actual supervised child
+id**, strips caller-supplied identity/start flags, and forwards with its own
+token. Hub rechecks the live operator, namespace and worker membership before
+every response; asynchronous reads recheck after the worker responds. Neither
+guest collab links nor the target's session-file path reach fleet results.
+Fleet-created sessions are plain workers. Child IPC abandons unanswered requests
+after 30 s; hub/daemon command and fetch budgets remain 15 s.
 
-- **Whitelist** — allowed: `GET /api/machines`, `GET /api/sessions`, `GET /api/sessions/:id`,
-  `POST /api/sessions`, `POST /api/sessions/:id/stop`, `POST /api/sessions/:id/prompt`,
-  `POST /api/notices`. Everything else — `DELETE`, `/api/hub/restart`, usage relay, file
-  upload, unknown paths — answers `{ok:false, error:"fleet: path not allowed"}` without any
-  network traffic. The whitelist is the security boundary; the child is untrusted input.
-- **Superagent recursion guard** — a `POST /api/sessions` body with `superagent: true` is
-  rewritten to `false` before the fetch: fleet sessions spawn only plain sessions.
-- **Proxying** — the daemon fetches `http(s)://<hub>/<path>` with its own `Authorization:
-  Bearer <HUB_TOKEN>` (hub URL = the `--hub` value with `ws:`→`http:` / `wss:`→`https:`) and
-  replays `{ok:true, status, body}` (parsed JSON; absent body on empty) or
-  `{ok:false, error}` on transport failure. Each request is logged one structured line:
-  `fleet <method> <path> -> <status|error>`.
-- **Timeout** — the child abandons an unanswered `fleet-req` after 30 s (`ok:false` to the
-  tool); a late `fleet-res` is dropped by reqId. Unknown `reqId` answers are ignored.
-- Non-superagent children have no fleet tools registered; a hostile `fleet-req` from them
-  (hand-crafted stdin is not a threat model, but defense in depth) is answered
-  `{ok:false, error:"fleet: not a superagent session"}` by the supervisor.
+A worker emits `fleet-event` on input-request changes and terminal SDK
+`agent_end` (per **turn**, not a task-success claim). On child exit/start
+failure the daemon pairs `session-exit`/`session-error` with a source-retried
+`session-event` carrying the **same** `eventId`; hub-derived lifecycle retries
+reuse it, so a lost ack cannot duplicate an acknowledged notification. The
+daemon resends unacknowledged events each heartbeat and after socket reconnect
+until the hub commits subscribed recipients and sends `session-event-ack`.
+The hub's unread SQLite inbox delivers
+`fleet-notification` through each watching operator's daemon even without
+a browser guest. The superagent child injects a deduplicated SDK custom
+message; while busy it is queued for
+the next turn. The superagent reads context/input and uses `fleet_ack_event`
+after processing. The owner can also read unread events after reconnect.
+This is at-least-once delivery while the daemon survives; an abrupt daemon
+death before the hub commits an unacked event is reported as unavailable on
+reconciliation, not falsely reported as worker completion.
 
 Spawn config is argv: `bun session-host.ts --config <json>` with
 `{ id, cwd, name?, prompt?, profile?, sessionFile?, superagent?, relayUrl, webUrl, agentDir? }`. A validated `profile`
@@ -845,7 +938,7 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 
 | Path | Page |
 |---|---|
-| `/` | token gate (once) → home: machines + start form + sessions |
+| `/` | token gate → home: machines, namespace create/assign/remove, start form (namespace required for superagents), and sessions; moving a worker into a namespace explicitly warns that old history becomes visible |
 | `/s/<id>` | live session (full collab guest powers via `GuestClient`) |
 | `/usage/<machineId>` | machine usage: historical omp stats (§3 usage relay) and separate live per-profile subscription limits (§3 `subscriptions`); the all-profiles view groups quota reports rather than adding percentages |
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
@@ -914,7 +1007,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 The palette opens on leading `/`, filters as you type, Enter/Tab completes, Esc closes.
 Guests attached via `omp join` keep their own TUI-local command behavior (unchanged).
 
-## 7. Interactive ask bridging (session-host tool UI ↔ collab guests)
+## 7. Interactive ask bridging (session-host tool UI ↔ guests/fleet controllers)
 
 The headless session host registers the SDK `ask` tool (`createAgentSession` with
 `interactivePrompts: true` → `canPromptUser`) and installs a collab-bridging
@@ -924,23 +1017,28 @@ No new hub or relay frames: dialogs ride the frozen collab wire (§1) as
 the same grammar omp TUI uses to mirror its dialogs (collab wire proto ≥ 3; the
 vendored web `lib/wire.ts` matches).
 
-- `askDialog` (the `ask` tool), `select`, and `editor` surface to **writable**
-  guests; the web composer renders them (options, checkbox multi-select with
-  `Next →` submit gating, `Other (type your own)` editor detour, `Chat about
-  this`, Cancel). Read-only (view link) guests never see them.
-- With a live room but zero connected guests the request is **retained** by
-  `CollabHost` until the first writer joins (its documented behavior); the
-  session's `activity.inputRequired` bit (§2/§4) reports the wait to the hub.
-  `ask.timeout` (SDK setting, default 0 = wait) bounds it with the tool's
-  auto-select-recommended semantics.
-- Deny discipline keeps the host's default-deny contract: no room, gated
-  traffic, pending cap, caller abort, guest cancel, or relay teardown all settle
-  the awaitable immediately as a cancellation — AskTool then aborts the turn
-  instead of stranding a promise. One dialog at a time is inherent (`ask` is
-  `concurrency: "exclusive"`; extra requests queue in the web composer).
-- Guest answers are display-label keyed; the bridge disambiguates labels that
-  collide with reserved runtime labels on the wire and maps answers back to the
-  original labels before persisting results.
+- `askDialog` (the `ask` tool), `select`, `editor`, `confirm`, and `input`
+  surface to **writable** guests; confirm/input use the existing select/editor
+  wire grammar. The web composer renders choices (checkbox multi-select with
+  `Next →`, `Other (type your own)` editor, `Chat about this`, Cancel). Read-only
+  guests never see pending requests.
+- With a live collab room and zero connected guests, `CollabHost` retains the
+  request. The bridge emits `input_required {requestId}` and reports the
+  `activity.inputRequired` bit (§2/§4). A same-namespace superagent may inspect
+  its structured title/options and answer via `fleet_answer_input` without
+  a human guest. Multi-select, `Other`, and multiple questions present
+  successive request ids/steps. The first valid guest or fleet answer resolves
+  the SDK awaitable and dismisses the other UI; stale ids → 409 and an option
+  outside the presented list → 400. `ask.timeout` (SDK setting, default 0 =
+  wait) may still cancel or auto-select its recommended answer.
+- No room, gated traffic, a pending cap, caller abort, guest cancel, or relay
+  teardown keep the headless default-deny contract: awaitables settle as
+  cancellations rather than hanging. A cancelled request emits
+  `input_resolved`; AskTool may abort its turn. One `ask` dialog at a time
+  remains SDK-enforced (`concurrency: "exclusive"`).
+- Answers are keyed by display label; the bridge disambiguates reserved-label
+  collisions and maps answers back to the original model option before
+  persisting the `ask` result.
 
 ## 8. Recent-first browser history (encrypted collab frames)
 

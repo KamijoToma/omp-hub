@@ -9,15 +9,19 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
-import { useSessions } from "./sessions-store";
-import type { MachineRecord, MachineSession, SessionRecord, SessionStatus } from "./api";
+import { sessionsStore, useSessions } from "./sessions-store";
+import type { MachineRecord, MachineSession, NamespaceRecord, SessionRecord, SessionStatus } from "./api";
 import { TOOL_CATALOG } from "./tool-catalog";
 import {
+	createNamespace,
 	errorText,
 	getMachineSessions,
 	getMachines,
+	getNamespaces,
+	HubApiError,
 	listMachineProfiles,
 	restartDaemon,
+	setSessionNamespace,
 	startSession,
 	stopSession,
 } from "./api";
@@ -49,8 +53,24 @@ export interface HomePageProps {
 export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode {
 	const [machines, setMachines] = useState<MachineRecord[]>([]);
 	const { sessions: polledSessions, error: sessionsError } = useSessions();
-	const sessions = polledSessions ?? EMPTY_SESSIONS;
+	const [movedSessions, setMovedSessions] = useState<ReadonlyMap<string, SessionRecord>>(() => new Map());
+	const sessions = useMemo(() => polledSessions?.map(row => {
+		const moved = movedSessions.get(row.id);
+		return moved && moved.membershipVersion > row.membershipVersion
+			? { ...row, namespaceId: moved.namespaceId, membershipVersion: moved.membershipVersion, controllerId: moved.controllerId }
+			: row;
+	}) ?? EMPTY_SESSIONS, [polledSessions, movedSessions]);
+	const [namespaces, setNamespaces] = useState<NamespaceRecord[]>([]);
+	const [namespaceName, setNamespaceName] = useState("");
+	const [namespaceBusy, setNamespaceBusy] = useState(false);
+	const [namespaceError, setNamespaceError] = useState<string | null>(null);
+	const [namespaceFeedback, setNamespaceFeedback] = useState<string | null>(null);
+	const [namespaceId, setNamespaceId] = useState("");
+	const [movingId, setMovingId] = useState<string | null>(null);
+	const [moveError, setMoveError] = useState<{ id: string; message: string } | null>(null);
+	const [moveFeedback, setMoveFeedback] = useState<{ id: string; message: string } | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [namespacePollError, setNamespacePollError] = useState<string | null>(null);
 	const [machineId, setMachineId] = useState("");
 	/** Machine awaiting restart confirmation; null renders no dialog. */
 	const [confirmRestart, setConfirmRestart] = useState<MachineRecord | null>(null);
@@ -76,13 +96,19 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	useEffect(() => {
 		let cancelled = false;
 		const tick = async (): Promise<void> => {
-			try {
-				const nextMachines = await getMachines();
-				if (cancelled) return;
-				setMachines(nextMachines);
+			const [machinesResult, namespacesResult] = await Promise.allSettled([getMachines(), getNamespaces()]);
+			if (cancelled) return;
+			if (machinesResult.status === "fulfilled") {
+				setMachines(machinesResult.value);
 				setError(null);
-			} catch (err) {
-				if (!cancelled) setError(errorText(err));
+			} else {
+				setError(errorText(machinesResult.reason));
+			}
+			if (namespacesResult.status === "fulfilled") {
+				setNamespaces(namespacesResult.value);
+				setNamespacePollError(null);
+			} else {
+				setNamespacePollError(errorText(namespacesResult.reason));
 			}
 		};
 		void tick();
@@ -105,6 +131,13 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	useEffect(() => {
 		if (!connected.some(m => m.machineId === machineId)) setMachineId(connected[0]?.machineId ?? "");
 	}, [connected, machineId]);
+	// A machine restriction may change on the server while the form is open.
+	useEffect(() => {
+		if (namespaceId && !namespaces.some(ns => ns.id === namespaceId && (ns.machineIds === null || ns.machineIds.includes(machineId)))) {
+			setNamespaceId("");
+		}
+	}, [machineId, namespaceId, namespaces]);
+
 
 	// Profiles are machine-local state: refetch on machine switches and drop a
 	// stale selection. A listing failure leaves default-only, never blocks a start.
@@ -200,6 +233,51 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 			setFormError(errorText(err));
 		}
 	};
+	const submitNamespace = async (): Promise<void> => {
+		const trimmed = namespaceName.trim();
+		if (!trimmed || namespaceBusy) {
+			if (!trimmed) setNamespaceError("namespace name is required");
+			return;
+		}
+		setNamespaceBusy(true);
+		setNamespaceError(null);
+		setNamespaceFeedback(null);
+		try {
+			const created = await createNamespace(trimmed);
+			setNamespaces(previous => [...previous.filter(ns => ns.id !== created.id), created]);
+			setNamespaceName("");
+			setNamespaceFeedback(`Created namespace ${created.name}`);
+		} catch (err) {
+			setNamespaceError(errorText(err));
+		} finally {
+			setNamespaceBusy(false);
+		}
+	};
+
+	const moveSession = async (session: SessionRecord, targetId: string | null): Promise<void> => {
+		if (movingId || session.namespaceId === targetId) return;
+		setMovingId(session.id);
+		setMoveError(null);
+		setMoveFeedback(null);
+		try {
+			const updated = await setSessionNamespace(session.id, targetId, session.membershipVersion);
+			setMovedSessions(previous => new Map(previous).set(updated.id, updated));
+			sessionsStore.refresh();
+			setMoveFeedback({ id: session.id, message: targetId === null ? "Removed from namespace" : "Namespace updated" });
+		} catch (err) {
+			setMoveError({
+				id: session.id,
+				message: err instanceof HubApiError && err.status === 409
+					? `Namespace assignment changed. ${errorText(err)} Refresh and retry.`
+					: errorText(err),
+			});
+			if (err instanceof HubApiError && err.status === 409) {
+				sessionsStore.refresh();
+			}
+		} finally {
+			setMovingId(null);
+		}
+	};
 
 	const submit = async (): Promise<void> => {
 		if (!machineId) {
@@ -209,6 +287,10 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 		const target = cwd.trim();
 		if (!target) {
 			setFormError("working directory is required");
+			return;
+		}
+		if (superagent && !namespaceId) {
+			setFormError("choose a namespace for the superagent");
 			return;
 		}
 		setBusy(true);
@@ -221,7 +303,8 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				prompt: prompt.trim() || undefined,
 				profile: profile || undefined,
 				superagent: superagent || undefined,
-				tools: selectedTools.length > 0 ? selectedTools : undefined,
+				namespaceId: namespaceId || undefined,
+				tools: !superagent && selectedTools.length > 0 ? selectedTools : undefined,
 			});
 			setName("");
 			setPrompt("");
@@ -229,6 +312,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 			setSelectedTools([]);
 			setToolsOpen(false);
 			setBusy(false);
+			setNamespaceId("");
 			navigate(`/s/${session.id}`);
 		} catch (err) {
 			setBusy(false);
@@ -290,9 +374,9 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				</div>
 			</header>
 
-			{(error || sessionsError) && (
+			{(error || namespacePollError || sessionsError) && (
 				<div className="hb-banner" role="alert">
-					{error || sessionsError}
+					{error || namespacePollError || sessionsError}
 				</div>
 			)}
 
@@ -340,6 +424,38 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 								))}
 							</ul>
 						)}
+					</section>
+
+					<section className="hb-card">
+						<h2 className="hb-card-title">Fleet namespaces</h2>
+						<p className="hb-card-note">Sessions in a namespace are visible to its superagents. Machine restrictions limit where they can start workers.</p>
+						{namespaces.length === 0 ? (
+							<p className="hb-empty">no namespaces yet</p>
+						) : (
+							<ul className="hb-machines">
+								{namespaces.map(ns => (
+									<li key={ns.id} className="hb-machine">
+										<span className="hb-machine-name">{ns.name}</span>
+										<span className="hb-machine-id">{ns.id}</span>
+										<span className="hb-machine-count">
+											{ns.machineIds === null ? "all machines" : ns.machineIds.length === 0 ? "no machines" : ns.machineIds.map(id => machines.find(m => m.machineId === id)?.name ?? id).join(", ")}
+										</span>
+										<span className="hb-machine-count">
+											{sessions.filter(s => s.namespaceId === ns.id).length} sessions
+										</span>
+									</li>
+								))}
+							</ul>
+						)}
+						<form className="hb-form" onSubmit={e => { e.preventDefault(); void submitNamespace(); }}>
+							<label className="sh-field">
+								<span className="sh-field-label">new namespace name</span>
+								<input className="sh-input" value={namespaceName} onChange={e => setNamespaceName(e.target.value)} maxLength={64} placeholder="team or project" />
+							</label>
+							{namespaceError && <div className="sh-connect-error" role="alert">{namespaceError}</div>}
+							{namespaceFeedback && <div className="hb-session-note" role="status">{namespaceFeedback}</div>}
+							<button type="submit" className="sh-btn" disabled={namespaceBusy}>{namespaceBusy ? "creating…" : "Create namespace"}</button>
+						</form>
 					</section>
 
 					<section className="hb-card">
@@ -442,7 +558,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 									spellCheck={false}
 								/>
 							</label>
-							<div className="sh-field">
+							<div className="sh-field" hidden={superagent}>
 								<span className="sh-field-label">tools whitelist (optional)</span>
 								<div className="hb-tools-picker" ref={toolsRef}>
 									<div className="hb-tools-row">
@@ -500,11 +616,29 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 									<input
 										type="checkbox"
 										checked={superagent}
-										onChange={e => setSuperagent(e.target.checked)}
+										onChange={e => {
+											setSuperagent(e.target.checked);
+											if (e.target.checked) {
+												setSelectedTools([]);
+												setToolsOpen(false);
+											}
+										}}
 									/>
 									{" "}superagent
 								</span>
-								<span className="sh-field-hint">fleet tools — can start/stop/message other sessions</span>
+								<span className="sh-field-hint">fleet-only tools scoped to the selected namespace; no direct filesystem or shell tools</span>
+							</label>
+							<label className="sh-field">
+								<span className="sh-field-label">fleet namespace {superagent ? "(required for superagents)" : "(optional)"}</span>
+								<select className="sh-input" value={namespaceId} onChange={e => setNamespaceId(e.target.value)}>
+									<option value="">no namespace</option>
+									{namespaces.map(ns => (
+										<option key={ns.id} value={ns.id} disabled={ns.machineIds !== null && !ns.machineIds.includes(machineId)}>
+											{ns.name}{ns.machineIds !== null && !ns.machineIds.includes(machineId) ? " (machine not allowed)" : ""}
+										</option>
+									))}
+								</select>
+								<span className="sh-field-hint">a superagent can manage only sessions in its namespace</span>
 							</label>
 							{formError && (
 								<div className="sh-connect-error" role="alert">
@@ -529,11 +663,11 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 								{sessions.map(s => (
 									<li key={s.id} className="hb-session">
 										<div className="hb-session-head">
-											<span className={`hb-dot hb-dot-${s.status}`} aria-label={STATUS_LABEL[s.status]} />
+											<span className={`hb-dot hb-dot-${s.unreachable ? "unreachable" : s.status}`} aria-label={s.unreachable ? "unreachable" : STATUS_LABEL[s.status]} />
 											<span className="hb-session-name" title={s.name}>
 												{s.name}
 											</span>
-											<span className="hb-status">{STATUS_LABEL[s.status]}</span>
+											<span className="hb-status">{s.unreachable ? "unreachable" : STATUS_LABEL[s.status]}</span>
 										</div>
 										<div className="hb-session-meta">
 											<span className="hb-mono" title={s.cwd}>
@@ -546,8 +680,22 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 											)}
 											<span className="hb-mono">{s.machineName}</span>
 											<span className="hb-mono">{relTime(s.startedAt)}</span>
+											<span className="hb-mono">namespace: {namespaces.find(ns => ns.id === s.namespaceId)?.name ?? s.namespaceId ?? "none"}</span>
+											{s.controllerId && <span className="hb-mono" title={s.controllerId}>controller: {sessions.find(owner => owner.id === s.controllerId)?.name ?? s.controllerId}</span>}
 										</div>
 										{s.status === "failed" && s.error && <div className="hb-session-error">{s.error}</div>}
+										{s.status === "live" && (
+											<SessionNamespaceControl
+												key={`${s.id}:${s.membershipVersion}`}
+												session={s}
+												namespaces={namespaces}
+												busy={movingId === s.id}
+												disabled={movingId !== null}
+												error={moveError?.id === s.id ? moveError.message : null}
+												feedback={moveFeedback?.id === s.id ? moveFeedback.message : null}
+												onMove={targetId => void moveSession(s, targetId)}
+											/>
+										)}
 										{s.status === "exited" && s.exitReason && <div className="hb-session-note">{s.exitReason}</div>}
 										<div className="hb-session-actions">
 											{s.status === "live" && (
@@ -559,6 +707,8 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 												<button
 													type="button"
 													className="sh-btn sh-btn-stop"
+													disabled={s.unreachable}
+													title={s.unreachable ? "machine is offline; stop after it reconnects" : undefined}
 													onClick={() => {
 														void stopSession(s.id).catch(err => setError(errorText(err)));
 													}}
@@ -694,6 +844,58 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				/>
 			)}
 			{confirmRestart && <RestartConfirmModal machine={confirmRestart} sessions={sessions} onDone={() => setConfirmRestart(null)} />}
+		</div>
+	);
+}
+
+/** Explicit confirmation before exposing a live session's existing transcript to another fleet. */
+function SessionNamespaceControl({ session, namespaces, busy, disabled, error, feedback, onMove }: {
+	session: SessionRecord;
+	namespaces: readonly NamespaceRecord[];
+	busy: boolean;
+	disabled: boolean;
+	error: string | null;
+	feedback: string | null;
+	onMove(target: string | null): void;
+}): ReactNode {
+	const [target, setTarget] = useState(session.namespaceId ?? "");
+	const [acknowledged, setAcknowledged] = useState(false);
+	const changed = target !== (session.namespaceId ?? "");
+	const destination = namespaces.find(ns => ns.id === target);
+	const allowed = !destination || destination.machineIds === null || destination.machineIds.includes(session.machineId);
+	const operatorChangeForbidden = session.superagent === true && changed && Boolean(target);
+	return (
+		<div className="hb-namespace-control">
+			<label className="sh-field">
+				<span className="sh-field-label">assign / move live session</span>
+				<select
+					className="sh-input"
+					aria-label={`namespace for ${session.name}`}
+					value={target}
+					disabled={disabled}
+					onChange={e => { setTarget(e.target.value); setAcknowledged(false); }}
+				>
+					<option value="">outside fleet (remove)</option>
+					{namespaces.map(ns => (
+						<option key={ns.id} value={ns.id} disabled={ns.machineIds !== null && !ns.machineIds.includes(session.machineId)}>
+							{ns.name}
+						</option>
+					))}
+				</select>
+			</label>
+			{changed && target && !operatorChangeForbidden && (
+				<label className="sh-field-hint">
+					<input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />
+					{" "}I understand: moving this session exposes its existing conversation history and future messages to superagents in {destination?.name ?? target}. The previous controller loses new access, but already scheduled work may finish.
+				</label>
+			)}
+			{changed && !target && <p className="sh-field-hint">Removing this session revokes new fleet access; accepted work may finish, and the transcript remains.</p>}
+			{operatorChangeForbidden && <p className="sh-field-hint">A running superagent cannot enter another namespace; start a fresh operator session.</p>}
+			{error && <div className="sh-connect-error" role="alert">{error}</div>}
+			{feedback && <div className="hb-session-note" role="status">{feedback}</div>}
+			<button type="button" className="sh-btn" disabled={!changed || disabled || !allowed || operatorChangeForbidden || (Boolean(target) && !acknowledged)} onClick={() => onMove(target || null)}>
+				{busy ? "updating…" : target ? "Apply namespace" : "Remove from namespace"}
+			</button>
 		</div>
 	);
 }

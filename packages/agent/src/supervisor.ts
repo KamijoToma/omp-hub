@@ -63,6 +63,8 @@ export interface SupervisorHandlers {
 	 * tooling) omit it.
 	 */
 	onActivity?(id: string, activity: SessionActivity): void;
+	/** Worker lifecycle/input event; the worker id is always the child record's id. */
+	onFleetEvent?(id: string, event: { eventId: string; kind: "input_required" | "input_resolved" | "turn_finished" | "operation_failed"; requestId?: string; leafId?: string; operationId?: string; error?: string }): void;
 }
 
 /** Guest-visible session state mirrored into the hub registry (protocol §3). */
@@ -105,7 +107,7 @@ export interface SupervisorOptions {
 	 * 0.8.0 fleet proxy: answers a superagent child's `fleet-req` frames against
 	 * the hub API. Non-superagent children never reach it.
 	 */
-	fleet?: (req: { reqId: string; method: string; path: string; body?: unknown }) => Promise<
+	fleet?: (req: { ownerId: string; reqId: string; method: string; path: string; body?: unknown }) => Promise<
 		{ ok: true; status: number; body?: unknown } | { ok: false; error: string }
 	>;
 }
@@ -201,6 +203,20 @@ export class Supervisor {
 			this.#rejectCommand(request.reqId, new Error(`failed to send cmd to session ${id}: ${errorMessage(err)}`));
 		}
 		return await promise;
+	}
+
+	/** Push an inbox event to the actual owner child, not an id from child IPC. */
+	notifyFleet(id: string, event: unknown): boolean {
+		const record = this.#children.get(id);
+		if (!record || record.config.superagent !== true || record.status !== "live") return false;
+		try {
+			record.child.stdin.write(`${JSON.stringify({ t: "fleet-notification", event })}\n`);
+			void Promise.resolve(record.child.stdin.flush()).catch(err => this.#log.warn(`fleet notification to ${id} failed: ${errorMessage(err)}`));
+			return true;
+		} catch (err) {
+			this.#log.warn(`fleet notification to ${id} failed: ${errorMessage(err)}`);
+			return false;
+		}
 	}
 
 	/**
@@ -438,6 +454,20 @@ export class Supervisor {
 				}
 				return;
 			}
+			case "fleet-event": {
+				const kind = frame.kind;
+				if (kind !== "input_required" && kind !== "input_resolved" && kind !== "turn_finished" && kind !== "operation_failed") return;
+				if (typeof frame.eventId !== "string" || !frame.eventId) return;
+				this.#handlers.onFleetEvent?.(record.id, {
+					eventId: frame.eventId,
+					kind,
+					...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+					...(typeof frame.leafId === "string" ? { leafId: frame.leafId } : {}),
+					...(typeof frame.operationId === "string" ? { operationId: frame.operationId } : {}),
+					...(typeof frame.error === "string" ? { error: frame.error.slice(0, 2000) } : {}),
+				});
+				return;
+			}
 			case "fleet-req": {
 				// Answered exactly once (protocol 0.8.0 §4): refusal, handler
 				// result, or handler throw — never silence.
@@ -455,6 +485,7 @@ export class Supervisor {
 					return;
 				}
 				const request = {
+					ownerId: record.id,
 					reqId,
 					method: typeof frame.method === "string" ? frame.method : "",
 					path: typeof frame.path === "string" ? frame.path : "",

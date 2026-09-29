@@ -1,57 +1,47 @@
 /**
- * Daemon-side fleet proxy (protocol 0.8.0, "Fleet proxy").
- *
- * A superagent child reaches the hub API through its parent: the supervisor
- * hands each `fleet-req` here, this module enforces the path whitelist (the
- * security boundary -- the child is untrusted input), strips the `superagent`
- * recursion flag, and forwards the call with the daemon's own `HUB_TOKEN`.
- * Pure and dependency-injected so tests run without a hub.
+ * Daemon-side fleet proxy. The child never gets the hub token or chooses its
+ * fleet identity: the supervisor supplies the actual child session id.
  */
 
-/**
- * Whitelist check (protocol 0.8.0). The query string is ignored (the
- * pathname must match); ids are exactly one path segment. Everything else --
- * other methods, hub control routes, nested resources -- is denied.
- */
+/** Only namespace-scoped fleet routes may cross this trust boundary. */
 export function isAllowedFleetPath(method: string, rawPath: string): boolean {
-	let pathname: string;
+	if (!rawPath.startsWith("/api/fleet/") || rawPath.startsWith("//") || rawPath.includes("\\")) return false;
+	let url: URL;
 	try {
-		pathname = new URL(rawPath, "http://fleet.invalid").pathname;
+		url = new URL(rawPath, "http://fleet.invalid");
 	} catch {
 		return false;
 	}
-	const segments = pathname.split("/").filter(segment => segment.length > 0);
-	if (segments[0] !== "api") return false;
-	const [, collection, id, action] = segments;
-	// A trailing slash never rewrites an exact route into an id-less one
-	// (POST /api/sessions/ is the denied misspelling of POST /api/sessions).
-	const exact = pathname !== "/api/" && !pathname.endsWith("/");
-	switch (method) {
-		case "GET":
-			if (exact && segments.length === 2) return collection === "machines" || collection === "sessions";
-			// GET /api/sessions/:id -- exactly one id segment.
-			return segments.length === 3 && collection === "sessions" && typeof id === "string" && id.length > 0;
-		case "POST":
-			if (exact && segments.length === 2) return collection === "sessions" || collection === "notices";
-			if (segments.length === 4 && collection === "sessions" && typeof id === "string" && id.length > 0) {
-				return action === "stop" || action === "prompt";
-			}
-			return false;
-		default:
-			return false;
+	if (url.origin !== "http://fleet.invalid" || url.hash || url.pathname !== rawPath.split("?")[0] || url.pathname.endsWith("/")) return false;
+	const segments = url.pathname.split("/");
+	if (segments[1] !== "api" || segments[2] !== "fleet") return false;
+	const [, , , resource, id, action] = segments;
+	if (segments.length >= 5 && resource === "sessions" && (!id || !/^s_[A-Za-z0-9_-]+$/.test(id))) return false;
+	if (url.search && !(method === "GET" && segments.length === 6 && resource === "sessions" && action === "messages")) return false;
+	if (url.search && [...url.searchParams.keys()].some(key => key !== "cursor" && key !== "limit")) return false;
+	if (method === "GET") {
+		if (segments.length === 4) return resource === "machines" || resource === "sessions" || resource === "events";
+		if (segments.length === 5) return resource === "sessions";
+		return segments.length === 6 && resource === "sessions" && ["messages", "input"].includes(action!);
 	}
+	if (method !== "POST") return false;
+	if (segments.length === 4) return resource === "sessions" || resource === "notices";
+	if (segments.length !== 6) return false;
+	if (resource === "events") return action === "ack" && !!id && /^[A-Za-z0-9_-]+$/.test(id);
+	return resource === "sessions" && ["claim", "stop", "message", "interrupt", "input", "watch"].includes(action!);
 }
 
-/**
- * Recursion guard (protocol 0.8.0): a `POST /api/sessions` body with
- * `superagent: true` is rewritten to `false` -- fleet sessions spawn only
- * plain sessions. Shallow copy; the caller's body is never mutated.
- */
-export function stripFleetSuperagent(body: unknown): unknown {
-	if (typeof body !== "object" || body === null) return body;
-	const copy = { ...(body as Record<string, unknown>) };
-	delete copy.superagent;
-	return copy;
+/** A session start never carries owner, namespace, or superagent identity from a child. */
+function permittedStartFields(body: unknown): unknown {
+	if (typeof body !== "object" || body === null || Array.isArray(body)) return body;
+	const { machineId, cwd, name, prompt, profile } = body as Record<string, unknown>;
+	return {
+		machineId,
+		cwd,
+		...(name === undefined ? {} : { name }),
+		...(prompt === undefined ? {} : { prompt }),
+		...(profile === undefined ? {} : { profile }),
+	};
 }
 
 /** Hub URL for HTTP fetches: the `--hub` value with the ws scheme upgraded. */
@@ -77,19 +67,19 @@ export interface FleetProxyDeps {
 	/** HTTP base of the hub (see {@link hubHttpBase}). */
 	hubBase: string;
 	token: string;
+	/** Trusted session id from the supervisor (never child IPC). */
+	ownerId: string;
 	log(message: string): void;
 	/** Injectable for tests; defaults to global fetch. */
 	fetch?: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
-/** Proxy fetch timeout (protocol 0.8.0). */
+/** Bound the daemon's hub fetch independently of a child's tool timeout. */
 const FLEET_FETCH_TIMEOUT_MS = 15_000;
 
 /**
- * Serve one fleet request: whitelist gate before any network I/O, superagent
- * stripping on session starts, then a token-authenticated hub fetch. Transport
- * failures become `{ok:false}`; HTTP error statuses replay as
- * `{ok:true, status, body}` -- the tool layer turns them into tool errors.
+ * Whitelist before network I/O, strip caller identity and attach the trusted
+ * owner header. HTTP failures replay to the tool layer with their status.
  */
 export async function handleFleetRequest(request: FleetProxyRequest, deps: FleetProxyDeps): Promise<FleetProxyResult> {
 	const { method, path } = request;
@@ -105,8 +95,19 @@ export async function handleFleetRequest(request: FleetProxyRequest, deps: Fleet
 	} catch {
 		return denied();
 	}
-	const isSessionStart = method === "POST" && pathname === "/api/sessions";
-	const body = isSessionStart ? stripFleetSuperagent(request.body) : request.body;
+	const isSessionStart = method === "POST" && pathname === "/api/fleet/sessions";
+	// Do not forward caller-supplied identity fields on any route. Other routes
+	// likewise accept only their documented JSON parameters.
+	const input = request.body as Record<string, unknown> | undefined;
+	let body: unknown;
+	if (isSessionStart) body = permittedStartFields(request.body);
+	else if (method === "POST" && input && typeof input === "object" && !Array.isArray(input)) {
+		const keys = pathname.endsWith("/message") ? ["text", "mode"]
+			: pathname.endsWith("/interrupt") ? ["text", "clearQueue"]
+			: pathname.endsWith("/input") ? ["requestId", "answer"]
+			: pathname === "/api/fleet/notices" ? ["message", "urgency", "sessionId"] : [];
+		body = Object.fromEntries(keys.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
+	} else body = request.body;
 
 	const doFetch = deps.fetch ?? fetch;
 	try {
@@ -114,6 +115,7 @@ export async function handleFleetRequest(request: FleetProxyRequest, deps: Fleet
 			method,
 			headers: {
 				authorization: `Bearer ${deps.token}`,
+				"X-Fleet-Owner": deps.ownerId,
 				...(body === undefined ? {} : { "content-type": "application/json" }),
 			},
 			...(body === undefined ? {} : { body: JSON.stringify(body) }),

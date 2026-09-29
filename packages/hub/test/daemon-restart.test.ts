@@ -12,6 +12,7 @@ interface SessionJson {
 	id: string;
 	name: string;
 	status: string;
+	unreachable?: true;
 	exitReason?: string;
 	links?: { full: string };
 }
@@ -222,8 +223,17 @@ describe("daemon upgrade restart", () => {
 		expect((await machineJson("m2")).restarting).toBeUndefined();
 
 		agent.ws.close(1000);
-		const exited = await waitForStatus(live.id, "exited");
-		expect(exited.exitReason).toBe("agent disconnected"); // plain drop, not an upgrade
+		const deadline = Date.now() + 4_000;
+		for (;;) {
+			const current = await sessionJson(live.id);
+			if (current.unreachable) {
+				expect(current.status).toBe("live");
+				expect(current.exitReason).toBeUndefined(); // a plain socket drop is not a completed session
+				break;
+			}
+			if (Date.now() > deadline) throw new Error("daemon disconnect did not mark its session unreachable");
+			await yieldLoop();
+		}
 		const fresh = await connectFreshDaemon("m2", "legacy");
 		// No start frame may arrive: nothing was planned.
 		await fresh
