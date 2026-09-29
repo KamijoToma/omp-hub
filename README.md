@@ -183,8 +183,33 @@ restarts. See [the security model](docs/architecture.md#security-model-mvp).
 - [docs/milestones.md](docs/milestones.md) — MVP phases and post-MVP roadmap
 - [docs/e2e.md](docs/e2e.md) — manual end-to-end verification and known limitations
 
-GitHub Actions runs frozen installs, typechecks and tests for all three packages, builds the web
-UI and container image, and pins the external SDK revision used by the agent.
+GitHub Actions runs frozen installs, typechecks and the complete Bun test suites for all three
+packages on every push and pull request, then builds the web UI and hub container. The agent uses
+the SDK npm versions pinned in `packages/agent/bun.lock`; CI does not build a separate upstream tree.
+
+### GitHub releases
+
+After merging into `main`, update the `version` in all three package manifests to the same
+`X.Y.Z` before pushing a `vX.Y.Z` tag. Keep release tags immutable and restrict who can create
+them. The tag run repeats all CI checks; only a successful run from `main` creates a GitHub Release.
+It attaches `omp-hub-vX.Y.Z.tar.gz` (Hub source, built web UI, Agent source and third-party licenses)
+and `SHA256SUMS.txt`. Release notes group commits since the preceding **published** release under
+Breaking Changes, Features, Fixes, Changes and Documentation; maintenance commits are linked from
+the full comparison rather than listed individually. Unclassified user-facing commits go under
+Changes. For accurate categories, use `feat(scope): ...`, `fix(scope): ...`, `docs: ...`, etc.
+There is no npm publication or GHCR push; the Docker image is built as a CI check, not published.
+
+For a release archive, verify it with `sha256sum -c SHA256SUMS.txt` after downloading both assets,
+then extract it and run from the extracted `omp-hub/` directory:
+
+```bash
+HUB_TOKEN="<secret>" bun packages/hub/src/server.ts
+bun --cwd=packages/agent install --frozen-lockfile
+HUB_TOKEN="<secret>" bun packages/agent/src/main.ts --hub ws://127.0.0.1:8080
+```
+
+The archive excludes `node_modules`, credentials and live registry state. Install the Agent's
+locked dependencies on each target machine so npm selects that platform's native addon.
 
 ## License
 
@@ -192,4 +217,5 @@ UI and container image, and pins the external SDK revision used by the agent.
 [`@oh-my-pi/collab-web`](https://github.com/can1357/oh-my-pi) (MIT); the original copyright
 holders and permission notice are preserved in `LICENSE`.
 Bundled third-party libraries keep their own licenses (including Lucide's ISC/Feather notices
-and Marked's Markdown notice); the hub Docker image carries their full texts in `/app/licenses/`.
+and Marked's Markdown notice); the hub Docker image carries their full texts in `/app/licenses/`,
+and the GitHub release archive in `licenses/`.
