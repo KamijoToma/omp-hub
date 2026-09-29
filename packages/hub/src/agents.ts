@@ -837,7 +837,11 @@ export class AgentRegistry {
 		if (machine) machine.connected = false;
 		const exited = this.#sessions.exitSessionsFor(conn.machineId, plan ? "daemon upgrade" : reason);
 		try {
-			conn.ws.close(4000, reason);
+			// 1001 (going away), NOT 4000: the agent treats 4000 as fatal and
+			// permanently stops reconnecting — right for "agent replaced" (the
+			// hello race must not end with two daemons), wrong for a heartbeat
+			// timeout, which a live daemon must be able to recover from.
+			conn.ws.close(1001, reason);
 		} catch {
 			// Already closing.
 		}
