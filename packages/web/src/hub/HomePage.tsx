@@ -289,7 +289,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	}, [toolsOpen]);
 
 	return (
-		<div className="hb-page">
+		<div className="hb-page hb-new">
 			<header className="hb-top">
 				<div className="sh-lockup">
 					<span className="sh-lockup-mark" aria-hidden="true" />
@@ -316,84 +316,12 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 
 			<div className="hb-grid">
 				<div className="hb-col">
-					<section className="hb-card">
-						<h2 className="hb-card-title">Machines</h2>
-						{machines.length === 0 ? (
-							<p className="hb-empty">no agent connected yet</p>
-						) : (
-							<ul className="hb-machines">
-								{machines.map(m => (
-									<li key={m.machineId} className="hb-machine">
-										<span
-											className={`hb-dot hb-dot-${m.connected ? "live" : "exited"}`}
-											aria-label={m.connected ? "connected" : "offline"}
-										/>
-										<span className="hb-machine-name">{m.name}</span>
-										<span className="hb-machine-count">{m.sessionCount} running</span>
-										<span className="hb-machine-id">{m.machineId}</span>
-										{m.connected && !m.restarting && (
-											<button
-												type="button"
-												className="sh-btn hb-machine-restart"
-												onClick={() => setConfirmRestart(m)}
-												title="restart the machine daemon to pick up new agent code; sessions resume from their transcripts"
-											>
-												<RefreshCw size={14} aria-hidden="true" />
-												<span className="sh-btn-label">Restart daemon</span>
-											</button>
-										)}
-										{m.restarting && <span className="hb-machine-note">restarting…</span>}
-										{m.connected && (
-											<button
-												type="button"
-												className="sh-btn hb-machine-usage"
-												onClick={() => navigate(`/usage/${m.machineId}`)}
-												aria-label={`usage for ${m.name}`}
-											>
-												<Activity size={14} aria-hidden="true" />
-												Usage
-											</button>
-										)}
-									</li>
-								))}
-							</ul>
-						)}
-					</section>
-
-					<section className="hb-card">
-						<h2 className="hb-card-title">Fleet namespaces</h2>
-						<p className="hb-card-note">Sessions in a namespace are visible to its superagents. Machine restrictions limit where they can start workers.</p>
-						{namespaces.length === 0 ? (
-							<p className="hb-empty">no namespaces yet</p>
-						) : (
-							<ul className="hb-machines">
-								{namespaces.map(ns => (
-									<li key={ns.id} className="hb-machine">
-										<span className="hb-machine-name">{ns.name}</span>
-										<span className="hb-machine-id">{ns.id}</span>
-										<span className="hb-machine-count">
-											{ns.machineIds === null ? "all machines" : ns.machineIds.length === 0 ? "no machines" : ns.machineIds.map(id => machines.find(m => m.machineId === id)?.name ?? id).join(", ")}
-										</span>
-										<span className="hb-machine-count">
-											{sessions.filter(s => s.namespaceId === ns.id).length} sessions
-										</span>
-									</li>
-								))}
-							</ul>
-						)}
-						<form className="hb-form" onSubmit={e => { e.preventDefault(); void submitNamespace(); }}>
-							<label className="sh-field">
-								<span className="sh-field-label">new namespace name</span>
-								<input className="sh-input" value={namespaceName} onChange={e => setNamespaceName(e.target.value)} maxLength={64} placeholder="team or project" />
-							</label>
-							{namespaceError && <div className="sh-connect-error" role="alert">{namespaceError}</div>}
-							{namespaceFeedback && <div className="hb-session-note" role="status">{namespaceFeedback}</div>}
-							<button type="submit" className="sh-btn" disabled={namespaceBusy}>{namespaceBusy ? "creating…" : "Create namespace"}</button>
-						</form>
-					</section>
-
-					<section className="hb-card">
-						<h2 className="hb-card-title">Start session</h2>
+					<section className="hb-card hb-new-start">
+						<header className="hb-new-start-head">
+							<span className="hb-new-kicker">New session</span>
+							<h1 className="hb-new-title">Start a session</h1>
+							<p className="hb-card-note">Choose a machine and working directory; everything else is optional.</p>
+						</header>
 						<form
 							className="hb-form"
 							onSubmit={e => {
@@ -401,7 +329,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 								void submit();
 							}}
 						>
-							<label className="sh-field">
+							<label className="sh-field hb-new-machine-field">
 								<span className="sh-field-label">machine</span>
 								<select
 									className="sh-input"
@@ -417,7 +345,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 									))}
 								</select>
 							</label>
-							<label className="sh-field">
+							<label className="sh-field hb-new-profile-field">
 								<span className="sh-field-label">omp profile (optional)</span>
 								<select
 									className="sh-input"
@@ -588,10 +516,87 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				</div>
 
 				<div className="hb-col">
-					<section className="hb-card">
+					<section className="hb-card hb-new-context">
+						<h2 className="hb-new-card-title">Workspace</h2>
+						<div className="hb-new-context-section">
+							<h3 className="hb-card-title">Machines</h3>
+							{machines.length === 0 ? (
+								<p className="hb-empty">no agent connected yet</p>
+							) : (
+								<ul className="hb-machines">
+									{machines.map(m => (
+										<li key={m.machineId} className="hb-machine">
+											<span
+												className={`hb-dot hb-dot-${m.connected ? "live" : "exited"}`}
+												aria-label={m.connected ? "connected" : "offline"}
+											/>
+											<span className="hb-machine-name">{m.name}</span>
+											<span className="hb-machine-count">{m.sessionCount} running</span>
+											<span className="hb-machine-id">{m.machineId}</span>
+											{m.connected && !m.restarting && (
+												<button
+													type="button"
+													className="sh-btn hb-machine-restart"
+													onClick={() => setConfirmRestart(m)}
+													title="restart the machine daemon to pick up new agent code; sessions resume from their transcripts"
+												>
+													<RefreshCw size={14} aria-hidden="true" />
+													<span className="sh-btn-label">Restart daemon</span>
+												</button>
+											)}
+											{m.restarting && <span className="hb-machine-note">restarting…</span>}
+											{m.connected && (
+												<button
+													type="button"
+													className="sh-btn hb-machine-usage"
+													onClick={() => navigate(`/usage/${m.machineId}`)}
+													aria-label={`usage for ${m.name}`}
+												>
+													<Activity size={14} aria-hidden="true" />
+													Usage
+												</button>
+											)}
+										</li>
+									))}
+								</ul>
+							)}
+						</div>
 
+						<div className="hb-new-context-section">
+							<h3 className="hb-card-title">Fleet namespaces</h3>
+							<p className="hb-card-note">Sessions in a namespace are visible to its superagents; machine restrictions limit new workers.</p>
+							{namespaces.length === 0 ? (
+								<p className="hb-empty">no namespaces yet</p>
+							) : (
+								<ul className="hb-machines">
+									{namespaces.map(ns => (
+										<li key={ns.id} className="hb-machine">
+											<span className="hb-machine-name">{ns.name}</span>
+											<span className="hb-machine-id">{ns.id}</span>
+											<span className="hb-machine-count">
+												{ns.machineIds === null ? "all machines" : ns.machineIds.length === 0 ? "no machines" : ns.machineIds.map(id => machines.find(m => m.machineId === id)?.name ?? id).join(", ")}
+											</span>
+											<span className="hb-machine-count">
+												{sessions.filter(s => s.namespaceId === ns.id).length} sessions
+											</span>
+										</li>
+									))}
+								</ul>
+							)}
+							<form className="hb-form hb-new-namespace-form" onSubmit={e => { e.preventDefault(); void submitNamespace(); }}>
+								<label className="sh-field">
+									<span className="sh-field-label">new namespace name</span>
+									<input className="sh-input" value={namespaceName} onChange={e => setNamespaceName(e.target.value)} maxLength={64} placeholder="team or project" />
+								</label>
+								{namespaceError && <div className="sh-connect-error" role="alert">{namespaceError}</div>}
+								{namespaceFeedback && <div className="hb-session-note" role="status">{namespaceFeedback}</div>}
+								<button type="submit" className="sh-btn" disabled={namespaceBusy}>{namespaceBusy ? "creating…" : "Create namespace"}</button>
+							</form>
+						</div>
+					</section>
+					<section className="hb-card hb-new-history">
 						<div className="hb-history-head">
-							<h2 className="hb-card-title">History</h2>
+							<h2 className="hb-new-card-title">History</h2>
 							<button
 								type="button"
 								className="sh-btn"
