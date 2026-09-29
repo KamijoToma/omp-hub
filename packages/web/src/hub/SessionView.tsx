@@ -27,7 +27,6 @@ import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
 import type { GuestClient } from "../lib/client";
 import { useThemePreference } from "../lib/theme";
-import { useTranscriptMode } from "../lib/transcript-mode";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
 import type { AgentState, MachineSession, SessionRecord } from "./api";
@@ -168,7 +167,6 @@ interface SessionProps {
 
 function Session({ client, sessionId, record, displayName, registryLive, onLeave, onRejoin, onOpenSwitcher, onOpenSettings }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
-	const transcriptMode = useTranscriptMode();
 	// Handoff progress rides the registry mirror (protocol §3) through the
 	// shared store's poll: the page's attach latch deliberately freezes the
 	// `record` prop, so transient activity must be read from the store itself.
@@ -794,7 +792,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				advisorEnabled={agentState?.advisor?.enabled === true}
 				paused={agentState?.paused === true}
 			/>
-			{transcriptMode === "full" && <StatsBar snapshot={snap} />}
+			<StatsBar snapshot={snap} />
 			<main className="sh-main">
 				<section className="sh-content">
 					<div className="sh-transcript">
