@@ -13,6 +13,12 @@ if (entry.length !== 1) {
 	throw new Error(`SPA root marker matched ${entry.length} chunks, expected exactly 1`);
 }
 const html = readFileSync("dist/index.html", "utf8");
+const referenced = html.match(/<script type="module" crossorigin src="\/([^"]+\.js)"/)?.[1];
+if (referenced === entry[0]) {
+	// bun emits the correct reference (observed on 1.4+); nothing to rewrite.
+	console.log(`[fix-html-entry] dist/index.html already references the entry /${entry[0]}`);
+	process.exit(0);
+}
 const fixed = html.replace(/<script type="module" crossorigin src="\/[^"]+\.js"/, `<script type="module" crossorigin src="/${entry[0]}"`);
 if (fixed === html) {
 	throw new Error("entry <script> tag not found in dist/index.html");
