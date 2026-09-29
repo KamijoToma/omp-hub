@@ -4,7 +4,8 @@
  */
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
-import type { ToolRenderHost, ToolResultImage, ToolResultLike } from "./types";
+import { ImageLightbox } from "./lightbox";
+import type { ToolRenderHost, ToolResultLike } from "./types";
 import { getHljs, replaceTabs, resultImagesOf, resultTextOf, shortenPath, stripAnsi } from "./util";
 import { parseToolPath } from "./uri";
 
@@ -200,22 +201,10 @@ export function ResultText({
 	);
 }
 
-function openImage(img: ToolResultImage): void {
-	try {
-		const bin = atob(img.data);
-		const bytes = new Uint8Array(bin.length);
-		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-		const url = URL.createObjectURL(new Blob([bytes], { type: img.mimeType }));
-		window.open(url, "_blank", "noopener");
-		setTimeout(() => URL.revokeObjectURL(url), 60_000);
-	} catch {
-		// undecodable image data — the broken thumbnail already conveys it
-	}
-}
-
-/** Thumbnails for every image block in a result; click opens full size. */
+/** Thumbnails for every image block in a result; click opens the in-page viewer. */
 export function ResultImages({ result }: { result: ToolResultLike | undefined }): ReactNode {
 	const images = resultImagesOf(result);
+	const [viewing, setViewing] = useState<number | null>(null);
 	if (images.length === 0) return null;
 	return (
 		<div className="tv-imgs">
@@ -224,12 +213,13 @@ export function ResultImages({ result }: { result: ToolResultLike | undefined })
 					key={i}
 					type="button"
 					style={{ all: "unset", display: "inline-flex" }}
-					onClick={() => openImage(img)}
+					onClick={() => setViewing(i)}
 					aria-label={`Open tool result image ${i + 1}`}
 				>
 					<img className="tv-img" src={`data:${img.mimeType};base64,${img.data}`} alt={`tool result ${i + 1}`} />
 				</button>
 			))}
+			{viewing !== null && <ImageLightbox images={images} initialIndex={viewing} onClose={() => setViewing(null)} />}
 		</div>
 	);
 }
