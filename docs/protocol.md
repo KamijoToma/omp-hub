@@ -792,9 +792,26 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 | `/usage/<machineId>` | machine usage: hub-native view over the machine's omp stats dashboard (§3 usage relay) |
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
 
-localStorage keys: `omp-hub.token`, `omp-hub.name` (display name, default `"guest"`),
-`omp-hub.usage.profile` (usage page profile selection), plus vendored `omp-collab-theme`,
-`omp.collab.name` (unused on hub pages).
+`/sessions` is the in-page switcher (Ctrl+K), not a route. The hub home header,
+the session rail (expanded or collapsed), and the switcher open the same
+authenticated settings center; `/settings` opens its Current session section.
+The center has browser-wide preferences (theme, display name, notifications,
+session-list display, stats-bar metrics, sign-out) on every hub page and model,
+thinking, allowlisted runtime overrides, and links only for a live `/s/<id>`.
+Starting/ended sessions never issue agent settings commands. `/join` remains an
+independent guest with no hub-settings entry. The browser notification watcher
+runs once across authenticated home/session/usage pages, including when no
+session surface is mounted; browser-denied notifications fall back to local
+toasts. Mobile uses a scrollable bottom sheet with a safe-area inset.
+
+The settings center reuses the existing localStorage keys: `omp-hub.token`,
+`omp-hub.name` (display name, default `"guest"`), `omp-collab-theme`,
+`omp-hub.notify`, `omp-hub.notify-completed`, `omp-hub.hidden-sessions`,
+`omp-hub.session-time-mode`, `omp-hub.rail.show-ended`, and `omp.stats-bar`
+(also used on `/join`). `omp-hub.usage.profile` remains a usage-page filter;
+`omp.collab.name` is unused on hub pages. These browser preferences do not
+change hub startup env, daemon CLI options, or the agent's `settings.json`.
+Sign-out removes only this browser's stored token, not the server's `HUB_TOKEN`.
 
 ## 6. Web slash commands (composer interception, §5 session page)
 
@@ -827,7 +844,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/pause` | freeze/resume the session's agent loop; bare toggles (drives `POST …/pause`; header chip while paused) |
 | `/cycle` | cycle to the next model in the session's list (drives `POST …/cycle`) |
 | `/cycle-roles` | cycle the configured role models in `cycleOrder` order — TUI ctrl+p parity, default `smol` → `default` → `slow` (drives `POST …/cycle` with `roleCycle`; 0.10.0+ agents only) |
-| `/settings` | settings modal: model + thinking + links + theme + display name + Advanced (session settings from `GET/POST …/settings` — runtime overrides, not persisted) |
+| `/settings` | opens the shared authenticated settings center on Current session (model, thinking, links, and Advanced session runtime overrides); the This browser section is available in the same dialog |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |
 | `/theme` | toggle light/dark (vendored theme store) |

@@ -77,7 +77,6 @@ import { ModelPicker } from "./ModelPicker";
 import { ResumePicker } from "./ResumePicker";
 import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
-import { SettingsModal } from "./SettingsModal";
 import { SlashPalette } from "./SlashPalette";
 import { SteeringQueueBar } from "./SteeringQueueBar";
 import { ThinkingPicker } from "./ThinkingPicker";
@@ -115,9 +114,11 @@ export interface SessionViewProps {
 	onLeave(): void;
 	/** Opens the page-level quick switcher (the `/sessions` slash command path). */
 	onOpenSwitcher(): void;
+	/** Opens the authenticated hub settings center with this session selected. */
+	onOpenSettings(): void;
 }
 
-export function SessionView({ sessionId, link, record, displayName, registryLive, onLeave, onOpenSwitcher }: SessionViewProps): ReactNode {
+export function SessionView({ sessionId, link, record, displayName, registryLive, onLeave, onOpenSwitcher, onOpenSettings }: SessionViewProps): ReactNode {
 	const { client, error, rejoin } = usePoolClient(sessionId, link, displayName);
 
 	if (error) {
@@ -146,6 +147,7 @@ export function SessionView({ sessionId, link, record, displayName, registryLive
 			onLeave={onLeave}
 			onRejoin={rejoin}
 			onOpenSwitcher={onOpenSwitcher}
+			onOpenSettings={onOpenSettings}
 		/>
 	);
 }
@@ -159,9 +161,10 @@ interface SessionProps {
 	onLeave(): void;
 	onRejoin(): void;
 	onOpenSwitcher(): void;
+	onOpenSettings(): void;
 }
 
-function Session({ client, sessionId, record, displayName, registryLive, onLeave, onRejoin, onOpenSwitcher }: SessionProps): ReactNode {
+function Session({ client, sessionId, record, displayName, registryLive, onLeave, onRejoin, onOpenSwitcher, onOpenSettings }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
 	// Handoff progress rides the registry mirror (protocol §3) through the
 	// shared store's poll: the page's attach latch deliberately freezes the
@@ -206,11 +209,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	// Set by Esc/blur/command-run; the next keystroke brings the palette back.
 	const [paletteDismissed, setPaletteDismissed] = useState(false);
 	const autoOpenedRef = useRef(false);
-	const {
-		preference: themePreference,
-		resolved: themeResolved,
-		setPreference: setThemePreference,
-	} = useThemePreference();
+	const { resolved: themeResolved, setPreference: setThemePreference } = useThemePreference();
 
 	// Local notices ride the module toast store (survives surface remounts)
 	// merged with the client's own notices in the vendored `Toasts` list.
@@ -549,9 +548,14 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 
 	// Latest command context, so the long-lived composer wrapper never sees a stale one.
 	const ctx: CommandContext = {
-		// The `/sessions` command opens the page-level switcher; every other
-		// dialog is surface-local state.
-		openModal: kind => (kind === "sessions" ? onOpenSwitcher() : setModal(kind)),
+		// Session switching and settings live in the persistent page frame.
+		openModal: kind => {
+			if (kind === "sessions") onOpenSwitcher();
+			else if (kind === "settings") {
+				setPaletteDismissed(true);
+				onOpenSettings();
+			} else setModal(kind);
+		},
 		toggleTheme,
 		navigate,
 		downloadDump,
@@ -879,15 +883,6 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 			{modal === "goal" && <GoalModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "mcp" && <McpModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "loop" && <LoopModal sessionId={sessionId} notify={notify} onClose={closeModal} />}
-			{modal === "settings" && (
-				<SettingsModal
-					sessionId={sessionId}
-					record={record}
-					theme={{ preference: themePreference, resolved: themeResolved, setPreference: setThemePreference }}
-					notify={notify}
-					onClose={closeModal}
-				/>
-			)}
 			{modal === "links" && <LinksModal record={record} onClose={closeModal} />}
 			{modal === "help" && <HelpModal onClose={closeModal} />}
 		</div>

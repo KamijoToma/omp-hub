@@ -8,10 +8,14 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Toasts } from "./components/shell/Toasts";
 import GuestApp from "./guest/app";
 import { clearToken, getToken, onUnauthorized } from "./hub/api";
 import { HomePage } from "./hub/HomePage";
 import { clientPool } from "./hub/client-pool";
+import { SettingsModal } from "./hub/SettingsModal";
+import { useAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./hub/session-alerts";
+import { pushToast, useLocalToasts } from "./hub/toasts";
 import "./hub/highlight";
 import { SessionPage } from "./hub/SessionPage";
 import { sessionsStore } from "./hub/sessions-store";
@@ -50,9 +54,26 @@ function NoticeToasts(): ReactNode {
 	return null;
 }
 
+/** Home and usage have no collab surface to render their local notices. */
+function PageToasts(): ReactNode {
+	return <Toasts notices={useLocalToasts()} />;
+}
+
+/** One registry alert watcher across authenticated pages, including the home page. */
+function HubAlerts({ currentId }: { currentId: string }): ReactNode {
+	const enabled = useAlertsEnabled();
+	const completions = useCompletionsEnabled();
+	useSessionAlerts({ enabled, completions, currentId, notify: pushToast });
+	return null;
+}
+
 function Shell(): ReactNode {
 	const route = useRoute();
 	const [token, setToken] = useState<string | null>(() => getToken());
+	const [settingsSection, setSettingsSection] = useState<"browser" | "session" | null>(null);
+	const routeKey = route.kind === "session" ? `s/${route.id}` : route.kind;
+
+	useEffect(() => setSettingsSection(null), [routeKey]);
 
 	// Unknown paths fall back to the hub home.
 	useEffect(() => {
@@ -67,6 +88,7 @@ function Shell(): ReactNode {
 		clearToken();
 		clientPool.closeAll();
 		sessionsStore.clear();
+		setSettingsSection(null);
 		setToken(null);
 		navigate("/", true);
 	}, []);
@@ -79,19 +101,31 @@ function Shell(): ReactNode {
 	if (route.kind === "unknown") return null;
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
-	// The connection manager survives route changes but is absent from /join
-	// and the token gate. It never keeps React session surfaces mounted.
+	// The warm connection manager and alert watcher survive authenticated route
+	// changes; neither mounts on /join or the token gate.
 	return (
 		<>
 			<WarmSessions currentId={route.kind === "session" ? route.id : null} />
+			<HubAlerts currentId={route.kind === "session" ? route.id : ""} />
 			{route.kind === "session" ? (
-				<SessionPage id={route.id} />
+				<SessionPage id={route.id} onOpenSettings={setSettingsSection} />
 			) : route.kind === "usage" ? (
 				<UsagePage machineId={route.machineId} />
 			) : (
-				<HomePage onLogout={logout} />
+				<HomePage onLogout={logout} onOpenSettings={() => setSettingsSection("browser")} />
 			)}
 			<NoticeToasts />
+			{route.kind !== "session" && <PageToasts />}
+			{settingsSection !== null && (
+				<SettingsModal
+					key={routeKey}
+					sessionId={route.kind === "session" ? route.id : undefined}
+					initialSection={settingsSection}
+					notify={pushToast}
+					onLogout={logout}
+					onClose={() => setSettingsSection(null)}
+				/>
+			)}
 		</>
 	);
 }

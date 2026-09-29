@@ -5,7 +5,7 @@
  * while keeping order.
  */
 import { describe, expect, test } from "bun:test";
-import { hideSession, parseStoredIds, partitionHidden, showSession } from "../src/hub/hidden-sessions";
+import { hideSession, parseStoredIds, partitionHidden, showAllSessions, showSession } from "../src/hub/hidden-sessions";
 
 // Installed before any hide/show call; module-level load() already ran against
 // an absent localStorage, which is the same empty-set start a fresh page gets.
@@ -43,6 +43,17 @@ describe("hidden sessions", () => {
 		expect(backing.get(KEY)).toBe("[]");
 		// Un-hiding an unknown id is a quiet no-op.
 		showSession("s_missing");
+		expect(backing.get(KEY)).toBe("[]");
+	});
+
+	test("show all restores the full browser listing, including stale hidden ids", () => {
+		hideSession("a");
+		hideSession("b");
+		hideSession("stale");
+		const rows = [{ id: "a" }, { id: "b" }];
+		expect(partitionHidden(rows, parseStoredIds(backing.get(KEY) ?? null)).visible).toEqual([]);
+		showAllSessions();
+		expect(partitionHidden(rows, parseStoredIds(backing.get(KEY) ?? null)).visible).toEqual(rows);
 		expect(backing.get(KEY)).toBe("[]");
 	});
 
