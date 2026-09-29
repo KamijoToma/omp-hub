@@ -106,7 +106,7 @@ jobs:
         run: |
           mkdir -p release/omp-hub/packages/{hub,agent,web} release/omp-hub/{licenses,docs/screenshots}
           cp -a packages/hub/{src,package.json,bun.lock,tsconfig.json} release/omp-hub/packages/hub/
-          cp -a packages/agent/{src,types,package.json,bun.lock,tsconfig.json,README.md} release/omp-hub/packages/agent/
+          cp -a packages/agent/{src,types,patches,package.json,bun.lock,tsconfig.json,README.md} release/omp-hub/packages/agent/
           cp -a release-web/dist release/omp-hub/packages/web/dist
           cp -a release-web/licenses/. release/omp-hub/licenses/
           cp README.md README.zh-CN.md LICENSE release/omp-hub/

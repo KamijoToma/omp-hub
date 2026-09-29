@@ -15,12 +15,15 @@ bun --cwd=packages/agent install --frozen-lockfile
 ```
 
 No sibling checkout or native build is required: `@oh-my-pi/pi-natives` ships prebuilt
-platform binaries via npm optional dependencies. The pinned versions equal the SDK's git
-release tags (e.g. `18.4.2` = tag `v18.4.2`), so a pin is an exact upstream revision — do
-not bump without rerunning `bun run typecheck` and `bun test`. `types/sdk-assets.d.ts`
-vendors the ambient declarations for the SDK's `with { type: "file" }` asset imports
-(they are not part of the published tarballs); extend it if a new SDK version imports new
-asset patterns. The SDK and web guest must use compatible `COLLAB_PROTO` versions.
+platform binaries via npm optional dependencies. All SDK packages are pinned to `18.4.4`,
+matching upstream tag `v18.4.4`; upgrade the pins together. The versioned
+`patches/@oh-my-pi%2Fpi-coding-agent@18.4.4.patch` adds browser history paging to the
+collab host. Rebase it for each new SDK release and include `patches/` in any source
+archive alongside `package.json` and `bun.lock`, or frozen installation will fail.
+After an upgrade, run `bun run typecheck`, `bun test`, and the native release smoke.
+`types/sdk-assets.d.ts` vendors ambient declarations for SDK asset imports absent
+from published tarballs; extend it if the SDK adds new asset patterns. The SDK
+and web guest must use compatible `COLLAB_PROTO` versions.
 
 ## Run
 

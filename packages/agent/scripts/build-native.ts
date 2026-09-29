@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 const agentDir = path.resolve(import.meta.dir, "..");
 const repoRoot = path.resolve(agentDir, "..", "..");
-const sdkVersion = "18.4.2";
+const sdkVersion = "18.4.4";
 const nativeFilename = "pi_natives.linux-x64-baseline.node";
 const target = "bun-linux-x64-baseline" as const;
 const sdkNames = ["pi-agent-core", "pi-ai", "pi-coding-agent", "pi-natives", "pi-tui", "pi-utils", "omp-stats", "pi-natives-linux-x64"] as const;
