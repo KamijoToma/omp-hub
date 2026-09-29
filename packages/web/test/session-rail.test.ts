@@ -4,8 +4,9 @@
  * as "default", matching the resume picker).
  *
  * `diffSessionAlerts` / `alertText` — the bell's transition detection: an
- * `input` alert on the false→true `inputRequired` edge, an `exited` alert on
- * any → exited; brand-new records never alert.
+ * `input` alert on the false→true `inputRequired` edge, a `completed` alert
+ * on a live session's working→idle edge, an `exited` alert on any → exited;
+ * brand-new records never alert.
  */
 import { describe, expect, test } from "bun:test";
 import type { SessionRecord } from "../src/hub/api";
@@ -13,8 +14,10 @@ import { filterHubSessions, railGlyphLabel } from "../src/hub/SessionRail";
 import {
 	alertText,
 	alertsEnabled,
+	completionsEnabled,
 	diffSessionAlerts,
 	setAlertsEnabled,
+	setCompletionsEnabled,
 	shouldSystemNotify,
 } from "../src/hub/session-alerts";
 
@@ -77,6 +80,8 @@ describe("diffSessionAlerts", () => {
 		expect(diffSessionAlerts(prev, next)).toEqual([
 			{ sessionId: "ses_a", sessionName: "auth refactor", kind: "input" },
 			{ sessionId: "ses_b", sessionName: "flaky test hunt", kind: "exited" },
+			// ses_c goes working→idle while still live: also a completion now.
+			{ sessionId: "ses_c", sessionName: "docs", kind: "completed" },
 		]);
 	});
 
@@ -91,12 +96,35 @@ describe("diffSessionAlerts", () => {
 		const next = [record({}), record({ id: "ses_d", name: "gone", status: "exited", exitReason: "done" })];
 		expect(diffSessionAlerts(prev, next)).toEqual([]);
 	});
+
+	test("fires completed on a live session's working-to-idle edge", () => {
+		const prev = [record({ activity: { working: true, inputRequired: false, updatedAt: 1 } })];
+		const next = [record({ activity: { working: false, inputRequired: false, updatedAt: 2 } })];
+		expect(diffSessionAlerts(prev, next)).toEqual([{ sessionId: "ses_a", sessionName: "auth refactor", kind: "completed" }]);
+	});
+
+	test("an input wait or an exit is never also a completion", () => {
+		const prev = [
+			record({ activity: { working: true, inputRequired: false, updatedAt: 1 } }),
+			record({ id: "ses_b", name: "flaky test hunt", cwd: "/srv/api", activity: { working: true, inputRequired: false, updatedAt: 1 } }),
+		];
+		const next = [
+			record({ activity: { working: false, inputRequired: true, updatedAt: 2 } }),
+			record({ id: "ses_b", name: "flaky test hunt", cwd: "/srv/api", status: "exited", exitReason: "done" }),
+		];
+		expect(diffSessionAlerts(prev, next)).toEqual([
+			{ sessionId: "ses_a", sessionName: "auth refactor", kind: "input" },
+			{ sessionId: "ses_b", sessionName: "flaky test hunt", kind: "exited" },
+		]);
+	});
 });
 
 describe("alert delivery policy", () => {
 	test("copy names the session and the transition", () => {
 		const input = alertText({ sessionId: "s1", sessionName: "docs", kind: "input" });
 		expect(input.title).toBe("docs needs input");
+		const completed = alertText({ sessionId: "s1", sessionName: "docs", kind: "completed" });
+		expect(completed.title).toBe("docs finished its task");
 		const exited = alertText({ sessionId: "s1", sessionName: "docs", kind: "exited" });
 		expect(exited.title).toBe("docs finished");
 	});
@@ -114,6 +142,13 @@ describe("alert delivery policy", () => {
 		expect(alertsEnabled()).toBe(true);
 		setAlertsEnabled(false);
 		expect(alertsEnabled()).toBe(false);
+	});
+
+	test("the completion toggle persists through the guarded storage helpers", () => {
+		setCompletionsEnabled(true);
+		expect(completionsEnabled()).toBe(true);
+		setCompletionsEnabled(false);
+		expect(completionsEnabled()).toBe(false);
 	});
 });
 

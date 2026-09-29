@@ -1,19 +1,20 @@
 /**
  * Cross-session alerts for the session page (protocol §3 `SessionRecord.activity`).
  *
- * The polled hub listing is diffed into "needs input" / "exited" transitions
- * and delivered where the user actually is: a system notification when the
- * browser allows one and the session is not already on screen, otherwise an
- * in-page toast (the caller's `notify`) plus a flashing document title while
- * the tab is hidden.
+ * The polled hub listing is diffed into "needs input" / "completed" / "exited"
+ * transitions and delivered where the user actually is: a system notification
+ * when the browser allows one and the session is not already on screen,
+ * otherwise an in-page toast (the caller's `notify`) plus a flashing document
+ * title while the tab is hidden. The rail bell gates input/exited alerts; the
+ * settings dialog's completion toggle gates the `completed` notices.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { Notice } from "../lib/client";
 import type { SessionRecord } from "./api";
 import { navigate } from "./router";
 import { useSessions } from "./sessions-store";
 
-export type SessionAlertKind = "input" | "exited";
+export type SessionAlertKind = "input" | "completed" | "exited";
 
 export interface SessionAlert {
 	sessionId: string;
@@ -52,11 +53,50 @@ export function setAlertsEnabled(enabled: boolean): void {
 	}
 }
 
+/** Storage key behind the settings dialog's completion-notice toggle (`"1"` = on). */
+export const COMPLETIONS_ENABLED_KEY = "omp-hub.notify-completed";
+
+let completionsMemory: boolean | null = null;
+const completionsListeners = new Set<() => void>();
+
+export function completionsEnabled(): boolean {
+	if (completionsMemory !== null) return completionsMemory;
+	try {
+		return (completionsMemory = globalThis.localStorage?.getItem(COMPLETIONS_ENABLED_KEY) === "1");
+	} catch {
+		return (completionsMemory = false);
+	}
+}
+
+export function setCompletionsEnabled(enabled: boolean): void {
+	completionsMemory = enabled;
+	try {
+		if (enabled) globalThis.localStorage?.setItem(COMPLETIONS_ENABLED_KEY, "1");
+		else globalThis.localStorage?.removeItem(COMPLETIONS_ENABLED_KEY);
+	} catch {
+		// persistence is best-effort; the in-memory value still serves this page
+	}
+	for (const listener of completionsListeners) listener();
+}
+
+/** Reactive view of the completion-notice toggle (settings dialog + alert gate). */
+export function useCompletionsEnabled(): boolean {
+	return useSyncExternalStore(
+		listener => {
+			completionsListeners.add(listener);
+			return () => completionsListeners.delete(listener);
+		},
+		() => completionsMemory ?? completionsEnabled(),
+		() => false,
+	);
+}
+
 /**
  * Turns a listing refresh into alerts: `input` fires on the false→true
- * `inputRequired` edge, `exited` on any → `exited`. Brand-new records are not
- * interruptions (the user just started or a poll caught up), and a session
- * never alerts twice for the same edge.
+ * `inputRequired` edge, `completed` on a live session's working→idle edge
+ * (an input wait owns its own alert instead), `exited` on any → `exited`.
+ * Brand-new records are not interruptions (the user just started or a poll
+ * caught up), and a session never alerts twice for the same edge.
  */
 export function diffSessionAlerts(prev: readonly SessionRecord[], next: readonly SessionRecord[]): SessionAlert[] {
 	const before = new Map(prev.map(record => [record.id, record]));
@@ -66,6 +106,13 @@ export function diffSessionAlerts(prev: readonly SessionRecord[], next: readonly
 		if (was === undefined) continue;
 		if (was.activity?.inputRequired !== true && record.activity?.inputRequired === true) {
 			alerts.push({ sessionId: record.id, sessionName: record.name, kind: "input" });
+		} else if (
+			was.activity?.working === true &&
+			record.status === "live" &&
+			record.activity?.working !== true &&
+			record.activity?.inputRequired !== true
+		) {
+			alerts.push({ sessionId: record.id, sessionName: record.name, kind: "completed" });
 		} else if (was.status !== "exited" && record.status === "exited") {
 			alerts.push({ sessionId: record.id, sessionName: record.name, kind: "exited" });
 		}
@@ -79,6 +126,12 @@ export function alertText(alert: SessionAlert): { title: string; body: string } 
 		return {
 			title: `${alert.sessionName} needs input`,
 			body: "the agent is waiting on a dialog — open the hub to answer",
+		};
+	}
+	if (alert.kind === "completed") {
+		return {
+			title: `${alert.sessionName} finished its task`,
+			body: "the agent completed the current task — open the hub to review",
 		};
 	}
 	return { title: `${alert.sessionName} finished`, body: "the session exited" };
@@ -121,17 +174,20 @@ export function deliverSystemAlerts(alerts: readonly SessionAlert[], currentId: 
 	return remaining;
 }
 
+/** Current Notification permission, `"unsupported"` when the API is absent. */
+export function notificationPermission(): NotificationPermission | "unsupported" {
+	return typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+}
+
 /** Asks for Notification permission on first enable; never throws. */
 export async function requestAlertPermission(): Promise<NotificationPermission | "unsupported"> {
-	if (typeof Notification === "undefined") return "unsupported";
-	if (Notification.permission === "default") {
-		try {
-			return await Notification.requestPermission();
-		} catch {
-			return "denied";
-		}
+	const current = notificationPermission();
+	if (current !== "default") return current;
+	try {
+		return await Notification.requestPermission();
+	} catch {
+		return "denied";
 	}
-	return Notification.permission;
 }
 
 // ---- title flash fallback (tab hidden, no Notification permission) ----
@@ -176,8 +232,10 @@ export function stopTitleFlash(): void {
 // ---- store-driven watcher ----
 
 export interface SessionAlertsOptions {
-	/** Bell toggle; resets the diff baseline while off. */
+	/** Bell toggle (input/exited alerts); resets the diff baseline while off. */
 	enabled: boolean;
+	/** Completion-notice toggle; off filters `completed` alerts out. */
+	completions: boolean;
 	/** The session on screen — it never system-notifies (already visible). */
 	currentId: string;
 	/** Toast sink for alerts that could not become system notifications. */
@@ -187,26 +245,33 @@ export interface SessionAlertsOptions {
 /**
  * Runs the alert diff off the shared sessions store's updates (one registry
  * poll serves rail dots, record gate, and alerts). Mirrors the old side-poll
- * effect: the first sight of a listing is the baseline, not an alarm.
+ * effect: the first sight of a listing is the baseline, not an alarm. The
+ * bell and the completion toggle gate their kinds independently; with both
+ * off the baseline resets, so re-enabling never replays stale edges.
  */
-export function useSessionAlerts({ enabled, currentId, notify }: SessionAlertsOptions): void {
+export function useSessionAlerts({ enabled, completions, currentId, notify }: SessionAlertsOptions): void {
 	const sessions = useSessions().sessions;
 	const prevRef = useRef<readonly SessionRecord[] | null>(null);
 	const notifyRef = useRef(notify);
 	notifyRef.current = notify;
 
 	useEffect(() => {
-		if (!enabled) {
+		if (!enabled && !completions) {
 			prevRef.current = null;
 			return;
 		}
 		if (!sessions) return;
 		const alerts = diffSessionAlerts(prevRef.current ?? sessions, sessions);
 		prevRef.current = sessions;
-		const remaining = deliverSystemAlerts(alerts, currentId);
+		const scoped = alerts.filter(alert => {
+			if (alert.kind !== "completed") return enabled;
+			// Watching the session finish is not news; a hidden tab still pings.
+			return completions && !(alert.sessionId === currentId && !document.hidden);
+		});
+		const remaining = deliverSystemAlerts(scoped, currentId);
 		for (const alert of remaining) {
 			notifyRef.current(alert.kind === "input" ? "warning" : "info", alertText(alert).title);
 		}
 		if (remaining.length > 0 && document.hidden) startTitleFlash(alertText(remaining[0]!).title);
-	}, [enabled, sessions, currentId]);
+	}, [enabled, completions, sessions, currentId]);
 }

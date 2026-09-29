@@ -1,12 +1,13 @@
 /**
- * `/settings` — one dialog for model, thinking, collab links, theme, and the
- * display name. Model and thinking swap the body to the shared picker views
- * (back arrow in the header returns); links reuse `LinksSection`.
+ * `/settings` — one dialog for model, thinking, collab links, theme, the
+ * display name, and completion notifications. Model and thinking swap the
+ * body to the shared picker views (back arrow in the header returns); links
+ * reuse `LinksSection`.
  *
  * Display name is stored in `omp-hub.name` (docs/protocol.md §5) and only
  * reaches the relay handshake on the next connection.
  */
-import { ArrowLeft, LoaderCircle, Moon, Sun } from "lucide-react";
+import { ArrowLeft, Bell, BellOff, LoaderCircle, Moon, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import type { Notice } from "../lib/client";
@@ -16,6 +17,7 @@ import { DEFAULT_DISPLAY_NAME, getDisplayName, setDisplayName } from "./api";
 import { LinksSection } from "./LinksModal";
 import { Modal } from "./Modal";
 import { ModelPickerView } from "./ModelPicker";
+import { notificationPermission, requestAlertPermission, setCompletionsEnabled, useCompletionsEnabled } from "./session-alerts";
 import { ThinkingPickerView } from "./ThinkingPicker";
 import { useAgentState } from "./use-agent-state";
 import { AdvancedSettings } from "./AdvancedSettings";
@@ -44,11 +46,36 @@ const VIEW_TITLE: Record<SettingsView, string> = {
 	advanced: "Advanced",
 };
 
+/** One-line explanation of the browser notification permission for the dialog. */
+const PERMISSION_NOTES: Record<NotificationPermission | "unsupported", string> = {
+	granted: "desktop notifications fire while the hub tab is hidden or showing another session",
+	default: "the browser asks for permission the first time you enable",
+	denied: "notifications are blocked in this browser — toasts and the tab title flash instead",
+	unsupported: "this browser has no notification support — toasts only",
+};
+
 export function SettingsModal({ sessionId, record, theme, notify, onClose }: SettingsModalProps): ReactNode {
 	const load = useAgentState(sessionId);
 	const [view, setView] = useState<SettingsView>("main");
 	const [name, setName] = useState(() => getDisplayName());
 	const [savedName, setSavedName] = useState<string | null>(null);
+	// Completion notifications: own toggle plus the browser permission it needs.
+	const completionsOn = useCompletionsEnabled();
+	const [permission, setPermission] = useState(notificationPermission);
+
+	const toggleCompletions = (): void => {
+		if (completionsOn) {
+			setCompletionsEnabled(false);
+			return;
+		}
+		setCompletionsEnabled(true);
+		void requestAlertPermission().then(granted => {
+			setPermission(granted);
+			if (granted === "granted") notify("info", "completion notifications on");
+			else if (granted === "unsupported") notify("warning", "completion notices on — no notification support here, toasts only");
+			else notify("warning", "completion notices on — notifications blocked, toasts only");
+		});
+	};
 
 	const busy = load.loading && !load.state;
 	const failed = load.error !== null && !load.state;
@@ -145,6 +172,20 @@ export function SettingsModal({ sessionId, record, theme, notify, onClose }: Set
 								<span className="sh-btn-label">Use {theme.resolved === "dark" ? "light" : "dark"}</span>
 							</button>
 						</div>
+					</section>
+
+					<section className="hb-modal-section">
+						<h3 className="hb-card-title">Notifications</h3>
+						<div className="hb-modal-row">
+							<span className="hb-modal-value">
+								{completionsOn ? "on · notify when the agent finishes a task" : "off"}
+							</span>
+							<button type="button" className="sh-btn" onClick={toggleCompletions} title="toggle completion notifications">
+								{completionsOn ? <BellOff size={12} aria-hidden="true" /> : <Bell size={12} aria-hidden="true" />}
+								<span className="sh-btn-label">{completionsOn ? "Disable" : "Enable"}</span>
+							</button>
+						</div>
+						<p className="hb-card-note">{PERMISSION_NOTES[permission]}</p>
 					</section>
 
 					<section className="hb-modal-section">
