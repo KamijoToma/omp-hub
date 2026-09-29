@@ -46,6 +46,13 @@ bun --cwd=packages/web test
 docker build -f docker/Dockerfile -t omp-hub .       # hub + web only
 ```
 
+Production runs the hub as a compiled binary (its cmdline no longer matches a
+`pkill -f "bun src/server.ts"` pattern): build it with
+`bun --cwd=packages/web run build && bun --cwd=packages/hub run build:binary`
+(→ `packages/hub/omp-hub`, gitignored) and start it with `WEB_DIST` pointing
+at the built web dist — `import.meta` paths do not exist inside the binary,
+and `--watch` is refused.
+
 The hub and agent also expose `bun run start` (same entry points as `dev`). Hub `demo` installs the web's frozen lockfile dependencies and builds `dist/` before serving; hub `dev`/`start` serve an existing dist without building it. `WEB_DIST` overrides the static directory. The Docker image builds the web with `bun install --frozen-lockfile` and packages the hub only, not the machine agent.
 
 ## Code Conventions & Common Patterns

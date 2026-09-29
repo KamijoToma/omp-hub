@@ -4,7 +4,7 @@
  * process alive without spawning.
  */
 import { describe, expect, test } from "bun:test";
-import { performDaemonRestart, restartFailure } from "../src/daemon-restart";
+import { performDaemonRestart, restartFailure, restartSpawnArgv } from "../src/daemon-restart";
 import type { Logger } from "../src/log";
 
 const SILENT: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -69,5 +69,18 @@ describe("performDaemonRestart", () => {
 
 	test("restartFailure formats thrown values", () => {
 		expect(restartFailure(new Error("boom"))).toBe("daemon restart failed: boom");
+	});
+
+	test("restartSpawnArgv keeps the script in source mode", () => {
+		const spawned = restartSpawnArgv(["/home/me/.local/bin/bun", "/srv/omp/packages/agent/src/main.ts", "--hub", "ws://h"]);
+		expect(spawned[0]).toBe(process.execPath);
+		expect(spawned.slice(1)).toEqual(["/srv/omp/packages/agent/src/main.ts", "--hub", "ws://h"]);
+	});
+
+	test("restartSpawnArgv drops the virtual entry in compiled mode", () => {
+		const spawned = restartSpawnArgv(["bun", "/$bunfs/root/omp-daemon", "--hub", "ws://h"]);
+		expect(spawned[0]).toBe(process.execPath);
+		expect(spawned).not.toContain("/$bunfs/root/omp-daemon");
+		expect(spawned.slice(1)).toEqual(["--hub", "ws://h"]);
 	});
 });

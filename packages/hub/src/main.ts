@@ -7,9 +7,15 @@
 import { watch as watchFs } from "node:fs";
 import { tlsConfigured, type Config } from "./config";
 import { log } from "./log";
-import { buildHub, hubView, startHub, ReloadableServer, type Hub, type HubCore, type HubSocketData } from "./server";
+import { buildHub, hubView, isCompiledBinary, startHub, ReloadableServer, type Hub, type HubCore, type HubSocketData } from "./server";
 
 const watch = Bun.argv.includes("--watch");
+if (watch && isCompiledBinary()) {
+	// The hot reload re-imports `./server.ts` with a cache-busting query — no
+	// source files exist inside the compiled executable.
+	process.stderr.write("--watch requires a source checkout; it is not available in the compiled binary\n");
+	process.exit(1);
+}
 const overrides: Partial<Config> = {
 	// Real runs persist; the library default (tests) keeps the side effect off.
 	stateFile: process.env.HUB_STATE_FILE?.trim() ? process.env.HUB_STATE_FILE.trim() : "hub-state.json",

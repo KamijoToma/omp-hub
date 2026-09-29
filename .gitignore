@@ -13,3 +13,4 @@ dist
 .codegraph/
 .omp/
 hub-state.json
+packages/hub/omp-hub
