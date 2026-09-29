@@ -1,7 +1,8 @@
 /**
  * omp-hub server entry — one Bun process, one port (docs/architecture.md §1).
  *
- * Routing order: `/healthz` → `/agent` upgrade → `/r/` upgrade → `/api/*` → static SPA.
+ * Routing order: `/healthz` → `/agent` upgrade → `/r/` (browser navigations 302 to the web
+ * join UI; WebSocket upgrades hit the relay) → `/api/*` → static SPA.
  *
  * Construction is split from binding ({@link buildHub} vs {@link startHub}) so
  * the dev `--watch` mode can build a fresh core and swap it into the live
@@ -13,7 +14,7 @@ import path from "node:path";
 import type { AdoptedConnection, AgentRegistry, AgentSocket, AgentSocketData, FleetRecoveryState, MachineRecord } from "./agents";
 import { AgentRegistry as AgentsRegistry } from "./agents";
 import { handleApi } from "./api";
-import { loadConfig, tlsConfigured, type Config } from "./config";
+import { derivePublicBase, loadConfig, tlsConfigured, type Config } from "./config";
 import { FleetState, type FleetStateSnapshot } from "./fleet-state";
 import { log } from "./log";
 import { NoticeStore } from "./notices";
@@ -88,6 +89,31 @@ export interface AdoptedHubState {
 const asRelaySocket = (ws: Bun.ServerWebSocket<HubSocketData>): RelaySocket => ws as unknown as RelaySocket;
 const asAgentSocket = (ws: Bun.ServerWebSocket<HubSocketData>): AgentSocket => ws as unknown as AgentSocket;
 
+/**
+ * Plain browser navigation: real relay clients (omp host/guest, the web app's
+ * `GuestClient`) always send `Upgrade: websocket`. A browser that merely opens a
+ * collab link would otherwise get the relay's text/plain 404/426 rejections, which
+ * iOS Safari presents as a "document.txt" download instead of a page.
+ */
+function isBrowserNavigation(req: Request): boolean {
+	if (req.method !== "GET" && req.method !== "HEAD") return false;
+	if ((req.headers.get("upgrade") ?? "").trim().toLowerCase() === "websocket") return false;
+	return (req.headers.get("accept") ?? "").includes("text/html");
+}
+
+/**
+ * Send browsers that open the bare collab link (`<host>/r/<roomId>.<key>`) to the
+ * web join UI. The target hash uses the exact `<host><path>` format of the hub's
+ * `web` links, so the join screen receives identical credentials. The relay's
+ * `?role=` query is dropped — it is relay-internal and the web app infers the
+ * role from the key.
+ */
+function joinRedirect(req: Request, cfg: Config): Response {
+	const { pathname } = new URL(req.url);
+	const { origin, host } = new URL(derivePublicBase(req, cfg).httpBase);
+	return new Response(null, { status: 302, headers: { location: `${origin}/#${host}${pathname}` } });
+}
+
 export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?: boolean } = {}): HubCore {
 	const cfg: Config = { ...loadConfig(), ...overrides };
 	if (!cfg.token.trim()) throw new Error("HUB_TOKEN is required before starting the hub");
@@ -125,7 +151,10 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 			const pathname = new URL(req.url).pathname;
 			if (pathname === "/healthz") return new Response("ok");
 			if (pathname === "/agent" || pathname === "/agent/") return agents.handleUpgrade(req, srv);
-			if (pathname.startsWith("/r/")) return relay.handleUpgrade(req, srv);
+			if (pathname.startsWith("/r/")) {
+				if (isBrowserNavigation(req)) return joinRedirect(req, cfg);
+				return relay.handleUpgrade(req, srv);
+			}
 			if (pathname === "/api" || pathname.startsWith("/api/")) {
 				return handleApi(req, { cfg, sessions, agents, notices, fleet, restart: core.onRestart ?? undefined });
 			}

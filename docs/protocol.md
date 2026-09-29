@@ -96,6 +96,10 @@ Byte-identical to `oh-my-pi/packages/collab-web/scripts/local-relay.ts`. Summary
   `{"t":"peer-left","peer":N}`; relay → guests TEXT `{"t":"room-closed"}` then close `4001` when
   the host's socket closes.
 - `GET /healthz` → 200 `ok` (liveness, unauthenticated).
+- Hub-only deviation: plain browser navigations (GET/HEAD, `Accept: text/html`, no
+  `Upgrade: websocket`) hitting `/r/*` are 302-redirected to `/#<host><path>` — the web join
+  UI's hash format — instead of the 404/426 text rejections, which iOS Safari surfaces as a
+  "document.txt" download. WebSocket upgrades follow the frozen contract above unchanged.
 
 ## 2. Agent channel (`GET /agent`)
 
