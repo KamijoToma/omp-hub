@@ -117,7 +117,9 @@ Upstream facts the design relies on:
 - URL `#fragment` is the room-link channel, read once at mount; hash routing collides with the
   link grammar ⇒ **path routing** (`/`, `/s/<id>`, `/join`).
 - Responsive already: breakpoints 768px/640px, visualViewport height var, safe-area insets,
-  PWA manifest. The shared frame keeps the rail visible beside the scrollable New tab.
+  PWA manifest. The shared frame keeps the rail visible beside the scrollable New tab;
+  its columns follow the remaining pane width, and the cwd field wraps below 400px
+  so widening the rail cannot crush the mobile form.
 - Secure context requirement: WebCrypto (`crypto.subtle`) needs https or localhost. Plain-LAN
   http deployments need TLS for the web client to decrypt rooms (see Security/TLS).
 

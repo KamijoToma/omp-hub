@@ -4,8 +4,8 @@
  * Expanded rows expose search, status and management; Ctrl+K shares the picker.
  */
 import { Bell, BellOff, Ellipsis, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RotateCcw, Settings2, Sparkles, Trash2 } from "lucide-react";
-import type { ReactNode } from "react";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename, restartSession } from "./api";
@@ -14,6 +14,7 @@ import { forgetComposerDraft } from "./composer-draft";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { extrasLabel, isEndedStatus, railRowsOrdered, setShowExtras, useShowExtras } from "./rail-filter";
+import { RAIL_WIDTH_BOUNDS, setRailWidth, useRailWidths, type RailState } from "./rail-width";
 import { Modal } from "./Modal";
 import { SessionActionsModal } from "./SessionActionsModal";
 import { sessionsStore, useSessions } from "./sessions-store";
@@ -564,6 +565,14 @@ export interface SessionRailProps {
 export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSwitch, onDeleted, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
 	const hidden = useHiddenSessions();
+	// Draggable rail width: the collapsed strip and the expanded picker keep
+	// independent per-browser pixel widths (`rail-width.ts`), applied inline so
+	// they override the CSS layout defaults. The edge handle tracks the pointer
+	// with capture, so a drag survives leaving the narrow strip.
+	const widths = useRailWidths();
+	const railState: RailState = expanded ? "expanded" : "collapsed";
+	const [resizing, setResizing] = useState(false);
+	const asideRef = useRef<HTMLElement | null>(null);
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
 	// expanded picker still lists them behind the "hidden" toggle.
 	const listed = useMemo(() => (sessions ?? []).filter(session => !hidden.has(session.id)), [sessions, hidden]);
@@ -593,10 +602,67 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSw
 		setRenaming(session);
 	}, []);
 
+	const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+		if (event.button !== 0) return;
+		// Capture: pointermove keeps flowing after the drag leaves the strip.
+		event.currentTarget.setPointerCapture(event.pointerId);
+		setResizing(true);
+	}, []);
+
+	const moveResize = useCallback(
+		(event: ReactPointerEvent<HTMLDivElement>): void => {
+			const aside = asideRef.current;
+			if (!aside || !resizing) return;
+			// The rail hugs the frame's left edge, so width is the cursor offset.
+			setRailWidth(railState, event.clientX - aside.getBoundingClientRect().left);
+		},
+		[railState, resizing],
+	);
+
+	const endResize = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+		const target = event.currentTarget;
+		if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+		setResizing(false);
+	}, []);
+
+	const resetWidth = useCallback((): void => {
+		setRailWidth(railState, RAIL_WIDTH_BOUNDS[railState].fallback);
+	}, [railState]);
+
+	const nudgeWidth = useCallback(
+		(delta: number): void => {
+			setRailWidth(railState, widths[railState] + delta);
+		},
+		[railState, widths],
+	);
+
+	const resizeKeys = useCallback(
+		(event: ReactKeyboardEvent<HTMLDivElement>): void => {
+			if (event.key === "ArrowLeft") nudgeWidth(-16);
+			else if (event.key === "ArrowRight") nudgeWidth(16);
+			else return;
+			event.preventDefault();
+		},
+		[nudgeWidth],
+	);
+
+	// Mid-drag: drop the width easing (the rail must track the pointer) and
+	// stop text selection/cursor flicker over the rest of the page.
+	useEffect(() => {
+		if (!resizing) return;
+		document.body.classList.add("hb-rail-resizing");
+		return () => document.body.classList.remove("hb-rail-resizing");
+	}, [resizing]);
+
 	return (
 		<>
 			{expanded && <div className="hb-rail-backdrop" onClick={onToggleExpanded} />}
-			<aside className={expanded ? "hb-rail hb-rail-open" : "hb-rail"} aria-label="sessions">
+			<aside
+				ref={asideRef}
+				className={`hb-rail${expanded ? " hb-rail-open" : ""}${resizing ? " hb-rail-dragging" : ""}`}
+				style={{ width: widths[railState] }}
+				aria-label="sessions"
+			>
 				{expanded ? (
 					<>
 						<div className="hb-nav-head">
@@ -687,6 +753,22 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSw
 						</button>
 					</>
 				)}
+				{/* Edge drag handle, shared by both rail states: a fat invisible hit
+					strip over the border; double-click restores the default width. */}
+				<div
+					className={resizing ? "hb-rail-resize hb-rail-resize-active" : "hb-rail-resize"}
+					role="separator"
+					aria-orientation="vertical"
+					aria-label="resize session rail"
+					title="drag to resize · double-click resets"
+					tabIndex={0}
+					onPointerDown={startResize}
+					onPointerMove={moveResize}
+					onPointerUp={endResize}
+					onPointerCancel={endResize}
+					onDoubleClick={resetWidth}
+					onKeyDown={resizeKeys}
+				/>
 			</aside>
 			{renaming !== null && (
 				<RenameSessionModal

@@ -980,7 +980,8 @@ safe-area inset.
 The settings center reuses the existing localStorage keys: `omp-hub.token`,
 `omp-hub.name` (display name, default `"guest"`), `omp-collab-theme`,
 `omp-hub.notify`, `omp-hub.notify-completed`, `omp-hub.hidden-sessions`,
-`omp-hub.session-time-mode`, `omp-hub.rail.show-ended`, and `omp.stats-bar`
+`omp-hub.session-time-mode`, `omp-hub.rail.show-ended`, `omp-hub.rail.open`,
+`omp-hub.rail.strip-width`, `omp-hub.rail.width`, and `omp.stats-bar`
 (also used on `/join`). `omp-hub.usage.profile` remains a usage-page filter;
 `omp.collab.name` is unused on hub pages. These browser preferences do not
 change hub startup env, daemon CLI options, or the agent's `settings.json`.
