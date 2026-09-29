@@ -185,6 +185,17 @@ export type SessionEntry =
 /** customType of collab guest prompts injected on the host. */
 export const COLLAB_PROMPT_MESSAGE_TYPE = "collab-prompt";
 
+/** customType of SDK late-LSP-diagnostic notices appended after edit/write returns. */
+export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
+
+/** One file's late diagnostics, as carried on `CustomMessageEntry.details` (SDK `LateDiagnosticsDetails`). */
+export interface LateDiagnosticsFile {
+	path?: string;
+	summary?: string;
+	errored?: boolean;
+	messages?: string[];
+}
+
 /** `details` shape of `custom_message` entries with `customType === "collab-prompt"`. */
 export interface CollabPromptDetails {
 	from?: string;
