@@ -130,7 +130,7 @@ export function SessionView({ sessionId, link, record, displayName, registryLive
 						{error}
 					</div>
 					<button type="button" className="sh-btn" onClick={onLeave}>
-						Back to hub
+						New session
 					</button>
 				</div>
 			</div>
@@ -281,7 +281,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	// command re-starts from the current record and navigates to the new page.
 	const startNewSession = useCallback((): void => {
 		if (!record) {
-			notify("warning", "no hub record — start new sessions from the hub home");
+			notify("warning", "no hub record — start new sessions from the New tab");
 			return;
 		}
 		void startSession({ machineId: record.machineId, cwd: record.cwd, profile: record.profile }).then(
@@ -293,14 +293,14 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		);
 	}, [record, notify]);
 
-	// `/resume` and its picker share one start flow, the hub home's History
-	// resume: a new hub session bound to the machine entry's omp session file,
+	// `/resume` and its picker share the New tab's History start flow: a new
+	// hub session bound to the machine entry's omp session file,
 	// running under the profile that owns it. Same hub-level orchestration as
 	// `/new` — the current session child stays untouched.
 	const resumeEntry = useCallback(
 		(entry: MachineSession): void => {
 			if (!record) {
-				notify("warning", "no hub record — resume from the hub home");
+				notify("warning", "no hub record — resume from the New tab");
 				return;
 			}
 			void startSession({
@@ -327,7 +327,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	const resumeSession = useCallback(
 		(query: string): void => {
 			if (!record) {
-				notify("warning", "no hub record — resume from the hub home");
+				notify("warning", "no hub record — resume from the New tab");
 				return;
 			}
 			const needle = query.trim();
@@ -557,7 +557,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 			} else setModal(kind);
 		},
 		toggleTheme,
-		navigate,
+		leaveSession: onLeave,
 		downloadDump,
 		notify,
 		compactSession,

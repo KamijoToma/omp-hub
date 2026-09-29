@@ -1,16 +1,15 @@
 /**
- * Hub home: machines, start-session form, session list.
- *
- * Machines use a 2 s poll; sessions share the authenticated shell's registry
- * store with alerts and the rail. Poll errors retain the last good rows.
+ * The pinned New tab: machine management, full session start and machine history.
+ * Machine polling runs only while this pane is mounted; the shared registry
+ * powers the rail, history badges and daemon restart confirmation.
  */
-import { Activity, ChevronDown, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Settings2, Square, X } from "lucide-react";
+import { Activity, ChevronDown, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Settings2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
 import { useSessions } from "./sessions-store";
-import type { MachineRecord, MachineSession, SessionRecord, SessionStatus } from "./api";
+import type { MachineRecord, MachineSession, SessionRecord } from "./api";
 import { TOOL_CATALOG } from "./tool-catalog";
 import {
 	errorText,
@@ -19,9 +18,7 @@ import {
 	listMachineProfiles,
 	restartDaemon,
 	startSession,
-	stopSession,
 } from "./api";
-import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { historyStatus } from "./history-status";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
@@ -30,16 +27,6 @@ import { Modal } from "./Modal";
 
 const POLL_MS = 2000;
 const EMPTY_SESSIONS: readonly SessionRecord[] = [];
-
-const STATUS_LABEL: Record<SessionStatus, string> = {
-	starting: "starting",
-	live: "live",
-	exited: "exited",
-	failed: "failed",
-};
-
-/** Machine-reported temp directory (`hello.tmpdir`); `/tmp` covers POSIX machines and pre-0.3.0 agents. */
-const tempDirFor = (machine: MachineRecord | undefined): string => machine?.tmpdir ?? "/tmp";
 
 export interface HomePageProps {
 	onLogout(): void;
@@ -66,7 +53,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
-	const [flash, setFlash] = useState<{ key: string; ok: boolean } | null>(null);
 	const [history, setHistory] = useState<MachineSession[] | null>(null);
 	const [historyTruncated, setHistoryTruncated] = useState(false);
 	const [historyError, setHistoryError] = useState<string | null>(null);
@@ -92,13 +78,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 			clearInterval(timer);
 		};
 	}, []);
-
-	// Copy feedback reverts on its own; a new copy restarts the countdown.
-	useEffect(() => {
-		if (!flash) return;
-		const timer = setTimeout(() => setFlash(null), 1600);
-		return () => clearTimeout(timer);
-	}, [flash]);
 
 	const connected = useMemo(() => machines.filter(m => m.connected), [machines]);
 	// Keep the form pinned to a machine that can actually accept a start.
@@ -261,15 +240,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 		};
 	}, [toolsOpen]);
 
-	const copy = useCallback(async (key: string, text: string): Promise<void> => {
-		setFlash({ key, ok: await copyText(text) });
-	}, []);
-
-	const copyLabel = (key: string, label: string): string => {
-		if (flash?.key !== key) return label;
-		return flash.ok ? "copied" : "copy failed";
-	};
-
 	return (
 		<div className="hb-page">
 			<header className="hb-top">
@@ -409,7 +379,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 									<button
 										type="button"
 										className="sh-btn"
-										onClick={() => setCwd(tempDirFor(connected.find(m => m.machineId === machineId)))}
+										onClick={() => setCwd(connected.find(m => m.machineId === machineId)?.tmpdir ?? "/tmp")}
 										disabled={!machineId}
 										title="fill in the selected machine's temp directory"
 									>
@@ -520,84 +490,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				</div>
 
 				<div className="hb-col">
-					<section className="hb-card">
-						<h2 className="hb-card-title">Sessions</h2>
-						{sessions.length === 0 ? (
-							<p className="hb-empty">no sessions yet</p>
-						) : (
-							<ul className="hb-sessions">
-								{sessions.map(s => (
-									<li key={s.id} className="hb-session">
-										<div className="hb-session-head">
-											<span className={`hb-dot hb-dot-${s.status}`} aria-label={STATUS_LABEL[s.status]} />
-											<span className="hb-session-name" title={s.name}>
-												{s.name}
-											</span>
-											<span className="hb-status">{STATUS_LABEL[s.status]}</span>
-										</div>
-										<div className="hb-session-meta">
-											<span className="hb-mono" title={s.cwd}>
-												{s.cwd}
-											</span>
-											{s.profile && (
-												<span className="hb-mono" title="omp profile">
-													{s.profile}
-												</span>
-											)}
-											<span className="hb-mono">{s.machineName}</span>
-											<span className="hb-mono">{relTime(s.startedAt)}</span>
-										</div>
-										{s.status === "failed" && s.error && <div className="hb-session-error">{s.error}</div>}
-										{s.status === "exited" && s.exitReason && <div className="hb-session-note">{s.exitReason}</div>}
-										<div className="hb-session-actions">
-											{s.status === "live" && (
-												<button type="button" className="sh-btn" onClick={() => navigate(`/s/${s.id}`)}>
-													Open
-												</button>
-											)}
-											{(s.status === "live" || s.status === "starting") && (
-												<button
-													type="button"
-													className="sh-btn sh-btn-stop"
-													onClick={() => {
-														void stopSession(s.id).catch(err => setError(errorText(err)));
-													}}
-												>
-													<Square size={12} aria-hidden="true" />
-													Stop
-												</button>
-											)}
-											<button
-												type="button"
-												className="sh-btn"
-												disabled={!s.links}
-												onClick={() => {
-													const link = s.links?.full;
-													if (link) void copy(`${s.id}:full`, link);
-												}}
-											>
-												<Copy size={12} aria-hidden="true" />
-												{copyLabel(`${s.id}:full`, "attach link")}
-											</button>
-											<button
-												type="button"
-												className="sh-btn"
-												disabled={!s.links}
-												onClick={() => {
-													const link = s.links?.view;
-													if (link) void copy(`${s.id}:view`, link);
-												}}
-											>
-												<Copy size={12} aria-hidden="true" />
-												{copyLabel(`${s.id}:view`, "view link")}
-											</button>
-										</div>
-									</li>
-								))}
-							</ul>
-						)}
-					</section>
-
 					<section className="hb-card">
 						<div className="hb-history-head">
 							<h2 className="hb-card-title">History</h2>

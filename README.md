@@ -35,11 +35,13 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
 
 ## Features
 
-- **Manage multiple sessions:** Start on a connected machine with a directory, optional profile,
-  name and initial prompt. Switch live sessions with the rail or switcher, activity indicators and
-  optional browser notifications. Rename, hide (this browser only), stop or remove sessions from
-  the hub list (saved omp files remain); resume saved conversations. Search session lists/history
-  by metadata and, in current source builds, prompt/assistant message text.
+- **Manage multiple sessions:** The pinned **New** tab keeps machine selection, the
+  full start form and saved-session history in the same frame as the session view.
+  Switch with the persistent rail or Ctrl+K, with activity indicators and optional
+  browser notifications. Rename, restart, hide (this browser only), stop or delete
+  sessions from the rail; stop retains the hub record, while saved omp files also
+  survive deletion. Copy full-control or view-only links for any listed session.
+  Search session lists/history by metadata and prompt/assistant message text.
 - **Work in the browser:** Stream transcripts and tool results, send or interrupt prompts, handle
   interactive dialogs and manage subagents. Use full-control or view-only links to attach an omp client.
 - **Control the agent:** Choose models, thinking level and role assignments; use session-scoped

@@ -845,22 +845,29 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 
 | Path | Page |
 |---|---|
-| `/` | token gate (once) → home: machines + start form + sessions |
-| `/s/<id>` | live session (full collab guest powers via `GuestClient`) |
+| `/` | token gate (once) → pinned New tab in the shared hub frame: machines, full start form, per-machine history |
+| `/s/<id>` | session pane in the same frame: live collab guest via `GuestClient`, or an in-place starting/ended/error card |
 | `/usage/<machineId>` | machine usage: historical omp stats (§3 usage relay) and separate live per-profile subscription limits (§3 `subscriptions`); the all-profiles view groups quota reports rather than adding percentages |
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
 
-`/sessions` is the in-page switcher (Ctrl+K), not a route. The hub home header,
-the session rail (expanded or collapsed), and the switcher open the same
+The rail stays mounted across `/` and `/s/<id>`: its fixed New tab is never a
+session id, while each session glyph selects `/s/<id>`. Expanded rows provide
+filtering, rename/restart, hide/delete, stop (which preserves the record), and
+copyable attach/view links. `/sessions` is the in-page switcher (Ctrl+K), not a
+route; it also opens from New. The New tab retains machine operations and
+history/resume across machines. `/usage/<machineId>` remains a separate page;
+`/join` remains an unauthenticated guest with no hub rail.
+
+The New tab header, rail (expanded or collapsed), and switcher open the same
 authenticated settings center; `/settings` opens its Current session section.
 The center has browser-wide preferences (theme, display name, notifications,
 session-list display, stats-bar metrics, sign-out) on every hub page and model,
 thinking, allowlisted runtime overrides, and links only for a live `/s/<id>`.
-Starting/ended sessions never issue agent settings commands. `/join` remains an
-independent guest with no hub-settings entry. The browser notification watcher
-runs once across authenticated home/session/usage pages, including when no
-session surface is mounted; browser-denied notifications fall back to local
-toasts. Mobile uses a scrollable bottom sheet with a safe-area inset.
+Starting/ended sessions never issue agent settings commands. The browser
+notification watcher runs once across authenticated New/session/usage pages,
+including when no session surface is mounted; browser-denied notifications
+fall back to local toasts. Mobile uses a scrollable bottom sheet with a
+safe-area inset.
 
 The settings center reuses the existing localStorage keys: `omp-hub.token`,
 `omp-hub.name` (display name, default `"guest"`), `omp-collab-theme`,
@@ -907,7 +914,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |
 | `/theme` | toggle light/dark (vendored theme store) |
 | `/dump` | download the full loaded transcript as `.jsonl`; asks the user to load older pages first when history remains |
-| `/leave` | back to hub home |
+| `/leave` | leave the session for the pinned New tab |
 | `/help` | command list modal |
 | anything else | local notice "host-only or unknown command — not sent" |
 

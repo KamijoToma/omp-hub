@@ -1,14 +1,7 @@
 /**
- * `/s/<id>` session page frame: the persistent app chrome (session rail,
- * global shortcuts, switcher dialog) plus the per-session surface.
- *
- * The frame outlives session switches — only the keyed {@link SessionView}
- * remounts, and its collab client comes warm from the pool, so switching is
- * a surface swap rather than a page reload. Session records come from the
- * shared sessions store; `starting` sessions get a per-id fast poll until
- * links appear. Once a session's surface has attached, later registry
- * updates never kick the view back to the status card (ended sessions keep
- * their transcript + banner, as before).
+ * Per-session pane mounted inside the shared hub frame. The keyed pane keeps
+ * its attachment for this id across registry updates; an ended room can still
+ * show its transcript, while a starting room polls until its link arrives.
  */
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,18 +10,15 @@ import { Toasts } from "../components/shell/Toasts";
 import { errorText, getDisplayName, restartSession, type SessionRecord } from "./api";
 import { pushToast, useLocalToasts } from "./toasts";
 import { relTime } from "../lib/format";
-import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { clientPool } from "./client-pool";
-import { SessionRail, SessionSwitcherModal } from "./SessionRail";
-import { steerPendingCount } from "./steering-queue";
-import { requestAlertPermission, setAlertsEnabled, useAlertsEnabled } from "./session-alerts";
-import { clearCompletedSession, useCompletedSessionTracker } from "./rail-completion";
 import { SessionView } from "./SessionView";
 
 export interface SessionPageProps {
 	id: string;
-	onOpenSettings(section: "browser" | "session"): void;
+	onLeave(): void;
+	onOpenSwitcher(): void;
+	onOpenSettings(): void;
 }
 
 /** Status cards have no collab surface to render settings/alert feedback. */
@@ -36,32 +26,12 @@ function StatusToasts(): ReactNode {
 	return <Toasts notices={useLocalToasts()} />;
 }
 
-/** localStorage flag behind the rail's expanded/collapsed state (`"1"` = expanded). */
-const RAIL_OPEN_KEY = "omp-hub.rail.open";
-
-function readRailExpanded(): boolean {
-	try {
-		return globalThis.localStorage?.getItem(RAIL_OPEN_KEY) === "1";
-	} catch {
-		return false;
-	}
-}
-
-function writeRailExpanded(expanded: boolean): void {
-	try {
-		if (expanded) globalThis.localStorage?.setItem(RAIL_OPEN_KEY, "1");
-		else globalThis.localStorage?.setItem(RAIL_OPEN_KEY, "0");
-	} catch {
-		// persistence is best-effort; the toggle still works for this page
-	}
-}
-
 /**
  * In-place gate for sessions that cannot attach yet (or no more): rendered
  * inside the frame's content column — the rail stays interactive, and no
  * full-page card swap ever flashes over the shell.
  */
-function SessionStatusCard({ id, record, loadError, onHome }: { id: string; record: SessionRecord | null; loadError: string | null; onHome(): void }): ReactNode {
+function SessionStatusCard({ id, record, loadError, onNew }: { id: string; record: SessionRecord | null; loadError: string | null; onNew(): void }): ReactNode {
 	// Restart applies to the terminal branches below; `starting` needs no gate
 	// (the button is not rendered there) and a successful restart unmounts the
 	// card once the record flips live.
@@ -100,8 +70,8 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 							{loadError}
 						</div>
 						<div className="hb-card-note">the session may have been pruned, or the id is wrong</div>
-						<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
-							Back to hub
+						<button type="button" className="sh-btn hb-status-back" onClick={onNew}>
+							New session
 						</button>
 					</>
 				)}
@@ -123,8 +93,8 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 								<RotateCcw size={13} className={restarting ? "hb-spin" : undefined} aria-hidden="true" />
 								{restarting ? "restarting…" : "Retry start"}
 							</button>
-							<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
-								Back to hub
+							<button type="button" className="sh-btn hb-status-back" onClick={onNew}>
+								New session
 							</button>
 						</div>
 					</>
@@ -147,8 +117,8 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 								<RotateCcw size={13} className={restarting ? "hb-spin" : undefined} aria-hidden="true" />
 								{restarting ? "restarting…" : "Restart"}
 							</button>
-							<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
-								Back to hub
+							<button type="button" className="sh-btn hb-status-back" onClick={onNew}>
+								New session
 							</button>
 						</div>
 					</>
@@ -159,12 +129,12 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 	);
 }
 
-export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode {
+export function SessionPage({ id, onLeave, onOpenSwitcher, onOpenSettings }: SessionPageProps): ReactNode {
 	const { record, error: loadError } = useSessionRecord(id);
 	const displayName = useRef(getDisplayName()).current;
 
-	// The first render after a route change must never attach the new id using
-	// the previous id's link. Keep the last attachment only for its own id.
+	// The frame keys this pane by id; retain its own last live attachment so
+	// later registry transitions cannot replace the transcript with a status card.
 	const [live, setLive] = useState<SessionRecord | null>(null);
 	useEffect(() => {
 		if (record === null || record.status !== "live" || record.links === undefined) return;
@@ -204,120 +174,21 @@ export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode
 		return () => clearInterval(timer);
 	}, [id, record?.status]);
 
-	// Rail state (expanded vs icon strip) persists across switches by design.
-	const [railExpanded, setRailExpanded] = useState(readRailExpanded);
-	const toggleRailExpanded = useCallback((): void => {
-		setRailExpanded(previous => {
-			writeRailExpanded(!previous);
-			return !previous;
-		});
-	}, []);
-
-	// Ctrl+K opens the quick switcher from anywhere on the page, in capture
-	// phase so it wins against the composer palette. Esc collapses the expanded
-	// rail — unless the switcher modal (or a surface dialog) owns the key.
-	const [switcherOpen, setSwitcherOpen] = useState(false);
-	useEffect(() => {
-		const onKeyDown = (e: KeyboardEvent): void => {
-			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
-				e.preventDefault();
-				e.stopPropagation();
-				setSwitcherOpen(true);
-				return;
-			}
-			if (e.key === "Escape" && !switcherOpen && railExpanded) {
-				// A surface dialog's own Esc handling wins; don't also fold the rail.
-				if (document.querySelector(".hb-modal-backdrop")) return;
-				e.preventDefault();
-				e.stopPropagation();
-				toggleRailExpanded();
-			}
-		};
-		document.addEventListener("keydown", onKeyDown, true);
-		return () => document.removeEventListener("keydown", onKeyDown, true);
-	}, [switcherOpen, railExpanded, toggleRailExpanded]);
-
-	const switchSession = useCallback(
-		(nextId: string): void => {
-			if (nextId === id) {
-				setSwitcherOpen(false);
-				return;
-			}
-			if (steerPendingCount(id) > 0) {
-				pushToast("warning", "switching away drops queued steering messages");
-			}
-			setSwitcherOpen(false);
-			navigate(`/s/${nextId}`);
-		},
-		[id],
-	);
-	const leave = useCallback((): void => navigate("/"), []);
-
-	// Local "task completed" markers: track working→idle edges registry-wide,
-	// and treat the session on screen as visited (its marker resets to idle).
-	useCompletedSessionTracker(id);
-	useEffect(() => clearCompletedSession(id), [id]);
-
-	// The rail bell and the settings center share one reactive browser preference.
-	const alertsOn = useAlertsEnabled();
-	const toggleAlerts = useCallback((): void => {
-		const next = !alertsOn;
-		setAlertsEnabled(next);
-		if (!next) return;
-		void requestAlertPermission().then(permission => {
-			if (permission === "granted") pushToast("info", "session alerts on");
-			else if (permission === "unsupported") pushToast("warning", "alerts on — no notification support here, using toasts");
-			else pushToast("warning", "alerts on — notifications blocked, using toasts and the tab title");
-		});
-	}, [alertsOn]);
-
-	return (
-		<div className="hb-frame">
-			<SessionRail
-				currentId={id}
-				expanded={railExpanded}
-				onToggleExpanded={toggleRailExpanded}
-				onHome={leave}
-				onSwitch={switchSession}
-				alertsOn={alertsOn}
-				onToggleAlerts={toggleAlerts}
-				onOpenSettings={() => onOpenSettings("browser")}
-			/>
-			<div className="hb-frame-main">
-				{attached?.links ? (
-					<SessionView
-						key={id}
-						sessionId={id}
-						link={attached.links.full}
-						record={attached}
-						displayName={displayName}
-						registryLive={record?.status === "live"}
-						onLeave={leave}
-						onOpenSwitcher={() => setSwitcherOpen(true)}
-						onOpenSettings={() => onOpenSettings("session")}
-					/>
-				) : (
-					<>
-						<SessionStatusCard id={id} record={record} loadError={loadError} onHome={leave} />
-						<StatusToasts />
-					</>
-				)}
-			</div>
-			{switcherOpen && (
-				<SessionSwitcherModal
-					currentId={id}
-					onSwitch={switchSession}
-					onOpenSettings={() => {
-						setSwitcherOpen(false);
-						onOpenSettings("browser");
-					}}
-					onClose={() => setSwitcherOpen(false)}
-					onDeleted={session => {
-						// Deleting the attached session leaves the page.
-						if (session.id === id) leave();
-					}}
-				/>
-			)}
-		</div>
+	return attached?.links ? (
+		<SessionView
+			sessionId={id}
+			link={attached.links.full}
+			record={attached}
+			displayName={displayName}
+			registryLive={record?.status === "live"}
+			onLeave={onLeave}
+			onOpenSwitcher={onOpenSwitcher}
+			onOpenSettings={onOpenSettings}
+		/>
+	) : (
+		<>
+			<SessionStatusCard id={id} record={record} loadError={loadError} onNew={onLeave} />
+			<StatusToasts />
+		</>
 	);
 }

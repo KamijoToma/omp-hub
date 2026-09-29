@@ -38,7 +38,8 @@ export interface CommandContext {
 	openModal(kind: ModalKind): void;
 	/** Flip the vendored theme store between light and dark. */
 	toggleTheme(): void;
-	navigate(path: string): void;
+	/** Leave the current session through the shared frame (including queued-message warning). */
+	leaveSession(): void;
 	/** Download the transcript snapshot as JSONL. */
 	downloadDump(): void;
 	notify(level: Notice["level"], message: string): void;
@@ -352,7 +353,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "mcp", description: "manage MCP servers — list, add, test, enable", run: ctx => ctx.openModal("mcp") },
 	{ name: "theme", description: "toggle light / dark", run: ctx => ctx.toggleTheme() },
 	{ name: "dump", description: "download the transcript as .jsonl", run: ctx => ctx.downloadDump() },
-	{ name: "leave", description: "leave the session and return to the hub", run: ctx => ctx.navigate("/") },
+	{ name: "leave", description: "leave the session and open the New tab", run: ctx => ctx.leaveSession() },
 	{ name: "help", description: "list the slash commands", run: ctx => ctx.openModal("help") },
 ];
 

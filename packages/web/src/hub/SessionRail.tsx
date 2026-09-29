@@ -1,20 +1,11 @@
 /**
- * Session rail for the session page: a two-state drawer on the frame's left
- * edge (the frame itself lives in {@link SessionPage}).
- *
- * - Collapsed (default): a 44px icon strip that is always present — one glyph
- *   per session with a live status dot (`working`/`input` from the record's
- *   mirrored `activity`, protocol §3). Clicking a glyph switches sessions.
- * - Expanded: the full picker — filter, names, cwd/machine/time meta, per-row
- *   rename, the cross-session alert bell, and the back-to-hub button.
- *
- * The listing comes from the shared sessions store, so collapsed dots stay
- * live without opening the drawer. `SessionSwitcherModal` (the `/sessions`
- * slash command and Ctrl+K dialog) shares the picker body.
+ * Persistent session rail for the authenticated hub frame. The pinned New tab
+ * and session glyphs stay reachable in both collapsed and expanded layouts.
+ * Expanded rows expose search, status and management; Ctrl+K shares the picker.
  */
-import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, RotateCcw, Settings2, Sparkles, Trash2 } from "lucide-react";
+import { Bell, BellOff, Ellipsis, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RotateCcw, Settings2, Sparkles, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename, restartSession } from "./api";
@@ -23,6 +14,7 @@ import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./mess
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { extrasLabel, isEndedStatus, railRowsOrdered, setShowExtras, useShowExtras } from "./rail-filter";
 import { Modal } from "./Modal";
+import { SessionActionsModal } from "./SessionActionsModal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
 import { sessionActivityTime, toggleSessionTimeMode, useSessionTimeMode } from "./session-time-mode";
@@ -48,7 +40,7 @@ const DOT_LABEL: Record<RailDotState, string> = {
 /**
  * Filter a hub session listing: case-insensitive substring on name, cwd,
  * machine, id, or profile. An absent profile reads as `"default"`, matching
- * the resume picker and the hub home's history filter.
+ * the resume picker and the New tab's history filter.
  */
 export function filterHubSessions(sessions: readonly SessionRecord[], query: string): SessionRecord[] {
 	const needle = query.trim().toLowerCase();
@@ -169,7 +161,7 @@ interface PickerBodyProps {
 	/** `null` until the first poll lands; rows stay up on later poll errors. */
 	sessions: readonly SessionRecord[] | null;
 	error: string | null;
-	currentId: string;
+	currentId: string | null;
 	/** Receives the picked record; owners decide navigation. */
 	onPick(session: SessionRecord): void;
 	/**
@@ -177,6 +169,8 @@ interface PickerBodyProps {
 	 * Left unset in the quick switcher, where renaming is out of scope.
 	 */
 	onRename?(session: SessionRecord): void;
+	/** Row-level stop and link actions in the expanded rail. */
+	onActions?(session: SessionRecord): void;
 	/**
 	 * Fires after a row's delete succeeded and the store forgot the record;
 	 * owners close or navigate when the deleted row is the current session.
@@ -219,7 +213,7 @@ function RailTime({ session }: { session: SessionRecord }): ReactNode {
 }
 
 /** Filter input + session rows, shared by the expanded rail and the switcher dialog. */
-function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }: PickerBodyProps): ReactNode {
+function PickerBody({ sessions, error, currentId, onPick, onRename, onActions, onDeleted }: PickerBodyProps): ReactNode {
 	const [filter, setFilter] = useState("");
 	const completedSet = useCompletedSessions();
 	const listed = sessions ?? [];
@@ -243,7 +237,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 	// the viewer. The same toggle reveals this browser's hidden rows in their
 	// own group below the list.
 	const ordered = useMemo(
-		() => railRowsOrdered(filtered, showExtras, currentId),
+		() => railRowsOrdered(filtered, showExtras, currentId ?? ""),
 		[filtered, showExtras, currentId],
 	);
 	const endedCount = useMemo(() => filtered.reduce((n, s) => n + (isEndedStatus(s.status) ? 1 : 0), 0), [filtered]);
@@ -430,6 +424,17 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 												<EyeOff size={12} aria-hidden="true" />
 											</button>
 										))}
+									{onActions && (
+										<button
+											type="button"
+											className="hb-nav-act"
+											onClick={() => onActions(session)}
+											title={`manage ${session.name}: ${session.status === "live" || session.status === "starting" ? "stop or copy links" : "copy links"}`}
+											aria-label={`manage ${session.name}`}
+										>
+											<Ellipsis size={14} aria-hidden="true" />
+										</button>
+									)}
 									{deletes && (
 										<button
 											type="button"
@@ -532,13 +537,13 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 }
 
 export interface SessionRailProps {
-	/** Session the page is currently attached to, highlighted and unpickable. */
-	currentId: string;
+	/** Selected session, or `null` for the pinned New tab. */
+	currentId: string | null;
 	/** Expanded (full picker) vs collapsed (icon strip); state lives in the page frame. */
 	expanded: boolean;
 	onToggleExpanded(): void;
-	/** Back-to-hub action; the page's existing leave path. */
-	onHome(): void;
+	/** Opens the pinned New tab (`/`). */
+	onNew(): void;
 	/** Switches to another session; the page owns navigation and warnings. */
 	onSwitch(sessionId: string): void;
 	/** Cross-session alert toggle state (persisted; see `session-alerts.ts`). */
@@ -549,7 +554,7 @@ export interface SessionRailProps {
 }
 
 /** The docked/overlay session drawer: collapsed icon strip or the full picker. */
-export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
+export function SessionRail({ currentId, expanded, onToggleExpanded, onNew, onSwitch, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
 	const hidden = useHiddenSessions();
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
@@ -563,10 +568,7 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 		[listed, currentId],
 	);
 	const [renaming, setRenaming] = useState<SessionRecord | null>(null);
-	// The rename dialog must survive list refreshes (the poll replaces record
-	// objects), so it re-reads the fresh record by id.
-	const renamingRef = useRef<SessionRecord | null>(null);
-	renamingRef.current = renaming;
+	const [actions, setActions] = useState<SessionRecord | null>(null);
 
 	const pick = useCallback(
 		(session: SessionRecord): void => {
@@ -591,10 +593,6 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 				{expanded ? (
 					<>
 						<div className="hb-nav-head">
-							<button type="button" className="sh-btn" onClick={onHome} title="back to the hub home">
-								<Home size={13} aria-hidden="true" />
-								<span className="sh-btn-label">Hub</span>
-							</button>
 							<span className="hb-nav-title">Sessions</span>
 							<button
 								type="button"
@@ -617,6 +615,15 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								<PanelLeftClose size={13} aria-hidden="true" />
 							</button>
 						</div>
+						<button
+							type="button"
+							className={currentId === null ? "hb-nav-new hb-nav-new-current" : "hb-nav-new"}
+							onClick={onNew}
+							aria-current={currentId === null ? "page" : undefined}
+						>
+							<Plus size={15} aria-hidden="true" />
+							New session
+						</button>
 						<div className="hb-nav-body">
 							<PickerBody
 								sessions={sessions}
@@ -624,9 +631,10 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								currentId={currentId}
 								onPick={pick}
 								onRename={openRename}
+								onActions={setActions}
 								onDeleted={session => {
 									// Deleting the session you are attached to leaves the page.
-									if (session.id === currentId) onHome();
+									if (session.id === currentId) onNew();
 								}}
 							/>
 						</div>
@@ -641,6 +649,16 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 							aria-expanded="false"
 						>
 							<PanelLeftOpen size={14} aria-hidden="true" />
+						</button>
+						<button
+							type="button"
+							className={currentId === null ? "hb-rail-new hb-rail-new-current" : "hb-rail-new"}
+							onClick={onNew}
+							aria-current={currentId === null ? "page" : undefined}
+							title="New session"
+							aria-label="New session"
+						>
+							<Plus size={16} aria-hidden="true" />
 						</button>
 						<ul className="hb-rail-list">
 							{sessions === null && (
@@ -660,11 +678,8 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								<RailRow key={session.id} session={session} current={session.id === currentId} onSwitch={onSwitch} />
 							))}
 						</ul>
-						<button type="button" className="hb-rail-home hb-rail-settings" onClick={onOpenSettings} title="omp-hub settings" aria-label="omp-hub settings">
+						<button type="button" className="hb-rail-settings" onClick={onOpenSettings} title="omp-hub settings" aria-label="omp-hub settings">
 							<Settings2 size={14} aria-hidden="true" />
-						</button>
-						<button type="button" className="hb-rail-home" onClick={onHome} title="back to the hub home">
-							<Home size={14} aria-hidden="true" />
 						</button>
 					</>
 				)}
@@ -676,12 +691,18 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 					onClose={() => setRenaming(null)}
 				/>
 			)}
+			{actions !== null && (
+				<SessionActionsModal
+					record={sessions?.find(record => record.id === actions.id) ?? actions}
+					onClose={() => setActions(null)}
+				/>
+			)}
 		</>
 	);
 }
 
 export interface SessionSwitcherModalProps {
-	currentId: string;
+	currentId: string | null;
 	onSwitch(sessionId: string): void;
 	onClose(): void;
 	/** Fires after a row delete succeeded; owners navigate when it was current. */

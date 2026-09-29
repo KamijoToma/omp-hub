@@ -1,9 +1,7 @@
 /**
- * Session picker behind the bare `/resume` command: lists the machine's
- * resumable omp sessions (protocol §2 machine sessions, the same listing the
- * hub home's History section renders) and hands the chosen entry to the owner,
- * which starts the hub session and navigates to it. Filter matches the hub
- * home's history filter (title, directory, profile, first message).
+ * Bare `/resume` picker for the current session's machine. The New tab offers
+ * the same machine history plus full message-text search; this dialog filters
+ * title, directory, profile and first message before starting a new hub session.
  */
 import { Play, RotateCw } from "lucide-react";
 import type { ReactNode } from "react";
