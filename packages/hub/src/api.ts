@@ -286,6 +286,21 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		return json({ error: "superagent must be a boolean" }, 400);
 	}
 
+	// Tool whitelist (protocol §2 `start.tools`): a non-empty array of non-empty
+	// strings. Trimmed + deduped (first-seen order) so the record and the start
+	// frame carry one canonical form.
+	const rawTools = body["tools"];
+	if (rawTools !== undefined) {
+		const malformed =
+			!Array.isArray(rawTools) ||
+			rawTools.length === 0 ||
+			rawTools.some(name => typeof name !== "string" || name.trim() === "");
+		if (malformed) return json({ error: "tools must be a non-empty array of non-empty strings" }, 400);
+	}
+	const tools = Array.isArray(rawTools)
+		? [...new Set(rawTools.map(name => (name as string).trim()))]
+		: undefined;
+
 	const record = ctx.sessions.create({
 		machineId,
 		machineName: machine.name,
@@ -293,6 +308,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		name: field(body, "name"),
 		profile,
 		...(superagent === true ? { superagent: true as const } : {}),
+		...(tools === undefined ? {} : { tools }),
 	});
 	const prompt = field(body, "prompt");
 	const base = derivePublicBase(req, ctx.cfg);
@@ -305,6 +321,7 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		...(profile === undefined ? {} : { profile }),
 		...(sessionFile === undefined ? {} : { sessionFile }),
 		...(superagent === true ? { superagent: true } : {}),
+		...(tools === undefined ? {} : { tools }),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});

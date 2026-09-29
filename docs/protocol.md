@@ -2,6 +2,11 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.9.0** — adds per-session tool whitelists: `POST /api/sessions` accepts `tools`
+(§3) and `SessionRecord` echoes it, and the hub forwards `start.tools` (§2); the session
+child restricts the SDK session to exactly those tools. Optional and additive: older agents
+ignore the unknown `start` field, and an absent `tools` keeps the full default tool set.
+
 Revision **0.8.0** — adds the superagent surface: `start.superagent` (§2) marks a session as a
 fleet operator (the child registers the fleet tools, §4 fleet-req), `POST /api/sessions` accepts
 `superagent` and `SessionRecord` echoes it (§3), the `prompt` session command + `POST
@@ -79,7 +84,7 @@ daemon; use TLS/WSS outside loopback.
 ```ts
 { t: "welcome", relayUrl: string, webUrl: string }                 // answer to hello
 { t: "start", id: string, cwd: string, name?: string, prompt?: string, profile?: string,
-  sessionFile?: string, superagent?: boolean, relayUrl: string, webUrl: string }
+  sessionFile?: string, superagent?: boolean, tools?: string[], relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
 { t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
@@ -112,6 +117,12 @@ Semantics:
   `config.superagent` and registers the fleet tools (§4 fleet-req), which reach the hub through
   the daemon's whitelisted proxy — the child never holds `HUB_TOKEN`. Fleet-initiated starts
   are daemon-rewritten to `superagent: false`, so a superagent cannot mint another superagent.
+- `start.tools` (0.9.0+) whitelists the session's callable tools: the child creates its SDK
+  session with `toolNames` + `restrictToolNames`, so exactly those tools are exposed and
+  discovered extras (extensions, MCP, ambient custom tools) stay out of the schema. Omitted
+  means the default tool set. The whitelist replaces the whole built-in set — a `superagent`
+  session that also names `tools` gets only that list; the fleet tools are custom tools and
+  are not part of it, so the two options should not be combined.
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - `session-activity` mirrors the child's guest-visible state into the record's `activity`
@@ -191,6 +202,7 @@ interface AgentState {
   extendedContext: boolean;                 // session `extendedContext` setting
   goal: SessionGoalState | null;            // active/paused goal; null when off
   loop: LoopStatus | null;                  // host-side loop mode; null when off
+  tools: string[];                          // top-level callable tools, sorted (0.9.0+; what start.tools produced)
 }
 ```
 
@@ -442,6 +454,7 @@ interface SessionRecord {
   name: string;               // display name (default: basename(cwd))
   profile?: string;           // named omp profile; absent ⇒ default profile
   superagent?: true;          // 0.8.0: fleet-operator session (§4 fleet-req); set at start, daemon strips it from fleet-initiated starts
+  tools?: string[];           // 0.9.0: callable-tool whitelist (§2 start.tools); absent ⇒ default tool set
   status: SessionStatus;
   startedAt: number;          // ms epoch
   exitedAt?: number;
@@ -508,7 +521,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `POST /api/sessions/:id/mcp/remove` | `{name, scope?}` → `{ ok: true, name, scope }` (§2 `mcp-remove`); 400 missing/blank `name` or bad `scope`; 404 missing entry, unknown/offline; 409 not live; 502/504 cmd plumbing |
 | `POST /api/sessions/:id/mcp/enabled` | `{name, enabled}` → `{ ok: true, name, enabled, where }` (§2 `mcp-set-enabled`); 400 missing/blank `name` or non-boolean `enabled`; 404 name in no config and not listed, unknown/offline; 409 not live; 502/504 cmd plumbing |
 | `POST /api/sessions/:id/mcp/test` | `{name}` → `{ ok: true, name, count, tools }` (§2 `mcp-test`); 400 missing/blank `name`; 404 unknown/disabled target, unknown/offline; 409 not live; 500 connect failure; 502/504 cmd plumbing |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, or blank `sessionFile`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`) |
+| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent?, tools? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, blank `sessionFile`, or malformed `tools`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`); `tools` (0.9.0+) whitelists the session's callable tools — non-empty array of non-empty strings (§2 `start.tools`, `SessionRecord.tools`) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 | `POST /api/notices` | `{message, urgency?, sessionId?}` → `{ ok: true, notice }` (0.8.0+): record a human-facing notification; urgency ∈ `"info"|"warn"|"urgent"` (default `"info"`); `sessionId` optionally attributes it to a session record. 400 blank/oversize (>2000 chars) `message` or bad urgency |
 | `GET /api/notices` | → `{ notices: Notice[] }` — newest first, capped at the 50 most recent (0.8.0+). Notices are in-memory only (like the registry beyond the state file: restart drops them); web clients poll this listing for toasts |

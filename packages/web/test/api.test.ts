@@ -643,6 +643,27 @@ describe("hub api", () => {
 		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
 	});
 
+	test("startSession forwards the tools whitelist in the POST body", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", tools: ["bash", "read", "edit", "write"] });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			tools: ["bash", "read", "edit", "write"],
+		});
+	});
+
+	test("startSession omits an empty tools whitelist", async () => {
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", tools: [] });
+
+		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
 	test("postSessionPrompt posts the text and resolves acceptance", async () => {
 		setToken("t0k3n");
 		stubFetch(() => json({ ok: true, accepted: true }));

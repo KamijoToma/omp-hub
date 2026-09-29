@@ -49,6 +49,8 @@ interface HostConfig {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — registers the fleet tools and may issue `fleet-req`. */
 	superagent?: boolean;
+	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
+	tools?: string[];
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -158,6 +160,8 @@ interface AgentState {
 	goal: GoalModeState | null;
 	/** Loop controller status; null when the loop is disabled. */
 	loop: LoopStatus | null;
+	/** Tool names currently exposed at the top level (0.9.0; sorted). */
+	tools: string[];
 }
 
 /** `mcp-config-writer` module surface (config file read-modify-write, protocol §2 `mcp-*`). */
@@ -227,6 +231,9 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 		extendedContext: deps.cfgExtendedContext.get(session.settings),
 		goal: goalState(session),
 		loop,
+		// The session's effective callable surface — what a `tools` whitelist
+		// (start.tools) actually produced, not a config echo.
+		tools: [...session.getActiveToolNames()].sort(),
 	};
 }
 
@@ -1066,6 +1073,25 @@ for (const method of ["log", "info", "debug"] as const) {
 
 const REQUIRED_CONFIG_KEYS = ["id", "cwd", "relayUrl"] as const;
 
+/** `tools` whitelist (protocol §2 `start.tools`): an array of non-empty strings.
+ * Trimmed + deduped (first-seen order); anything else is a daemon bug that must
+ * fail the start, not silently widen or empty the tool set. */
+function parseTools(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.length === 0 || value.some(name => typeof name !== "string" || name.trim() === "")) {
+		throw new Error("--config.tools must be a non-empty array of non-empty strings");
+	}
+	const seen: Record<string, true> = {};
+	const tools: string[] = [];
+	for (const raw of value as string[]) {
+		const name = raw.trim();
+		if (seen[name]) continue;
+		seen[name] = true;
+		tools.push(name);
+	}
+	return tools;
+}
+
 function parseConfig(argv: string[]): HostConfig {
 	let raw: string | undefined;
 	for (let index = 0; index < argv.length; index++) {
@@ -1106,6 +1132,7 @@ function parseConfig(argv: string[]): HostConfig {
 		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
 		agentDir: optional("agentDir"),
 		superagent: config.superagent === true,
+		tools: parseTools(config.tools),
 	};
 }
 
@@ -1256,6 +1283,11 @@ async function run(): Promise<void> {
 		// 0.8.0: superagent sessions register the fleet tools (hub calls proxied
 		// through the parent); plain sessions see none of them.
 		...(fleetClient ? { customTools: buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) } : {}),
+		// 0.9.0: an explicit whitelist replaces the whole tool set —
+		// `restrictToolNames` also keeps discovered extras (extensions, MCP,
+		// ambient custom tools) out of the schema. Fleet tools are custom tools,
+		// so a superagent whitelist deliberately excludes them.
+		...(config.tools ? { toolNames: config.tools, restrictToolNames: true } : {}),
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));

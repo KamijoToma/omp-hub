@@ -52,6 +52,7 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [profiles, setProfiles] = useState<string[]>([]);
 	const [profile, setProfile] = useState("");
 	const [superagent, setSuperagent] = useState(false);
+	const [tools, setTools] = useState("");
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -192,6 +193,11 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 		setBusy(true);
 		setFormError(null);
 		try {
+			// Comma-separated tool whitelist; blank input keeps the default set.
+			const toolList = tools
+				.split(",")
+				.map(tool => tool.trim())
+				.filter(tool => tool !== "");
 			const session = await startSession({
 				machineId,
 				cwd: target,
@@ -199,10 +205,12 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				prompt: prompt.trim() || undefined,
 				profile: profile || undefined,
 				superagent: superagent || undefined,
+				tools: toolList.length > 0 ? toolList : undefined,
 			});
 			setName("");
 			setPrompt("");
 			setSuperagent(false);
+			setTools("");
 			setBusy(false);
 			navigate(`/s/${session.id}`);
 		} catch (err) {
@@ -375,6 +383,19 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 									rows={3}
 									spellCheck={false}
 								/>
+							</label>
+							<label className="sh-field">
+								<span className="sh-field-label">tools whitelist (optional)</span>
+								<input
+									className="sh-input sh-input-mono"
+									type="text"
+									value={tools}
+									onChange={e => setTools(e.target.value)}
+									placeholder="bash, read, edit, write"
+									spellCheck={false}
+									autoComplete="off"
+								/>
+								<span className="sh-field-hint">comma-separated — the session gets exactly these tools</span>
 							</label>
 							<label className="sh-field">
 								<span className="sh-field-label">

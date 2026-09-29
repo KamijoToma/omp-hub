@@ -24,6 +24,8 @@ export interface SessionRecord {
 	profile?: string;
 	/** Fleet-operator session (protocol §2 `start.superagent`, §4 fleet-req); set at start. */
 	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
+	tools?: string[];
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -57,6 +59,8 @@ export interface StartSessionRequest {
 	sessionFile?: string;
 	/** Start a fleet-operator session (protocol §2 `start.superagent`). */
 	superagent?: boolean;
+	/** Restrict the session to exactly these tools (protocol §2 `start.tools`); omitted means the default set. */
+	tools?: string[];
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -99,6 +103,8 @@ export interface AgentState {
 	goal: GoalModeState | null;
 	/** Loop-controller status; null when the loop is disabled. */
 	loop: LoopStatus | null;
+	/** Top-level callable tools, sorted (0.9.0+ agents only); reflects a `start.tools` whitelist. */
+	tools?: string[];
 }
 
 /** The session's tracked goal object (agent `get-state.goal.goal`). */
@@ -338,6 +344,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	if (input.superagent) body.superagent = true;
+	if (input.tools?.length) body.tools = input.tools;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }

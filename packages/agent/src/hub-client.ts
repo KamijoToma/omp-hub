@@ -38,6 +38,8 @@ export interface StartFrame {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — the child registers the fleet tools and may issue `fleet-req`. */
 	superagent?: boolean;
+	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
+	tools?: string[];
 	relayUrl: string;
 	webUrl: string;
 }

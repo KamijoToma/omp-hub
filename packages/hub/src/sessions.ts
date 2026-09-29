@@ -33,6 +33,8 @@ export interface SessionRecord {
 	profile?: string;
 	/** Fleet-operator session (protocol §4 fleet-req); set at start, never minted by the fleet itself. */
 	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
+	tools?: string[];
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -53,6 +55,8 @@ export interface CreateSessionInput {
 	profile?: string;
 	/** Marks the started session a fleet operator (protocol §2 `start.superagent`). */
 	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); pre-validated by the API layer. */
+	tools?: string[];
 }
 
 export interface SessionReadyInput {
@@ -94,6 +98,7 @@ export class SessionStore {
 			name: input.name?.trim() || path.basename(input.cwd) || input.cwd,
 			...(input.profile ? { profile: input.profile } : {}),
 			...(input.superagent ? { superagent: true as const } : {}),
+			...(input.tools ? { tools: input.tools } : {}),
 			status: "starting",
 			startedAt: Date.now(),
 		};

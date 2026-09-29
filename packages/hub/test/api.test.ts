@@ -18,6 +18,7 @@ interface SessionJson {
 	cwd: string;
 	name: string;
 	profile?: string;
+	tools?: string[];
 	status: string;
 	startedAt: number;
 	exitedAt?: number;
@@ -532,6 +533,52 @@ describe("hub api", () => {
 		expect(session.profile).toBeUndefined();
 		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
 		expect("profile" in start).toBe(false);
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("start.tools is forwarded to the agent and echoed on the record", async () => {
+		const { agent } = await connectAgent("m-tools", "tools-machine");
+		const tools = ["bash", "read", "edit", "write"];
+
+		const session = await startSession("m-tools", "/srv/pious", { tools });
+		expect(session.tools).toEqual(tools);
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect(start).toMatchObject({ id: session.id, tools });
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("start.tools absent keeps the field off the frame", async () => {
+		const { agent } = await connectAgent("m-tools-def", "tools-default-machine");
+
+		const session = await startSession("m-tools-def", "/srv/default-tools");
+		expect(session.tools).toBeUndefined();
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect("tools" in start).toBe(false);
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("malformed tools is rejected with 400 before any record exists", async () => {
+		await connectAgent("m-tools-bad", "tools-bad-machine");
+
+		for (const bad of [[], ["bash", ""], ["bash", "   "], ["bash", 3], "bash"]) {
+			const response = await api("/api/sessions", {
+				method: "POST",
+				body: JSON.stringify({ machineId: "m-tools-bad", cwd: "/srv/x", tools: bad }),
+			});
+			expect(response.status).toBe(400);
+		}
+		// No record survived the rejected starts.
+		const listing = (await (await api("/api/sessions")).json()) as { sessions: SessionJson[] };
+		expect(listing.sessions.filter((s) => s.machineId === "m-tools-bad")).toEqual([]);
+	});
+
+	test("start.tools entries are trimmed and deduped to one canonical form", async () => {
+		const { agent } = await connectAgent("m-tools-can", "tools-can-machine");
+
+		const session = await startSession("m-tools-can", "/srv/canonical", {
+			tools: [" bash ", "bash", "read"],
+		});
+		expect(session.tools).toEqual(["bash", "read"]);
 		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
 	});
 

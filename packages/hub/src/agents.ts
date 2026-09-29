@@ -49,10 +49,14 @@ export type AgentCommand =
 			cwd: string;
 			name?: string;
 			prompt?: string;
+			/** Named omp profile for the session; omitted means the default profile. */
+			profile?: string;
 			/** Resume an existing omp session file instead of minting a new one. */
 			sessionFile?: string;
 			/** Fleet-operator session (protocol §2): the child registers the fleet tools. */
 			superagent?: boolean;
+			/** Callable-tool whitelist (protocol §2 `start.tools`); omitted means the default set. */
+			tools?: string[];
 			relayUrl: string;
 			webUrl: string;
 	  }
