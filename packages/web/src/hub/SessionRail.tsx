@@ -23,6 +23,7 @@ import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
+import { sessionActivityTime, toggleSessionTimeMode, useSessionTimeMode } from "./session-time-mode";
 import { pushToast } from "./toasts";
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
@@ -181,6 +182,40 @@ interface PickerBodyProps {
 	onDeleted?(session: SessionRecord): void;
 }
 
+/**
+ * Row timestamp: click flips created↔last-activity for every picker row
+ * (per-browser preference, `session-time-mode.ts`).
+ */
+function RailTime({ session }: { session: SessionRecord }): ReactNode {
+	const mode = useSessionTimeMode();
+	const ts = mode === "created" ? session.startedAt : sessionActivityTime(session);
+	return (
+		<span
+			className="hb-mono hb-nav-time"
+			role="button"
+			tabIndex={0}
+			title={
+				mode === "created"
+					? `created ${relTime(ts)} — click to show last activity`
+					: `last activity ${relTime(ts)} — click to show created`
+			}
+			onClick={event => {
+				// The row button picks the session; the timestamp must not.
+				event.stopPropagation();
+				toggleSessionTimeMode();
+			}}
+			onKeyDown={event => {
+				if (event.key !== "Enter" && event.key !== " ") return;
+				event.preventDefault();
+				event.stopPropagation();
+				toggleSessionTimeMode();
+			}}
+		>
+			{relTime(ts)}
+		</span>
+	);
+}
+
 /** Filter input + session rows, shared by the expanded rail and the switcher dialog. */
 function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }: PickerBodyProps): ReactNode {
 	const [filter, setFilter] = useState("");
@@ -307,7 +342,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 												{shortenPath(session.cwd)}
 											</span>
 											<span className="hb-mono">{session.machineName}</span>
-											<span className="hb-mono">{relTime(session.startedAt)}</span>
+											<RailTime session={session} />
 										</span>
 										{hitOf(session) !== undefined && (
 											<span className="hb-nav-msg" title={hitOf(session)!.snippet ?? ""}>
