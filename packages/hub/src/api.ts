@@ -435,9 +435,14 @@ async function assignNamespace(id: string, req: Request, ctx: ApiContext): Promi
 async function createSession(req: Request, ctx: ApiContext, fleetOwner?: SessionRecord): Promise<Response> {
 	const body = await jsonBody(req);
 	if (body === null) return json({ error: "invalid json body" }, 400);
-	if (fleetOwner && Object.keys(body).some(key => !["machineId", "cwd", "name", "prompt", "profile"].includes(key))) {
-		return json({ error: "fleet start accepts machineId, cwd, name, prompt and profile only" }, 400);
+	if (fleetOwner && Object.keys(body).some(key => !["machineId", "cwd", "name", "prompt", "profile", "forkFrom"].includes(key))) {
+		return json({ error: "fleet start accepts machineId, cwd, name, prompt, profile and forkFrom only" }, 400);
 	}
+	const forkFrom = body.forkFrom;
+	if (fleetOwner && forkFrom !== undefined && (typeof forkFrom !== "string" || !/^s_[A-Za-z0-9_-]+$/.test(forkFrom))) {
+		return json({ error: "forkFrom must be a session id" }, 400);
+	}
+	if (!fleetOwner && forkFrom !== undefined) return json({ error: "forkFrom is a fleet-only field" }, 400);
 	// JSON parsing awaits I/O; an admin could revoke the operator during that
 	// await. Bind the start to the operator's current membership, not a stale
 	// authorization decision made before parsing its request.
@@ -474,6 +479,23 @@ async function createSession(req: Request, ctx: ApiContext, fleetOwner?: Session
 	if (namespaceId !== null && !namespace) return json({ error: "namespace not found" }, 404);
 	if (namespace?.machineIds !== null && namespace?.machineIds !== undefined && !namespace.machineIds.includes(machineId)) {
 		return json({ error: "machine is not allowed in this namespace" }, 403);
+	}
+	const source = typeof forkFrom === "string" ? ctx.sessions.get(forkFrom) : undefined;
+	if (forkFrom !== undefined && (!source || ctx.fleet.membership(source.id).namespaceId !== namespaceId)) {
+		return json({ error: "session not found" }, 404);
+	}
+	if (source) {
+		if (source.superagent || ctx.fleet.membership(source.id).controllerId !== fleetOwner?.id) {
+			return json({ error: "claim this session before forking it" }, 403);
+		}
+		if (source.status !== "live" || !ctx.agents.isOnline(source.machineId)) {
+			return json({ error: "fork source is not live" }, 409);
+		}
+		if (!source.sessionFile) return json({ error: "source session is not persisted" }, 409);
+		if (source.machineId !== machineId || source.cwd !== cwd || (body.profile !== undefined && profile !== source.profile)) {
+			return json({ error: "fork must use the source machine, cwd and profile" }, 400);
+		}
+		profile = source.profile;
 	}
 
 	// Optional resume target: present-but-empty is a caller bug, not "start
@@ -527,57 +549,77 @@ async function createSession(req: Request, ctx: ApiContext, fleetOwner?: Session
 	const planYolo = handoff("planYolo");
 	if (planYolo instanceof Response) return planYolo;
 
-	const record = ctx.sessions.create({
-		machineId,
-		machineName: machine.name,
-		cwd,
-		name: field(body, "name"),
-		profile,
-		...(superagent === true ? { superagent: true as const } : {}),
-		...(tools === undefined ? {} : { tools }),
-		namespaceId,
-	});
-	try {
-		if (namespaceId !== null) ctx.sessions.applyMembership(record.id, ctx.fleet.assign(record.id, namespaceId)!);
-		if (fleetOwner) {
-			const claim = ctx.fleet.claim(record.id, fleetOwner.id);
-			if (!claim) throw new Error("fleet worker could not be claimed");
-			ctx.sessions.applyMembership(record.id, claim);
-			ctx.fleet.watch(fleetOwner.id, record.id);
-		}
-	} catch (err) {
-		ctx.sessions.delete(record.id);
+	const start = (file: string | undefined): Response => {
+		const record = ctx.sessions.create({
+			machineId,
+			machineName: machine.name,
+			cwd,
+			name: field(body, "name"),
+			profile,
+			...(superagent === true ? { superagent: true as const } : {}),
+			...(tools === undefined ? {} : { tools }),
+			namespaceId,
+		});
 		try {
-			ctx.fleet.removeSession(record.id);
-		} catch (cleanupErr) {
-			log.warn(`fleet rollback for ${record.id} failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+			if (namespaceId !== null) ctx.sessions.applyMembership(record.id, ctx.fleet.assign(record.id, namespaceId)!);
+			if (fleetOwner) {
+				const claim = ctx.fleet.claim(record.id, fleetOwner.id);
+				if (!claim) throw new Error("fleet worker could not be claimed");
+				ctx.sessions.applyMembership(record.id, claim);
+				ctx.fleet.watch(fleetOwner.id, record.id);
+			}
+		} catch (err) {
+			ctx.sessions.delete(record.id);
+			try {
+				ctx.fleet.removeSession(record.id);
+			} catch (cleanupErr) {
+				log.warn(`fleet rollback for ${record.id} failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+			}
+			return fleetStateFailure(err);
 		}
-		return fleetStateFailure(err);
-	}
-	const prompt = field(body, "prompt");
-	const base = derivePublicBase(req, ctx.cfg);
-	const dispatched = ctx.agents.send(machineId, {
-		t: "start",
-		id: record.id,
-		cwd: record.cwd,
-		name: record.name,
-		...(prompt === undefined ? {} : { prompt }),
-		...(profile === undefined ? {} : { profile }),
-		...(sessionFile === undefined ? {} : { sessionFile }),
-		...(superagent === true ? { superagent: true } : {}),
-		...(tools === undefined ? {} : { tools }),
-		...(prewalk === undefined ? {} : { prewalk }),
-		...(planYolo === undefined ? {} : { planYolo }),
-		relayUrl: base.wsBase,
-		webUrl: base.httpBase,
+		const prompt = field(body, "prompt");
+		const base = derivePublicBase(req, ctx.cfg);
+		const dispatched = ctx.agents.send(machineId, {
+			t: "start",
+			id: record.id,
+			cwd: record.cwd,
+			name: record.name,
+			...(prompt === undefined ? {} : { prompt }),
+			...(profile === undefined ? {} : { profile }),
+			...(file === undefined ? {} : { sessionFile: file }),
+			...(superagent === true ? { superagent: true } : {}),
+			...(tools === undefined ? {} : { tools }),
+			...(prewalk === undefined ? {} : { prewalk }),
+			...(planYolo === undefined ? {} : { planYolo }),
+			relayUrl: base.wsBase,
+			webUrl: base.httpBase,
+		});
+		if (!dispatched) {
+			ctx.fleet.removeSession(record.id);
+			ctx.sessions.delete(record.id);
+			return json({ error: "machine write failed" }, 502);
+		}
+		if (!fleetOwner && namespaceId !== null) announceAttachedWorker(record, ctx);
+		return json({ session: record }, 202);
+	};
+	if (!source) return start(sessionFile);
+	return ctx.fleet.mutateWorker(source.id, async () => {
+		const membership = ctx.fleet.membership(source.id);
+		if (!fleetOwner || source.status !== "live" || membership.namespaceId !== namespaceId ||
+			membership.controllerId !== fleetOwner.id || fleetOwner.status !== "live" ||
+			ctx.fleet.membership(fleetOwner.id).namespaceId !== namespaceId) {
+			return json({ error: "fork source membership changed" }, 409);
+		}
+		const result = await dispatchCmd(source.id, "fleet-fork-session", {}, ctx);
+		if (!result.ok) return result.response;
+		if (source.status !== "live" || membership.membershipVersion !== ctx.fleet.membership(source.id).membershipVersion ||
+			fleetOwner.status !== "live" || ctx.fleet.membership(fleetOwner.id).namespaceId !== namespaceId) {
+			return json({ error: "fork source membership changed" }, 409);
+		}
+		const file = pick(result.data, "sessionFile");
+		if (typeof file !== "string" || file === "") return json({ error: "malformed fork result" }, 502);
+		return start(file);
 	});
-	if (!dispatched) {
-		ctx.fleet.removeSession(record.id);
-		ctx.sessions.delete(record.id);
-		return json({ error: "machine write failed" }, 502);
-	}
-	if (!fleetOwner && namespaceId !== null) announceAttachedWorker(record, ctx);
-	return json({ session: record }, 202);
 }
 
 function stopSession(id: string, ctx: ApiContext): Response {
@@ -1617,6 +1659,8 @@ function cmdErrorStatus(error: string): number {
 		case "unknown session":
 			return 409;
 		case "session history unavailable":
+			return 409;
+		case "source session is not persisted":
 			return 409;
 		case "no such directory":
 		case "not a directory":

@@ -7,10 +7,12 @@
  */
 
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createLogger } from "../src/log";
+import { executeCommand } from "../src/session-host";
 import { type SessionReadyPayload, Supervisor } from "../src/supervisor";
 import { startHub } from "../../hub/src/server";
 
@@ -109,6 +111,150 @@ test("session host resumes an existing session file and reports it ready", async
 		await rm(root, { recursive: true, force: true });
 	}
 }, 120_000);
+
+test("fleet fork clones the current branch into a separate persisted session without switching its source", async () => {
+	const relay = Bun.serve({
+		port: 0,
+		hostname: "127.0.0.1",
+		fetch: (req, server) => (server.upgrade(req) ? undefined : new Response("upgrade required", { status: 426 })),
+		websocket: { open() {}, message() {}, close() {} },
+	});
+	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-fleet-fork-host-"));
+	const project = path.join(root, "project");
+	const sessionDir = path.join(root, "sessions");
+	await mkdir(project);
+	await mkdir(sessionDir);
+	const seed = SessionManager.create(project, sessionDir);
+	const first = seed.appendMessage({ role: "user", content: "common context", timestamp: Date.now() });
+	seed.appendMessage({ role: "user", content: "old branch", timestamp: Date.now() });
+	seed.branch(first);
+	seed.appendMessage({ role: "user", content: "active branch", timestamp: Date.now() });
+	await seed.ensureOnDisk();
+	await seed.flush();
+	const sourceFile = seed.getSessionFile();
+	if (!sourceFile) throw new Error("source session missing file");
+	const ready = Promise.withResolvers<SessionReadyPayload>();
+	const supervisor = new Supervisor({
+		onReady: (_id, payload) => ready.resolve(payload),
+		onError: (_id, error) => ready.reject(new Error(error)),
+		onExit: () => {},
+	}, createLogger("fleet-fork-host-test"), { hostEntry: HOST_ENTRY });
+	let forkFile: string | undefined;
+	try {
+		await supervisor.spawn({
+			id: "s_fork_source", cwd: project, sessionFile: sourceFile,
+			relayUrl: `ws://127.0.0.1:${relay.port}`, webUrl: "",
+		});
+		expect((await ready.promise).sessionFile).toBe(sourceFile);
+		const before = await readFile(sourceFile, "utf8");
+		const result = await supervisor.cmd("s_fork_source", { reqId: "c_fork", cmd: "fleet-fork-session" });
+		expect(result.ok).toBe(true);
+		if (!result.ok || !result.data || typeof result.data !== "object" || !("sessionFile" in result.data)) {
+			throw new Error(`fork did not return sessionFile: ${JSON.stringify(result)}`);
+		}
+		const clonedFile = result.data.sessionFile;
+		if (typeof clonedFile !== "string") throw new Error("fork sessionFile is not a string");
+		forkFile = clonedFile;
+		expect(clonedFile).not.toBe(sourceFile);
+		expect(await readFile(sourceFile, "utf8")).toBe(before);
+		const clone = await SessionManager.open(clonedFile, undefined, undefined, { throwIfMissing: true });
+		const source = await SessionManager.open(sourceFile, undefined, undefined, { throwIfMissing: true });
+		expect(clone.getSessionId()).not.toBe(source.getSessionId());
+		expect(clone.getHeader()?.parentSession).toBe(source.getSessionId());
+		expect(clone.getEntries()).toEqual(source.getEntries());
+		expect(clone.getBranch().flatMap(entry =>
+			entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+		)).toEqual(["common context", "active branch"]);
+		expect(clone.getEntries().flatMap(entry =>
+			entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+		)).toContain("old branch");
+		clone.appendMessage({ role: "user", content: "fork-only turn", timestamp: Date.now() });
+		await clone.flush();
+		expect(await readFile(sourceFile, "utf8")).toBe(before);
+		const rename = await supervisor.cmd("s_fork_source", { reqId: "c_after_fork", cmd: "rename", name: "Source is still live" });
+		expect(rename.ok).toBe(true);
+		expect((await SessionManager.open(clonedFile, undefined, undefined, { throwIfMissing: true })).getSessionName())
+			.not.toBe("Source is still live");
+	} finally {
+		await supervisor.stopAll("fleet fork host test done");
+		if (forkFile) await seed.dropSession(forkFile);
+		relay.stop(true);
+		await rm(root, { recursive: true, force: true });
+	}
+}, 120_000);
+
+test("fleet fork rejects an active or queued source before touching its persisted file", async () => {
+	let flushes = 0;
+	let leaf = "original";
+	const state = {
+		isStreaming: false,
+		queuedMessageCount: 0,
+		isCompacting: false,
+		isGeneratingHandoff: false,
+		hasPostPromptWork: false,
+		sessionManager: {
+			getSessionFile: () => "/unused/source.jsonl",
+			getLeafId: () => leaf,
+			flush: async () => { flushes++; },
+		},
+	};
+	const fork = () => executeCommand(
+		state as unknown as Parameters<typeof executeCommand>[0],
+		{ t: "cmd", reqId: "c_busy", cmd: "fleet-fork-session" },
+		{} as Parameters<typeof executeCommand>[2],
+		{} as Parameters<typeof executeCommand>[3],
+	);
+	state.isStreaming = true;
+	await expect(fork()).rejects.toThrow("session is busy;");
+	state.isStreaming = false;
+	state.queuedMessageCount = 1;
+	await expect(fork()).rejects.toThrow("session is busy;");
+	expect(flushes).toBe(0);
+	// A turn scheduled while the persistence flush is in flight must also
+	// refuse the fork; the stat and SDK copy may not run after that point.
+	const flushing = Promise.withResolvers<void>();
+	const enteredFlush = Promise.withResolvers<void>();
+	state.queuedMessageCount = 0;
+	state.sessionManager.flush = async () => {
+		flushes++;
+		enteredFlush.resolve();
+		await flushing.promise;
+	};
+	const pending = fork();
+	await enteredFlush.promise;
+	state.queuedMessageCount = 1;
+	flushing.resolve();
+	await expect(pending).rejects.toThrow("session is busy;");
+	expect(flushes).toBe(1);
+	// A guest append during flush changes the branch even if its turn finishes
+	// before the post-flush idle check. It cannot be treated as one snapshot.
+	state.queuedMessageCount = 0;
+	state.sessionManager.flush = async () => { leaf = "guest-append"; };
+	await expect(fork()).rejects.toThrow("source session changed while forking");
+});
+
+test("fleet fork refuses a lazy source whose session file has not materialized", async () => {
+	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-fork-lazy-"));
+	try {
+		const state = {
+			isStreaming: false, queuedMessageCount: 0, isCompacting: false,
+			isGeneratingHandoff: false, hasPostPromptWork: false,
+			sessionManager: {
+				getSessionFile: () => path.join(root, "not-yet-persisted.jsonl"),
+				getLeafId: () => null,
+				flush: async () => {},
+			},
+		};
+		await expect(executeCommand(
+			state as unknown as Parameters<typeof executeCommand>[0],
+			{ t: "cmd", reqId: "c_lazy", cmd: "fleet-fork-session" },
+			{} as Parameters<typeof executeCommand>[2],
+			{} as Parameters<typeof executeCommand>[3],
+		)).rejects.toThrow("source session is not persisted");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("hub resume reaches the daemon and reopens the saved session", async () => {
 	const root = await mkdtemp(path.join(tmpdir(), "omp-hub-daemon-resume-"));

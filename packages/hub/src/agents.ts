@@ -110,6 +110,7 @@ export type SessionCmdName =
 	| "fleet-get-input"
 	| "fleet-answer-input"
 	| "fleet-message"
+	| "fleet-fork-session"
 	| "fleet-interrupt"
 	| "set-setting";
 
