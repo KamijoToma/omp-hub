@@ -217,6 +217,26 @@ export function hubView(server: Bun.Server<HubSocketData>, core: HubCore): Hub {
 	};
 }
 
+/**
+ * True when running as a `bun build --compile` executable: argv[1] is the
+ * virtual `$bunfs` entry path (empirically `["bun", "/$bunfs/root/<name>",
+ * ...args]`), not a source file, and `import.meta`-derived paths do not exist
+ * on disk (web-dist resolution, `--watch` hot reload).
+ */
+export function isCompiledBinary(argv: readonly string[] = Bun.argv): boolean {
+	return argv[1]?.includes("/$bunfs/") === true;
+}
+
+/**
+ * argv for the restart re-exec: same entry (the script when running from
+ * source, the executable itself when compiled) plus the user's flags. Spawning
+ * with the virtual `$bunfs` entry as an argument would make the fresh process
+ * fail its own argv parsing.
+ */
+export function restartSpawnArgv(argv: readonly string[] = Bun.argv): string[] {
+	return [process.execPath, ...argv.slice(isCompiledBinary(argv) ? 2 : 1)];
+}
+
 export function startHub(overrides: Partial<Config> = {}): Hub {
 	const core = buildHub(overrides);
 	const server = Bun.serve<HubSocketData>({
@@ -253,7 +273,7 @@ export function startHub(overrides: Partial<Config> = {}): Hub {
 					// fresh hub on its first log line (SIGPIPE).
 					const logPath = path.join(path.dirname(core.cfg.stateFile ?? "hub-state.json"), "hub-restart.log");
 					const logFd = openSync(logPath, "a");
-					const child = Bun.spawn([process.execPath, ...Bun.argv.slice(1)], {
+					const child = Bun.spawn(restartSpawnArgv(), {
 						env: { ...process.env, HUB_RESTART_BIND_WAIT: "1" },
 						stdio: ["ignore", logFd, logFd],
 					});
