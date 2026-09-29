@@ -453,6 +453,55 @@ export interface MachineUsageStats {
 	timeSeries: UsageTimePoint[];
 }
 
+/** Per-project-folder usage row (machine dashboard `FolderStats`, subset we render). */
+export interface UsageFolderStats extends UsageAggregate {
+	folder: string;
+}
+
+/** Token/cost totals for one agent type (machine dashboard `AgentTypeStats`). */
+export interface UsageAgentTypeStats {
+	agentType: "main" | "subagent" | "advisor";
+	totalRequests: number;
+	totalInputTokens: number;
+	totalOutputTokens: number;
+	totalCacheReadTokens: number;
+	totalCacheWriteTokens: number;
+	totalCost: number;
+}
+
+/** One local-day request count for a model (machine dashboard `ModelTimeSeriesPoint`). */
+export interface UsageModelSeriesPoint {
+	timestamp: number;
+	model: string;
+	provider: string;
+	requests: number;
+}
+
+/** One local-day cost row with its in/out/cache split (machine dashboard `CostTimeSeriesPoint`). */
+export interface UsageCostPoint {
+	timestamp: number;
+	model: string;
+	provider: string;
+	cost: number;
+	/** Requests excluded because no public-equivalent subscription price exists. */
+	unpricedRequests: number;
+	costInput: number;
+	costOutput: number;
+	costCacheRead: number;
+	costCacheWrite: number;
+	requests: number;
+}
+
+/** Full `/api/stats` dashboard: the base stats plus the analytical series. */
+export interface MachineDashboardStats extends MachineUsageStats {
+	byFolder: UsageFolderStats[];
+	byAgentType: UsageAgentTypeStats[];
+	/** Daily requests per model — the ledger's per-row trend lines. */
+	modelSeries: UsageModelSeriesPoint[];
+	/** Daily per-model cost rows — the cost-anatomy composition source. */
+	costSeries: UsageCostPoint[];
+}
+
 /**
  * Usage dashboard stats for one machine, relayed from its local omp stats
  * dashboard (protocol §3 usage relay). `profile` names an omp profile
@@ -460,10 +509,10 @@ export interface MachineUsageStats {
  * The hub answers 404 (unknown machine), 502 (machine offline or dashboard
  * unavailable), 504 (relay timeout) — all {@link HubApiError}.
  */
-export async function getMachineUsage(machineId: string, range: UsageRange, profile?: string): Promise<MachineUsageStats> {
+export async function getMachineUsage(machineId: string, range: UsageRange, profile?: string): Promise<MachineDashboardStats> {
 	const params = new URLSearchParams({ range });
 	if (profile !== undefined && profile !== "default") params.set("profile", profile);
-	return api<MachineUsageStats>(
+	return api<MachineDashboardStats>(
 		`/api/machines/${encodeURIComponent(machineId)}/usage/api/stats?${params.toString()}`,
 	);
 }
@@ -475,6 +524,178 @@ export async function syncMachineUsage(
 ): Promise<{ processed: number; files: number; totalMessages: number }> {
 	const query = profile !== undefined && profile !== "default" ? `?profile=${encodeURIComponent(profile)}` : "";
 	return api(`/api/machines/${encodeURIComponent(machineId)}/usage/api/sync${query}`, { method: "POST" });
+}
+
+/** Relay one GET against the machine's local omp stats dashboard (protocol §3). */
+function relayUsage<T>(machineId: string, path: string, params: URLSearchParams, profile?: string): Promise<T> {
+	if (profile !== undefined && profile !== "default") params.set("profile", profile);
+	const query = params.toString();
+	return api<T>(`/api/machines/${encodeURIComponent(machineId)}/usage/${path}${query ? `?${query}` : ""}`);
+}
+
+/** Request/token/cost totals for one provider (machine dashboard `ProviderAggregate`). */
+export interface UsageProviderAggregate {
+	provider: string;
+	totalRequests: number;
+	failedRequests: number;
+	/** Distinct models used through this provider in the range. */
+	models: number;
+	totalInputTokens: number;
+	totalOutputTokens: number;
+	totalCacheReadTokens: number;
+	totalCacheWriteTokens: number;
+	totalTokens: number;
+	totalCost: number;
+	unpricedRequests: number;
+	avgTokensPerSecond: number | null;
+}
+
+/** Token burn attributed to one local hour-of-day for one provider. */
+export interface UsageProviderHourPoint {
+	provider: string;
+	/** Local hour of day, 0–23. */
+	hour: number;
+	totalTokens: number;
+	outputTokens: number;
+	requests: number;
+}
+
+/** Provider token/cost time-series point (bucketed like the model series). */
+export interface UsageProviderSeriesPoint {
+	timestamp: number;
+	provider: string;
+	totalTokens: number;
+	cost: number;
+	unpricedRequests: number;
+	requests: number;
+}
+
+/** `/api/stats/providers` payload (local request stats only, DB-backed). */
+export interface MachineProviderUsage {
+	providers: UsageProviderAggregate[];
+	hourly: UsageProviderHourPoint[];
+	series: UsageProviderSeriesPoint[];
+}
+
+/** One recent request row (machine dashboard recent-request record, subset we render). */
+export interface UsageRecentRequest {
+	id: number;
+	model: string;
+	provider: string;
+	timestamp: number;
+	duration: number;
+	/** ms; null when the request never produced a first token. */
+	ttft: number | null;
+	stopReason: string;
+	errorMessage: string | null;
+	agentType: "main" | "subagent" | "advisor";
+	costUnpriced: boolean;
+	usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		totalTokens: number;
+		cost: { total: number };
+	};
+}
+
+/** One root session with child transcripts folded in (machine dashboard `SessionSummary`). */
+export interface UsageSessionSummary {
+	file: string;
+	folder: string;
+	title: string | null;
+	startedAt: number;
+	endedAt: number;
+	requests: number;
+	toolCalls: number;
+	subagents: number;
+	totalTokens: number;
+	costTotal: number;
+	unpricedRequests: number;
+	models: string[];
+}
+
+/** One recorded usage-limit snapshot for an (account, window) series. */
+export interface UsageWindowPoint {
+	timestamp: number;
+	/** Used fraction 0..1 (>1 = overage) when the provider reported one. */
+	usedFraction: number | null;
+	exhausted: boolean;
+}
+
+/** Utilization history for one (account, limit window) pair of a provider. */
+export interface UsageWindowSeries {
+	provider: string;
+	accountKey: string;
+	accountLabel: string;
+	windowKey: string;
+	windowLabel: string;
+	points: UsageWindowPoint[];
+}
+
+/** Derived subscription insight for one provider limit window across all accounts. */
+export interface UsageWindowInsight {
+	provider: string;
+	windowKey: string;
+	windowLabel: string;
+	accounts: number;
+	/** Window resets observed (drops in used fraction). */
+	cycles: number;
+	/** Subscription-window equivalents consumed in range (1.0 = one full window burned). */
+	fractionConsumed: number;
+	/** Estimated tokens one full window buys; null when too little was consumed to extrapolate. */
+	estTokensPerWindow: number | null;
+	/**
+	 * Peak of sum-across-accounts used fraction at any sampled instant. Providers
+	 * report this mixing 0–1 and 0–100 scales — run it through
+	 * {@link normalizeFraction} before display or arithmetic.
+	 */
+	peakConcurrentFraction: number;
+	/** Accounts needed to keep peak demand under 90% of fleet capacity. */
+	idealAccounts: number;
+	/** Transitions into an exhausted state observed in range. */
+	exhaustedEvents: number;
+}
+
+/** `/api/stats/provider-windows` payload. */
+export interface MachineProviderWindows {
+	windowInsights: UsageWindowInsight[];
+	/**
+	 * Burn-down history. Only populated when a `provider` filter is passed —
+	 * the unfiltered call returns an empty array here.
+	 */
+	usageSeries: UsageWindowSeries[];
+}
+
+/** Provider aggregates, hour-of-day burn, and the provider cost/traffic series. */
+export function getMachineProviderUsage(machineId: string, range: UsageRange, profile?: string): Promise<MachineProviderUsage> {
+	return relayUsage(machineId, "api/stats/providers", new URLSearchParams({ range }), profile);
+}
+
+/** Latest requests across the profile's sessions, newest first. */
+export function getMachineRecentRequests(machineId: string, limit = 8, profile?: string): Promise<UsageRecentRequest[]> {
+	return relayUsage(machineId, "api/stats/recent", new URLSearchParams({ limit: String(limit) }), profile);
+}
+
+/** Most recent failed requests in the range, newest first. */
+export function getMachineRecentErrors(machineId: string, range: UsageRange, limit = 8, profile?: string): Promise<UsageRecentRequest[]> {
+	return relayUsage(machineId, "api/stats/errors", new URLSearchParams({ range, limit: String(limit) }), profile);
+}
+
+/** Root session summaries (children folded in), most recent activity first. */
+export function getMachineSessionSummaries(machineId: string, profile?: string): Promise<UsageSessionSummary[]> {
+	return relayUsage(machineId, "api/sessions", new URLSearchParams(), profile);
+}
+
+/**
+ * Subscription-window insights for the machine, plus — only when `provider`
+ * names one — that provider's per-account burn-down history.
+ */
+export function getMachineProviderWindows(machineId: string, provider?: string): Promise<MachineProviderWindows> {
+	const params = new URLSearchParams({ range: "90d" });
+	if (provider !== undefined) params.set("provider", provider);
+	return relayUsage(machineId, "api/stats/provider-windows", params);
 }
 
 export async function getSessions(): Promise<SessionRecord[]> {
