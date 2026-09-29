@@ -384,7 +384,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 												{shortenPath(session.cwd)}
 											</span>
 											<span className="hb-mono">{session.machineName}</span>
-											{session.namespaceId && <span className="hb-mono" title="fleet namespace">namespace: {session.namespaceId}</span>}
+											{session.namespaceId && <span className="hb-mono" title="fleet namespace">{session.namespaceId}</span>}
 											{session.controllerId && <span className="hb-mono" title="fleet controller">controller: {session.controllerId}</span>}
 											<RailTime session={session} />
 										</span>
