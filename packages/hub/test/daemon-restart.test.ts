@@ -255,6 +255,29 @@ describe("daemon upgrade restart", () => {
 		await connectFreshDaemon("m3", "slow");
 	});
 
+	test("arms the plan when the fresh daemon wins the replacement race", async () => {
+		// Production race: the replacement daemon connects before the dying
+		// daemon's socket tears down, so the hub takes the `hello` replacement
+		// path (agent replaced) instead of a graceful close.
+		const agent = await connectAgent("m4", "racy");
+		const live = await liveSession(agent, "m4");
+
+		const acceptedPromise = api("/api/machines/m4/restart-daemon", { method: "POST" });
+		const cmd = await agent.wait((frame) => (frame.t === "cmd" && frame.cmd === "restart-daemon" ? frame : undefined), "restart cmd");
+		agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true, data: {} }));
+		// The old daemon stalls ~100 ms before exiting; NO close here.
+		const fresh = await connectFreshDaemon("m4", "racy");
+		expect((await acceptedPromise).status).toBe(200);
+
+		const replay = await fresh.wait((frame) => (frame.t === "start" ? frame : undefined), "replayed start frame");
+		expect(replay.id).toBe(live.id);
+		expect(replay.sessionFile).toBe(SESSION_FILE);
+		fresh.ws.send(JSON.stringify({ t: "session-ready", id: replay.id, sessionFile: SESSION_FILE, pid: 4244, links: LINKS_B }));
+		const revived = await waitForStatus(live.id, "live");
+		expect(revived.links?.full).toBe(LINKS_B.full);
+		expect((await machineJson("m4")).restarting).toBeUndefined();
+	});
+
 	test("restarting an offline machine is 502", async () => {
 		const offline = await api("/api/machines/never-connected/restart-daemon", { method: "POST" });
 		expect(offline.status).toBe(404);
