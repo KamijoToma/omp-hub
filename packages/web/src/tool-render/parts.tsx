@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { ToolRenderHost, ToolResultImage, ToolResultLike } from "./types";
 import { getHljs, replaceTabs, resultImagesOf, resultTextOf, shortenPath, stripAnsi } from "./util";
+import { parseToolPath } from "./uri";
 
 export type Tone = "accent" | "ok" | "err" | "warn";
 
@@ -28,7 +29,11 @@ export function Badges({ items }: { items: ReadonlyArray<ReactNode> }): ReactNod
 	);
 }
 
-/** File path with optional `:start-end` line range or raw selector suffix. */
+/**
+ * File path or internal URI with optional `:start-end` line range / raw
+ * selector suffix. Known schemes (`proc://`, `xd://`, `pr://`, …) render as a
+ * typed chip + friendly target instead of the raw URI string.
+ */
 export function PathText({
 	path,
 	from,
@@ -40,16 +45,33 @@ export function PathText({
 	to?: number | null;
 	sel?: string | null;
 }): ReactNode {
+	const parsed = parseToolPath(path);
 	let range = "";
 	if (from != null || to != null) {
 		const start = from ?? 1;
 		range = to != null ? `:${start}-${to}` : `:${start}`;
 	}
+	const selText = sel ?? parsed.sel;
+	if (parsed.kind === "file") {
+		return (
+			<span className="tv-path">
+				{shortenPath(parsed.path)}
+				{range && <span className="tv-lines">{range}</span>}
+				{selText && <span className="tv-lines">:{selText}</span>}
+			</span>
+		);
+	}
 	return (
-		<span className="tv-path">
-			{shortenPath(path)}
+		<span className="tv-path tv-uri" title={parsed.title || undefined}>
+			<span className={`tv-uri-chip tv-uri--${parsed.kind}`}>{parsed.label}</span>
+			<span className="tv-uri-head">{parsed.head}</span>
+			{parsed.tail.map((t, i) => (
+				<span key={i} className="tv-uri-tail">
+					{t}
+				</span>
+			))}
 			{range && <span className="tv-lines">{range}</span>}
-			{sel && <span className="tv-lines">:{sel}</span>}
+			{selText && <span className="tv-lines">:{selText}</span>}
 		</span>
 	);
 }

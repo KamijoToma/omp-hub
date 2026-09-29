@@ -203,6 +203,67 @@
 	color: var(--tv-faint);
 }
 
+/* ---- internal URI paths (`proc://`, `xd://`, `pr://`, …) ---- */
+
+.tv-uri {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 5px;
+	min-width: 0;
+}
+
+.tv-uri-chip {
+	flex: none;
+	padding: 1px 5px;
+	border: 1px solid var(--tv-border);
+	border-radius: 4px;
+	background: var(--tv-raised);
+	font-size: 10px;
+	line-height: 1.4;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--tv-muted);
+}
+
+.tv-uri-head {
+	color: var(--tv-fg);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tv-uri-tail {
+	color: var(--tv-faint);
+	white-space: nowrap;
+}
+
+.tv-uri--proc.tv-uri-chip,
+.tv-uri--agent.tv-uri-chip {
+	color: color-mix(in oklch, var(--tv-warn) 80%, var(--tv-muted));
+	border-color: color-mix(in oklch, var(--tv-warn) 30%, var(--tv-border));
+}
+
+.tv-uri--pr.tv-uri-chip,
+.tv-uri--issue.tv-uri-chip {
+	color: color-mix(in oklch, var(--tv-ok) 80%, var(--tv-muted));
+	border-color: color-mix(in oklch, var(--tv-ok) 30%, var(--tv-border));
+}
+
+.tv-uri--xd.tv-uri-chip,
+.tv-uri--omp.tv-uri-chip,
+.tv-uri--mcp.tv-uri-chip,
+.tv-uri--artifact.tv-uri-chip {
+	color: color-mix(in oklch, var(--tv-accent) 75%, var(--tv-muted));
+	border-color: color-mix(in oklch, var(--tv-accent) 30%, var(--tv-border));
+}
+
+.tv-uri--url.tv-uri-chip,
+.tv-uri--db.tv-uri-chip,
+.tv-uri--archive.tv-uri-chip {
+	color: color-mix(in oklch, var(--tv-ring) 70%, var(--tv-muted));
+	border-color: color-mix(in oklch, var(--tv-ring) 30%, var(--tv-border));
+}
+
 .tv-pattern {
 	color: color-mix(in oklch, var(--tv-accent) 75%, var(--tv-fg));
 }
