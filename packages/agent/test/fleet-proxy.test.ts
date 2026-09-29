@@ -35,14 +35,14 @@ test("proxy derives owner from supervisor and removes caller-supplied identities
 	};
 	await handleFleetRequest({
 		method: "POST", path: "/api/fleet/sessions",
-		body: { machineId: "m1", cwd: "/work", ownerId: "s_other", namespaceId: "other", superagent: true, tools: ["bash"] },
+		body: { machineId: "m1", cwd: "/work", forkFrom: "s_source", ownerId: "s_other", namespaceId: "other", superagent: true, tools: ["bash"] },
 	}, deps);
 	await handleFleetRequest({
 		method: "POST", path: "/api/fleet/sessions/s_worker/message",
 		body: { mode: "steer", text: "help", ownerId: "s_other", namespaceId: "other" },
 	}, deps);
 	expect(calls.map(call => call.body)).toEqual([
-		{ machineId: "m1", cwd: "/work" }, { mode: "steer", text: "help" },
+		{ machineId: "m1", cwd: "/work", forkFrom: "s_source" }, { mode: "steer", text: "help" },
 	]);
 	expect(calls.every(call => call.headers.get("X-Fleet-Owner") === "s_actual")).toBe(true);
 	expect(calls.every(call => call.headers.get("authorization") === "Bearer secret")).toBe(true);

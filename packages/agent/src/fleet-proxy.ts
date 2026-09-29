@@ -34,13 +34,14 @@ export function isAllowedFleetPath(method: string, rawPath: string): boolean {
 /** A session start never carries owner, namespace, or superagent identity from a child. */
 function permittedStartFields(body: unknown): unknown {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) return body;
-	const { machineId, cwd, name, prompt, profile } = body as Record<string, unknown>;
+	const { machineId, cwd, name, prompt, profile, forkFrom } = body as Record<string, unknown>;
 	return {
 		machineId,
 		cwd,
 		...(name === undefined ? {} : { name }),
 		...(prompt === undefined ? {} : { prompt }),
 		...(profile === undefined ? {} : { profile }),
+		...(forkFrom === undefined ? {} : { forkFrom }),
 	};
 }
 

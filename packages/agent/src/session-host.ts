@@ -24,6 +24,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
 import type { cfgCycleOrder as CfgCycleOrder } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { computeSessionContextBreakdown } from "@oh-my-pi/pi-coding-agent/session/context-usage-runtime";
@@ -233,6 +234,8 @@ type GetMCPConfigPathFn = typeof import("@oh-my-pi/pi-utils").getMCPConfigPath;
  * surface as JSONL error frames.
  */
 interface CommandDeps {
+	/** Fork from the persisted transcript without switching the source session identity. */
+	sessionManagerClass: typeof SessionManager;
 	parseThinkingLevel: typeof ParseThinkingLevel;
 	modelRoles: typeof ModelRoles;
 	roleModels: typeof RoleModels;
@@ -1140,6 +1143,49 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 			});
 			return { accepted: true };
 		}
+		case "fleet-fork-session": {
+			const manager = session.sessionManager;
+			const source = manager.getSessionFile();
+			if (!source) throw new Error("source session is not persisted");
+			const assertIdle = (): void => {
+				if (session.isStreaming || session.queuedMessageCount > 0 || session.isCompacting ||
+					session.isGeneratingHandoff || session.hasPostPromptWork) {
+					throw new Error("session is busy; finish the current turn and queued work before forking");
+				}
+			};
+			assertIdle();
+			const sourceLeaf = manager.getLeafId();
+			// The SDK writes lazily; a path on a fresh, still-in-memory session is
+			// not evidence of persisted history. Never turn a missing source into
+			// an empty fork or switch the original manager with session.fork().
+			await manager.flush();
+			assertIdle();
+			if (manager.getSessionFile() !== source || manager.getLeafId() !== sourceLeaf) {
+				throw new Error("source session changed while forking");
+			}
+			let persisted: boolean;
+			try {
+				persisted = (await stat(source)).isFile();
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				persisted = false;
+			}
+			assertIdle();
+			if (!persisted) throw new Error("source session is not persisted");
+			const fork = await deps.sessionManagerClass.forkFrom(source, manager.getCwd());
+			const sessionFile = fork.getSessionFile();
+			if (!sessionFile) throw new Error("forked session is not persisted");
+			try {
+				assertIdle();
+				if (manager.getSessionFile() !== source || manager.getLeafId() !== sourceLeaf) {
+					throw new Error("source session changed while forking");
+				}
+			} catch (err) {
+				await fork.dropSession(sessionFile);
+				throw err;
+			}
+			return { sessionFile };
+		}
 		case "fleet-get-messages":
 			return pageFleetMessages(session.sessionManager, frame.cursor, frame.pageLimit);
 		case "fleet-get-input":
@@ -1685,6 +1731,7 @@ async function run(): Promise<void> {
 	const settingsGateway = await import("./settings-gateway");
 	const { agentPauseGate } = await import("@oh-my-pi/pi-agent-core/pause");
 	const commandDeps: CommandDeps = {
+		sessionManagerClass: SessionManager,
 		parseThinkingLevel: parseConfiguredThinkingLevel,
 		modelRoles,
 		roleModels,
