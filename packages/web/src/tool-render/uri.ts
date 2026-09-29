@@ -205,6 +205,19 @@ function parseGitItem(scheme: string, auth: string, p: string, search: string, r
 	});
 }
 
+/**
+ * Split an `mcp__` device remainder into server/tool for display. Standard
+ * `server__tool` wins; flattened `server_tool` names (no `__`) split at the
+ * first `_` — a heuristic, so the raw URI stays available in `title`.
+ */
+function splitMcpName(rest: string): { server: string; tool: string } | null {
+	const dsep = rest.indexOf("__");
+	if (dsep > 0 && dsep + 2 < rest.length) return { server: rest.slice(0, dsep), tool: rest.slice(dsep + 2) };
+	const usep = rest.indexOf("_");
+	if (usep > 0 && usep + 1 < rest.length) return { server: rest.slice(0, usep), tool: rest.slice(usep + 1) };
+	return null;
+}
+
 function parseHierarchical(scheme: string, auth: string, p: string, search: string, hash: string, raw: string): ParsedPath {
 	const pathSegs = p.split("/").filter(Boolean);
 	switch (scheme) {
@@ -245,6 +258,22 @@ function parseHierarchical(scheme: string, auth: string, p: string, search: stri
 		}
 		case "xd": {
 			const device = `${auth}${p}`.replace(/^\//, "");
+			const rest = /^mcp__(.+)$/.exec(device)?.[1];
+			if (rest !== undefined) {
+				const name = splitMcpName(rest);
+				return parsed({
+					raw,
+					kind: "xd",
+					scheme,
+					label: "MCP",
+					head: name ? `${name.server}::${name.tool}()` : `${rest}()`,
+					tail: [],
+					title: `MCP tool device '${device}' — ${raw}`,
+					fields: name ? [["server", name.server], ["tool", name.tool]] : [["device", device]],
+					path: raw,
+					sel: null,
+				});
+			}
 			return parsed({
 				raw,
 				kind: "xd",

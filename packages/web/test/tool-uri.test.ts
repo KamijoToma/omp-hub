@@ -67,6 +67,38 @@ describe("parseToolPath — doc & device schemes", () => {
 		expect(p.sel).toBe("50-100");
 	});
 
+	test("xd mcp device renders server::tool()", () => {
+		const p = parseToolPath("xd://mcp__codegraph_explore");
+		expect(p.kind).toBe("xd");
+		expect(p.label).toBe("MCP");
+		expect(p.head).toBe("codegraph::explore()");
+		expect(p.title).toContain("xd://mcp__codegraph_explore");
+	});
+
+	test("xd mcp device with standard server__tool shape", () => {
+		expect(parseToolPath("xd://mcp__github__get_issue").head).toBe("github::get_issue()");
+	});
+
+	test("xd mcp device keeps read selectors", () => {
+		const p = parseToolPath("xd://mcp__codegraph_explore:raw:2-4");
+		expect(p.label).toBe("MCP");
+		expect(p.head).toBe("codegraph::explore()");
+		expect(p.sel).toBe("raw:2-4");
+	});
+
+	test("xd mcp device without separator stays whole", () => {
+		const p = parseToolPath("xd://mcp__router");
+		expect(p.label).toBe("MCP");
+		expect(p.head).toBe("router()");
+		expect(p.fields).toContainEqual(["device", "mcp__router"]);
+	});
+
+	test("non-mcp xd device keeps plain chip", () => {
+		const p = parseToolPath("xd://report_issue");
+		expect(p.label).toBe("xd");
+		expect(p.head).toBe("report_issue");
+	});
+
 	test("xd bare index", () => {
 		expect(parseToolPath("xd://").head).toBe("index");
 	});
