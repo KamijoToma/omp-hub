@@ -95,6 +95,84 @@ describe("namespace-scoped fleet control", () => {
 		} finally { agent.ws.close(); }
 	});
 
+	test("forks a controlled live worker into an independent, scoped session", async () => {
+		const agent = await socket("m_fork");
+		try {
+			const namespaceId = await createNamespace("fork-workers");
+			const owner = await live(agent, "m_fork", { superagent: true, namespaceId });
+			const worker = await live(agent, "m_fork", { namespaceId, profile: "team" });
+			const other = await live(agent, "m_fork", { namespaceId });
+			const input = { machineId: "m_fork", cwd: "/tmp", forkFrom: worker, prompt: "Try another approach" };
+			const start = () => api("/api/fleet/sessions", { method: "POST", body: JSON.stringify(input) }, owner);
+
+			expect((await start()).status).toBe(403);
+			expect((await api("/api/fleet/sessions", { method: "POST", body: JSON.stringify({
+				...input, forkFrom: owner,
+			}) }, owner)).status).toBe(403);
+			expect((await api(`/api/fleet/sessions/${worker}/claim`, { method: "POST" }, owner)).status).toBe(200);
+			expect((await api("/api/fleet/sessions", { method: "POST", body: JSON.stringify({
+				...input, cwd: "/elsewhere",
+			}) }, owner)).status).toBe(400);
+			expect((await api("/api/fleet/sessions", { method: "POST", body: JSON.stringify({
+				...input, profile: "default",
+			}) }, owner)).status).toBe(400);
+
+			const busy = start();
+			const busyCmd = await agent.take(frame => frame.t === "cmd" && frame.cmd === "fleet-fork-session" && frame.id === worker);
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: busyCmd.reqId, ok: false,
+				error: "session is busy; wait for the current turn" }));
+			expect((await busy).status).toBe(409);
+
+			const pending = start();
+			const forkCmd = await agent.take(frame => frame.t === "cmd" && frame.cmd === "fleet-fork-session" && frame.id === worker);
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: forkCmd.reqId, ok: true,
+				data: { sessionFile: "/tmp/agent/sessions/forked.jsonl" } }));
+			const response = await pending;
+			expect(response.status).toBe(202);
+			const payload = await response.json() as { session: { id: string; controllerId: string; namespaceId: string; sessionFile?: string } };
+			expect(payload.session).toMatchObject({ controllerId: owner, namespaceId });
+			expect(payload.session.sessionFile).toBeUndefined();
+			expect(payload.session.id).not.toBe(worker);
+			expect(payload.session.id).not.toBe(other);
+			const frame = await agent.take(value => value.t === "start" && value.id === payload.session.id);
+			expect(frame).toMatchObject({ sessionFile: "/tmp/agent/sessions/forked.jsonl",
+				prompt: "Try another approach", cwd: "/tmp", profile: "team" });
+			expect(frame.superagent).toBeUndefined();
+			expect(await (await api(`/api/sessions/${worker}`)).json()).toMatchObject({
+				session: { status: "live", sessionFile: "/tmp/agent/sessions/test.jsonl" },
+			});
+		} finally { agent.ws.close(); }
+	});
+
+	test("a concurrent namespace move waits until fork dispatch finishes", async () => {
+		const agent = await socket("m_fork_move");
+		try {
+			const original = await createNamespace("fork-move-original");
+			const destination = await createNamespace("fork-move-destination");
+			const owner = await live(agent, "m_fork_move", { superagent: true, namespaceId: original });
+			const worker = await live(agent, "m_fork_move", { namespaceId: original });
+			expect((await api(`/api/fleet/sessions/${worker}/claim`, { method: "POST" }, owner)).status).toBe(200);
+			const starting = api("/api/fleet/sessions", { method: "POST", body: JSON.stringify({
+				machineId: "m_fork_move", cwd: "/tmp", forkFrom: worker,
+			}) }, owner);
+			const cmd = await agent.take(frame => frame.t === "cmd" && frame.cmd === "fleet-fork-session" && frame.id === worker);
+			const moving = api(`/api/sessions/${worker}/namespace`, {
+				method: "PUT", body: JSON.stringify({ namespaceId: destination, expectedVersion: 2 }),
+			});
+			agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true,
+				data: { sessionFile: "/tmp/agent/sessions/fork-move.jsonl" } }));
+			const created = await starting;
+			expect(created.status).toBe(202);
+			const { session } = await created.json() as { session: { id: string; namespaceId: string } };
+			expect(session.namespaceId).toBe(original);
+			await agent.take(frame => frame.t === "start" && frame.id === session.id);
+			expect((await moving).status).toBe(200);
+			expect(await (await api(`/api/sessions/${worker}`)).json()).toMatchObject({
+				session: { namespaceId: destination },
+			});
+		} finally { agent.ws.close(); }
+	});
+
 	test("detaching an operator releases its workers for a new controller", async () => {
 		const agent = await socket("m_controller_move");
 		try {

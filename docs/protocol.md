@@ -804,7 +804,7 @@ read/watch.
 | Fleet route | Effect / reply |
 |---|---|
 | `GET /api/fleet/machines`, `GET /api/fleet/sessions`, `GET /api/fleet/sessions/:id` | Scoped machine inventory (`sessionCount` includes only this namespace) and sanitized session records |
-| `POST /api/fleet/sessions` | `{machineId,cwd,name?,prompt?,profile?}` → 202 `{session}`; plain worker automatically inherits the operator's namespace, controller and watch |
+| `POST /api/fleet/sessions` | `{machineId,cwd,name?,prompt?,profile?,forkFrom?}` → 202 `{session}`; plain worker automatically inherits the operator's namespace, controller and watch. `forkFrom` is the id of a controlled, live, idle worker in that namespace: it copies the worker's current persisted transcript and artifacts to an independent file, then starts the new worker on the **same** machine, cwd and profile. Supply `machineId`/`cwd` matching the source; an omitted `profile` inherits it. The original keeps running. 403 unclaimed/operator source; 404 out-of-scope source; 409 busy, missing persisted history or terminal source; 400 mismatched machine/cwd/profile. The copy's path is never returned to fleet clients |
 | `POST /api/fleet/sessions/:id/claim`, `/watch`, `/stop` | Claim single-writer control, watch events (including a pending-input snapshot), or terminate an owned worker |
 | `GET /api/fleet/sessions/:id/messages?cursor=&limit=` | `{messages,nextCursor,hasMore,leafId}`; current branch, 1–100 entries per page, invalidated cursor → 409; terminal sessions use the machine's read-only command |
 | `GET /api/fleet/sessions/:id/input` | `{pending:[{requestId,kind,title,options?,prefill?}]}` |
@@ -887,7 +887,7 @@ parent → child (stdin):
 { t: "fleet-notification", event: FleetEvent } // unsolicited push to operator child
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
      |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt"
-     |"fleet-get-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
+     |"fleet-fork-session"|"fleet-get-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -916,6 +916,13 @@ every response; asynchronous reads recheck after the worker responds. Neither
 guest collab links nor the target's session-file path reach fleet results.
 Fleet-created sessions are plain workers. Child IPC abandons unanswered requests
 after 30 s; hub/daemon command and fetch budgets remain 15 s.
+
+`fleet-fork-session` flushes a stable idle source, rejects a missing/lazy
+session file or concurrent turn, and returns `{sessionFile}` to the hub only.
+The hub fences a membership move until it has dispatched the new `start`
+with that copy; it never uses SDK `session.fork()` (which would switch the
+source child's identity). The new process resumes the copy. Forking history
+does not isolate the workers' filesystem or working tree.
 
 A worker emits `fleet-event` on input-request changes and terminal SDK
 `agent_end` (per **turn**, not a task-success claim). On child exit/start
