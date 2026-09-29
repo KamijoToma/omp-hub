@@ -18,6 +18,8 @@ import {
 	parseCommand,
 	parseCompactArgs,
 	parseExtendedContextArg,
+	parsePlanArgs,
+	parsePrewalkArgs,
 	parseLoopLimit,
 	routeComposerText,
 	transcriptJsonl,
@@ -42,6 +44,12 @@ interface Trace {
 	resumes: string[];
 	retries: number;
 	extendedContext: (boolean | undefined)[];
+	prewalks: unknown[];
+	plans: unknown[];
+	advisorToggles: number;
+	tiers: string[];
+	pauses: number;
+	cycles: number;
 	todosShown: number;
 }
 
@@ -62,6 +70,12 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 		resumes: [],
 		retries: 0,
 		extendedContext: [],
+		prewalks: [],
+		plans: [],
+		advisorToggles: 0,
+		tiers: [],
+		pauses: 0,
+		cycles: 0,
 		todosShown: 0,
 	};
 	return {
@@ -98,6 +112,18 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 				trace.retries += 1;
 			},
 			setExtendedContext: enabled => trace.extendedContext.push(enabled),
+			prewalkSession: request => trace.prewalks.push(request),
+			planSession: request => trace.plans.push(request),
+			toggleAdvisor: () => {
+				trace.advisorToggles += 1;
+			},
+			setTier: tier => trace.tiers.push(tier),
+			togglePause: () => {
+				trace.pauses += 1;
+			},
+			cycleModel: () => {
+				trace.cycles += 1;
+			},
 			showTodos: () => {
 				trace.todosShown += 1;
 			},
@@ -144,6 +170,12 @@ describe("composer routing", () => {
 			resumes: [],
 			retries: 0,
 			extendedContext: [],
+			prewalks: [],
+			plans: [],
+			advisorToggles: 0,
+			tiers: [],
+			pauses: 0,
+			cycles: 0,
 			todosShown: 0,
 		});
 	});
@@ -204,6 +236,13 @@ describe("composer routing", () => {
 			"goal",
 			"loop",
 			"extended-context",
+			"prewalk",
+			"plan",
+			"advisor",
+			"fast",
+			"slow",
+			"pause",
+			"cycle",
 			"settings",
 			"collab",
 			"mcp",
@@ -236,6 +275,13 @@ describe("composer routing", () => {
 			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
 			{ text: "/loop", check: t => expect(t.modals).toEqual(["loop"]) },
 			{ text: "/extended-context", check: t => expect(t.extendedContext).toEqual([undefined]) },
+			{ text: "/prewalk", check: t => expect(t.prewalks).toEqual([{ action: "arm" }]) },
+			{ text: "/plan", check: t => expect(t.plans).toEqual([{}]) },
+			{ text: "/advisor", check: t => expect(t.advisorToggles).toBe(1) },
+			{ text: "/fast", check: t => expect(t.tiers).toEqual(["priority"]) },
+			{ text: "/slow", check: t => expect(t.tiers).toEqual(["flex"]) },
+			{ text: "/pause", check: t => expect(t.pauses).toBe(1) },
+			{ text: "/cycle", check: t => expect(t.cycles).toBe(1) },
 			{ text: "/settings", check: t => expect(t.modals).toEqual(["settings"]) },
 			{ text: "/collab", check: t => expect(t.modals).toEqual(["links"]) },
 			{ text: "/theme", check: t => expect(t.themes).toBe(1) },
@@ -250,6 +296,19 @@ describe("composer routing", () => {
 			expect(trace.notices).toEqual([]);
 			check(trace);
 		}
+	});
+
+	test("advanced-mode commands forward their parsed arguments", () => {
+		const { ctx, trace } = makeContext();
+
+		expect(routeComposerText("/prewalk openai/gpt-5", ctx)).toBe("ran");
+		expect(routeComposerText("/prewalk restart", ctx)).toBe("ran");
+		expect(routeComposerText("/plan off", ctx)).toBe("ran");
+		expect(routeComposerText("/plan plans/feature.md", ctx)).toBe("ran");
+
+		expect(trace.prewalks).toEqual([{ action: "arm", target: "openai/gpt-5" }, { action: "restart" }]);
+		expect(trace.plans).toEqual([{ action: "disable" }, { action: "enable", planFilePath: "plans/feature.md" }]);
+		expect(trace.notices).toEqual([]);
 	});
 
 	test("compact arguments split into mode + instructions", () => {
@@ -424,6 +483,22 @@ describe("session-op argument parsers", () => {
 		expect(parseExtendedContextArg("OFF")).toBe(false);
 		expect(parseExtendedContextArg("  on  ")).toBe(true);
 		expect(parseExtendedContextArg("maybe")).toBeUndefined();
+	});
+
+	test("parsePrewalkArgs arms the default, an explicit target, or restarts", () => {
+		expect(parsePrewalkArgs("")).toEqual({ action: "arm" });
+		expect(parsePrewalkArgs("  ")).toEqual({ action: "arm" });
+		expect(parsePrewalkArgs("@smol")).toEqual({ action: "arm", target: "@smol" });
+		expect(parsePrewalkArgs("openai/gpt-5")).toEqual({ action: "arm", target: "openai/gpt-5" });
+		expect(parsePrewalkArgs("restart")).toEqual({ action: "restart" });
+		expect(parsePrewalkArgs("  RESTART ")).toEqual({ action: "restart" });
+	});
+
+	test("parsePlanArgs toggles bare, forces off, or enables with a path", () => {
+		expect(parsePlanArgs("")).toEqual({});
+		expect(parsePlanArgs("off")).toEqual({ action: "disable" });
+		expect(parsePlanArgs("  OFF ")).toEqual({ action: "disable" });
+		expect(parsePlanArgs("plans/feature.md")).toEqual({ action: "enable", planFilePath: "plans/feature.md" });
 	});
 
 	test("parseLoopLimit reads iteration counts", () => {

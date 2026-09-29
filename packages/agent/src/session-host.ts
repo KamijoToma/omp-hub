@@ -32,6 +32,13 @@ import type * as RoleModels from "@oh-my-pi/pi-coding-agent/session/role-models"
 import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { cfgExtendedContext as CfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { AgentPauseGate } from "@oh-my-pi/pi-agent-core/pause";
+import type { serviceTierFamily as ServiceTierFamilyFn } from "@oh-my-pi/pi-ai/types";
+import type * as ModelResolver from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import type * as ServiceTierConfig from "@oh-my-pi/pi-coding-agent/config/service-tier";
+import type * as AdvisorDiscovery from "@oh-my-pi/pi-coding-agent/advisor/config";
+import type * as SettingsGateway from "./settings-gateway";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createFleetClient } from "./fleet-client";
 import { buildFleetTools } from "./fleet-tools";
@@ -51,6 +58,10 @@ interface HostConfig {
 	superagent?: boolean;
 	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
 	tools?: string[];
+	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */
+	prewalk?: boolean | string;
+	/** 0.9.0: start in plan mode with the hand-off target; `true` = `@smol`, a string = explicit pattern. */
+	planYolo?: boolean | string;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -113,6 +124,20 @@ export type CommandFrame = {
 	args?: string[];
 	/** `prompt`: text delivered to the session via `session.prompt()`. */
 	text?: string;
+	/** `prewalk` target model/role pattern; omitted means the SDK default target (`@smol`). */
+	target?: string;
+	/** `cycle-model` cycle direction (`forward` default). */
+	direction?: string;
+	/** `tier` target family; omitted derives from the current model. */
+	family?: string;
+	/** `tier` service-tier value (`"none"` clears). */
+	tier?: string;
+	/** `plan` explicit plan file path; omitted uses the SDK reference path. */
+	planFilePath?: string;
+	/** `set-setting` target descriptor id. */
+	settingId?: string;
+	/** `set-setting` override value; `null` clears the override. */
+	value?: unknown;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -162,6 +187,16 @@ interface AgentState {
 	loop: LoopStatus | null;
 	/** Tool names currently exposed at the top level (0.9.0; sorted). */
 	tools: string[];
+	/** Armed one-shot model hand-off (0.9.0+); null when disarmed. */
+	prewalk: AgentModelId & { thinkingLevel: string | null } | null;
+	/** Plan-mode state (0.9.0+); null when the SDK reports none. */
+	plan: { enabled: boolean; planFilePath: string; workflow: string | null } | null;
+	/** Second-model advisor toggle (0.9.0+). */
+	advisor: { enabled: boolean };
+	/** Process-wide pause gate, this child (0.9.0+). */
+	paused: boolean;
+	/** Applied service tiers, family → tier (0.9.0+). */
+	tiers: Record<string, string>;
 }
 
 /** `mcp-config-writer` module surface (config file read-modify-write, protocol §2 `mcp-*`). */
@@ -195,6 +230,18 @@ interface CommandDeps {
 	};
 	/** Typed `extendedContext` setting descriptor (SDK ≥ v18 descriptor registry; string keys are gone). */
 	cfgExtendedContext: typeof CfgExtendedContext;
+	/** CLI model/role-pattern resolution surface (`resolveCliModel`, role aliases, match preferences). */
+	modelResolver: typeof ModelResolver;
+	/** Service-tier family/tier validation helpers (protocol §2 `tier`). */
+	serviceTier: typeof ServiceTierConfig;
+	/** Provider → service-tier family classifier (dependency-free pi-ai types module). */
+	serviceTierFamily: typeof ServiceTierFamilyFn;
+	/** Allowlisted settings projection + override application (`get-settings`/`set-setting`). */
+	settingsGateway: typeof SettingsGateway;
+	/** Advisor config discovery (WATCHDOG.yml walk, protocol §2 `advisor`). */
+	advisor: typeof AdvisorDiscovery;
+	/** Process-wide pause gate (`pause` cmd, AgentState.paused; one session per process). */
+	pauseGate: AgentPauseGate;
 	/** Background dispatches (`compact`) can only log their failures. */
 	log: Logger;
 }
@@ -234,6 +281,11 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 		// The session's effective callable surface — what a `tools` whitelist
 		// (start.tools) actually produced, not a config echo.
 		tools: [...session.getActiveToolNames()].sort(),
+		prewalk: prewalkState(session),
+		plan: planState(session),
+		advisor: { enabled: session.isAdvisorEnabled() },
+		paused: deps.pauseGate.paused,
+		tiers: appliedTiers(session),
 	};
 }
 
@@ -241,6 +293,61 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 function goalState(session: AgentSession): GoalModeState | null {
 	const state = session.getGoalModeState();
 	return state ? (JSON.parse(JSON.stringify(state)) as GoalModeState) : null;
+}
+
+/** Armed prewalk hand-off as wire identity; null when disarmed. */
+function prewalkState(session: AgentSession): AgentState["prewalk"] {
+	const state = session.getPrewalkState();
+	if (!state) return null;
+	return {
+		provider: state.target.provider,
+		id: state.target.id,
+		name: state.target.name ?? state.target.id,
+		thinkingLevel: state.thinkingLevel ?? null,
+	};
+}
+
+/** Plan-mode state projection; null when the SDK reports none. */
+function planState(session: AgentSession): AgentState["plan"] {
+	const state = session.getPlanModeState();
+	if (!state) return null;
+	return { enabled: state.enabled, planFilePath: state.planFilePath, workflow: state.workflow ?? null };
+}
+
+/** Applied service tiers (family → tier), omitting families with no tier set. */
+function appliedTiers(session: AgentSession): Record<string, string> {
+	const tiers: Record<string, string> = {};
+	for (const [family, tier] of Object.entries(session.serviceTierByFamily)) {
+		if (tier !== undefined) tiers[family] = tier;
+	}
+	return tiers;
+}
+
+/**
+ * Resolve a `/prewalk`-style model/role selector (`@smol`, `@default`, fuzzy
+ * ids, `provider/id`) the way the SDK's own prewalk settings watcher and the
+ * TUI do: over the session's model registry, scoped to the session's
+ * `--models` list when one exists. Throws stable caller-readable errors.
+ */
+function resolveModelSelector(
+	session: AgentSession,
+	pattern: string,
+	deps: CommandDeps,
+): { model: Model; thinkingLevel: ModelResolver.ResolveCliModelResult["thinkingLevel"] } {
+	const scoped = session.scopedModels.map(entry => entry.model);
+	const resolved = deps.modelResolver.resolveCliModel({
+		cliModel: pattern,
+		modelRegistry: session.modelRegistry,
+		availableModels: scoped.length > 0 ? scoped : undefined,
+		preferences: deps.modelResolver.getModelMatchPreferences(session.settings),
+	});
+	if (!resolved.model || resolved.error) {
+		throw new Error(resolved.error ?? `model "${pattern}" not found`);
+	}
+	if (!session.modelRegistry.hasConfiguredAuth(resolved.model)) {
+		throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
+	}
+	return { model: resolved.model, thinkingLevel: resolved.thinkingLevel };
 }
 
 /**
@@ -998,6 +1105,162 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 		}
 		case "mcp-test":
 			return await mcpTestPayload(session, frame, deps);
+		case "prewalk": {
+			// TUI `/prewalk` parity: arm a one-shot hand-off, or restart (restore
+			// the pre-prewalk model and re-arm). `armed: false` is the SDK's own
+			// no-op answer (target equals the active model and level). Bare
+			// (no action) is a state read, like `plan`/`advisor`/`tier`.
+			const action = frame.action ?? "state";
+			let level: ConfiguredThinkingLevel | undefined;
+			if (frame.level !== undefined) {
+				level = deps.parseThinkingLevel(frame.level);
+				if (level === undefined) throw new Error(`invalid thinking level: ${frame.level}`);
+			}
+			const pattern =
+				typeof frame.target === "string" && frame.target.trim() ? frame.target.trim() : deps.modelResolver.DEFAULT_PREWALK_TARGET;
+			switch (action) {
+				case "arm": {
+					const target = resolveModelSelector(session, pattern, deps);
+					session.armPrewalk(target.model, level ?? target.thinkingLevel);
+					return { armed: session.getPrewalkState() !== undefined, prewalk: prewalkState(session) };
+				}
+				case "restart": {
+					const source = resolveModelSelector(session, "@default", deps);
+					const target = resolveModelSelector(session, pattern, deps);
+					const result = await session.restartPrewalk(
+						source.model,
+						source.thinkingLevel,
+						target.model,
+						level ?? target.thinkingLevel,
+					);
+					return { result, prewalk: prewalkState(session) };
+				}
+				case "state":
+					return { prewalk: prewalkState(session) };
+				default:
+					throw new Error(`unknown prewalk action: ${String(action)}`);
+			}
+		}
+		case "plan": {
+			// TUI `/plan` parity: read-only plan mode from the next prompt; the
+			// SDK default reference path applies when the caller omits one.
+			const action = frame.action ?? "status";
+			switch (action) {
+				case "enable": {
+					let planFilePath = session.getPlanReferencePath();
+					if (frame.planFilePath !== undefined) {
+						if (typeof frame.planFilePath !== "string" || !frame.planFilePath.trim()) {
+							throw new Error("plan planFilePath must be a non-empty string");
+						}
+						planFilePath = frame.planFilePath.trim();
+					}
+					session.setPlanModeState({ enabled: true, planFilePath });
+					break;
+				}
+				case "disable":
+					session.setPlanModeState(undefined);
+					break;
+				case "status":
+					break;
+				default:
+					throw new Error(`unknown plan action: ${String(action)}`);
+			}
+			return { plan: planState(session) };
+		}
+		case "advisor": {
+			// TUI `/advisor on|off` parity. The session discovered the WATCHDOG.yml
+			// roster at construction; enabling with an empty roster is a caller
+			// bug, refused with a stable error.
+			const advisorNames = (): string[] => session.getAdvisorStats().advisors.map(entry => entry.name);
+			const action = frame.action ?? "status";
+			switch (action) {
+				case "enable": {
+					// Explicit discovery check (protocol: no configs → ok:false) — the
+					// session's own legacy fallback would silently mint a "default"
+					// advisor when nothing was discovered at construction.
+					const discovered = await deps.advisor.discoverAdvisorConfigs(session.sessionManager.getCwd());
+					if (discovered.advisors.length === 0) {
+						throw new Error("no advisor configs discovered (WATCHDOG.yml)");
+					}
+					session.setAdvisorEnabled(true);
+					break;
+				}
+				case "disable":
+					session.setAdvisorEnabled(false);
+					break;
+				case "status":
+					break;
+				default:
+					throw new Error(`unknown advisor action: ${String(action)}`);
+			}
+			return { enabled: session.isAdvisorEnabled(), advisors: advisorNames() };
+		}
+		case "tier": {
+			// TUI `/fast` / `/slow` parity: apply or clear one family's service
+			// tier; bare/`status` reports the live per-family state.
+			const action = frame.action ?? "status";
+			switch (action) {
+				case "set": {
+					const model = session.model;
+					if (!model) throw new Error("tier requires a selected model");
+					const family = frame.family ?? deps.serviceTierFamily(model);
+					if (!deps.serviceTier.isServiceTierFamily(family)) {
+						throw new Error(`unknown tier family: ${String(frame.family)} (known: openai, anthropic, google)`);
+					}
+					if (frame.tier === "none") {
+						// The omit-the-parameter sentinel clears the family's tier.
+						session.setServiceTierFamily(family, undefined);
+						break;
+					}
+					if (typeof frame.tier !== "string" || !deps.serviceTier.isServiceTierForFamily(family, frame.tier)) {
+						throw new Error(`invalid tier for ${family}: ${String(frame.tier)}`);
+					}
+					session.setServiceTierFamily(family, frame.tier);
+					break;
+				}
+				case "status":
+					break;
+				default:
+					throw new Error(`unknown tier action: ${String(action)}`);
+			}
+			return { tiers: appliedTiers(session) };
+		}
+		case "pause": {
+			// Process-wide pause gate; omitted `enabled` toggles, mirroring
+			// `set-extended-context`. One child hosts one session, so the
+			// process-wide gate is session-scoped in practice.
+			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
+				throw new Error("pause requires a boolean enabled");
+			}
+			const gate = deps.pauseGate;
+			const next = frame.enabled ?? !gate.paused;
+			if (next && !gate.paused) gate.pause();
+			else if (!next && gate.paused) gate.resume();
+			return { paused: gate.paused };
+		}
+		case "cycle-model": {
+			// TUI model-cycling keybinding parity over the scoped (or full
+			// available) model list; `switched: false` when nothing to cycle to.
+			const direction = frame.direction ?? "forward";
+			if (direction !== "forward" && direction !== "backward") {
+				throw new Error(`invalid cycle direction: ${String(frame.direction)}`);
+			}
+			const result = await session.cycleModel(direction);
+			if (!result) return { switched: false, model: null, thinkingLevel: null };
+			return {
+				switched: true,
+				model: { provider: result.model.provider, id: result.model.id, name: result.model.name ?? result.model.id },
+				thinkingLevel: result.thinkingLevel ?? null,
+			};
+		}
+		case "get-settings":
+			return { settings: deps.settingsGateway.settingsWire(session.settings) };
+		case "set-setting": {
+			const settingId = typeof frame.settingId === "string" ? frame.settingId.trim() : "";
+			if (!settingId) throw new Error("set-setting requires settingId");
+			if (frame.value === undefined) throw new Error("set-setting requires value (null clears the override)");
+			return { setting: deps.settingsGateway.applySettingOverride(session.settings, settingId, frame.value) };
+		}
 		case "set-extended-context": {
 			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
 				throw new Error("set-extended-context requires a boolean enabled");
@@ -1133,7 +1396,17 @@ function parseConfig(argv: string[]): HostConfig {
 		agentDir: optional("agentDir"),
 		superagent: config.superagent === true,
 		tools: parseTools(config.tools),
+		prewalk: parseHandoffSelector(config.prewalk),
+		planYolo: parseHandoffSelector(config.planYolo),
 	};
+}
+
+/** `start.prewalk`/`start.planYolo`: `true` = SDK default target, a non-blank string = explicit pattern. */
+function parseHandoffSelector(raw: unknown): boolean | string | undefined {
+	if (raw === undefined) return undefined;
+	if (raw === true) return true;
+	if (typeof raw === "string" && raw.trim()) return raw.trim();
+	throw new Error(`--config hand-off selector must be true or a non-empty string: ${JSON.stringify(raw)}`);
 }
 
 async function run(): Promise<void> {
@@ -1226,7 +1499,8 @@ async function run(): Promise<void> {
 	// JSONL. Same for the role-model helpers, the compact/loop-condition
 	// modules, and the settings descriptors: they transitively pull the SDK
 	// tree, which cannot load before this boundary in a broken-native install.
-	const { createAgentSession, initTheme, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
+	const { createAgentSession, initTheme, SessionManager, Settings, discoverAuthStorage, ModelRegistry } =
+		await import("@oh-my-pi/pi-coding-agent");
 	const { CollabHost } = await import("@oh-my-pi/pi-coding-agent/collab/host");
 	const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
 	const { parseConfiguredThinkingLevel } = await import("@oh-my-pi/pi-tui/thinking");
@@ -1243,6 +1517,14 @@ async function run(): Promise<void> {
 	const { cfgCollabDisplayName } = await import("@oh-my-pi/pi-coding-agent/collab/settings");
 	const { cfgLoopConditionTimeoutMs } = await import("@oh-my-pi/pi-coding-agent/modes/settings");
 	const { createCollabUiBridge } = await import("./ui-bridge");
+	// Same lazy boundary as above: these transitively pull the SDK tree and
+	// pi-ai's native addon, which cannot load before the JSONL error boundary.
+	const modelResolver = await import("@oh-my-pi/pi-coding-agent/config/model-resolver");
+	const serviceTier = await import("@oh-my-pi/pi-coding-agent/config/service-tier");
+	const advisorDiscovery = await import("@oh-my-pi/pi-coding-agent/advisor/config");
+	const { serviceTierFamily } = await import("@oh-my-pi/pi-ai/types");
+	const settingsGateway = await import("./settings-gateway");
+	const { agentPauseGate } = await import("@oh-my-pi/pi-agent-core/pause");
 	const commandDeps: CommandDeps = {
 		parseThinkingLevel: parseConfiguredThinkingLevel,
 		modelRoles,
@@ -1252,6 +1534,12 @@ async function run(): Promise<void> {
 		evaluateLoopCondition,
 		mcp: { config: mcpConfig, client: mcpClient, manager: MCPManager, configPath: getMCPConfigPath },
 		cfgExtendedContext,
+		modelResolver,
+		serviceTier,
+		serviceTierFamily,
+		settingsGateway,
+		advisor: advisorDiscovery,
+		pauseGate: agentPauseGate,
 		log,
 	};
 
@@ -1270,6 +1558,39 @@ async function run(): Promise<void> {
 				throwIfMissing: true,
 			})
 		: SessionManager.create(config.cwd);
+
+	// 0.9.0 `start.prewalk` / `start.planYolo`: resolve the pattern CLI-style
+	// against a pre-session registry (read-only — `createAgentSession` builds
+	// its own for the live session). A resolution failure logs a warning and
+	// the session starts without the hand-off, never a failed start.
+	let prewalkOption: { target: Model; thinkingLevel?: ConfiguredThinkingLevel } | undefined;
+	let planYoloOption: { target: Model; thinkingLevel?: ConfiguredThinkingLevel } | undefined;
+	if (config.prewalk !== undefined || config.planYolo !== undefined) {
+		try {
+			const authStorage = await discoverAuthStorage(config.agentDir, { settings, cwd: config.cwd });
+			const registry = new ModelRegistry(authStorage, undefined, { settings });
+			const resolvePattern = (value: boolean | string): { target: Model; thinkingLevel?: ConfiguredThinkingLevel } => {
+				const pattern = typeof value === "string" ? value : modelResolver.DEFAULT_PREWALK_TARGET;
+				const resolved = modelResolver.resolveCliModel({
+					cliModel: pattern,
+					modelRegistry: registry,
+					preferences: modelResolver.getModelMatchPreferences(settings),
+				});
+				if (!resolved.model || resolved.error) {
+					throw new Error(resolved.error ?? `model "${pattern}" not found`);
+				}
+				return { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
+			};
+			if (config.prewalk !== undefined) prewalkOption = resolvePattern(config.prewalk);
+			if (config.planYolo !== undefined) planYoloOption = resolvePattern(config.planYolo);
+		} catch (err) {
+			if (config.prewalk !== undefined) log.warn(`prewalk disabled — ${errorMessage(err)}`);
+			if (config.planYolo !== undefined) log.warn(`planYolo disabled — ${errorMessage(err)}`);
+			prewalkOption = undefined;
+			planYoloOption = undefined;
+		}
+	}
+
 	const { session, eventBus, setToolUIContext } = await createAgentSession({
 		cwd: config.cwd,
 		agentDir: config.agentDir,
@@ -1288,6 +1609,9 @@ async function run(): Promise<void> {
 		// ambient custom tools) out of the schema. Fleet tools are custom tools,
 		// so a superagent whitelist deliberately excludes them.
 		...(config.tools ? { toolNames: config.tools, restrictToolNames: true } : {}),
+		// 0.9.0: armed one-shot hand-offs (CLI --prewalk / --plan-yolo parity).
+		...(prewalkOption ? { prewalk: prewalkOption } : {}),
+		...(planYoloOption ? { planYolo: planYoloOption } : {}),
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));

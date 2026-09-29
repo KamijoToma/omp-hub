@@ -2,17 +2,23 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.9.0** — two additions. Per-session tool whitelists: `POST /api/sessions` accepts
-`tools` (§3) and `SessionRecord` echoes it, and the hub forwards `start.tools` (§2); the session
-child restricts the SDK session to exactly those tools. Optional and additive: older agents
-ignore the unknown `start` field, and an absent `tools` keeps the full default tool set. And the
-panel-triggered daemon upgrade restart: the `restart-daemon` machine command (§2) stops all
-children and self-respawns the daemon from disk, `POST /api/machines/:id/restart-daemon` (§3)
-drives it from the web panel, and the hub re-issues same-id `start`s for sessions the fresh
-daemon no longer reports (first-heartbeat reconcile against the disconnect-time snapshot).
-`MachineRecord` gains `restarting` (§3). Upgrade the hub and agent together to *use* either
-addition; older peers answer `ok:false` / ignore unknown fields, so mixed fleets degrade
-gracefully.
+Revision **0.9.0** — three additions. Advanced session modes from the TUI: `prewalk` / `plan` /
+`advisor` / `tier` / `pause` / `cycle-model` / `get-settings` / `set-setting` session commands
+(§2) with matching HTTP endpoints (§3) and web slash commands (§6); `AgentState` grows
+`prewalk` / `plan` / `advisor` / `paused` / `tiers` / `tools`; `start.prewalk` / `start.planYolo`
+(§2) arm the one-shot model hand-offs at session start; and the settings gateway exposes a
+hub-curated allowlist of the SDK's typed setting descriptors with session-scoped runtime
+overrides — writes never persist to `settings.json`. Per-session tool whitelists: `POST
+/api/sessions` accepts `tools` (§3) and `SessionRecord` echoes it, and the hub forwards
+`start.tools` (§2); the session child restricts the SDK session to exactly those tools —
+optional and additive: older agents ignore the unknown `start` field, and an absent `tools`
+keeps the full default tool set. And the panel-triggered daemon upgrade restart: the
+`restart-daemon` machine command (§2) stops all children and self-respawns the daemon from
+disk, `POST /api/machines/:id/restart-daemon` (§3) drives it from the web panel, and the hub
+re-issues same-id `start`s for sessions the fresh daemon no longer reports (first-heartbeat
+reconcile against the disconnect-time snapshot). `MachineRecord` gains `restarting` (§3).
+Upgrade the hub and agent together to *use* any addition; unknown cmds answer `ok:false` and
+unknown `start` fields pass through, so mixed fleets degrade gracefully.
 
 Revision **0.8.0** — adds the superagent surface: `start.superagent` (§2) marks a session as a
 fleet operator (the child registers the fleet tools, §4 fleet-req), `POST /api/sessions` accepts
@@ -134,6 +140,11 @@ Semantics:
   means the default tool set. The whitelist replaces the whole built-in set — a `superagent`
   session that also names `tools` gets only that list; the fleet tools are custom tools and
   are not part of it, so the two options should not be combined.
+- `start.prewalk` / `start.planYolo` (0.9.0+) arm the SDK's one-shot model hand-offs at
+  startup (CLI `--prewalk` / `--plan-yolo` parity). `true` targets the SDK default prewalk
+  target (the `@smol` role); a string is an explicit model/role pattern. The child resolves
+  the pattern against its model registry the way the CLI does; resolution failures log a
+  host-side warning and the session starts without the hand-off (never a failed start).
 - `session-ready` flips the record to `live` and attaches links. `session-error` flips to
   `failed`. `session-exit` flips to `exited` (idempotent).
 - `session-activity` mirrors the child's guest-visible state into the record's `activity`
@@ -174,18 +185,26 @@ Generic request/response control channel for web-driven host commands. hub→age
   cmd: "get-state" | "get-context" | "set-model" | "set-thinking" | "get-tree" | "navigate-tree"
      | "compact" | "shake" | "handoff" | "retry" | "loop" | "goal" | "set-extended-context" | "clear-context" | "upload-file"
      | "rename" | "generate-title" | "prompt"
-     | "mcp-list" | "mcp-add" | "mcp-remove" | "mcp-set-enabled" | "mcp-test",
+     | "mcp-list" | "mcp-add" | "mcp-remove" | "mcp-set-enabled" | "mcp-test"
+     | "prewalk" | "plan" | "advisor" | "tier" | "pause" | "cycle-model"
+     | "get-settings" | "set-setting",
   provider?: string, modelId?: string, level?: string,
   role?: string, persist?: boolean }                            // set-model only
                                                                 // entryId, summarize → navigate-tree
                                                                 // instructions, mode → compact
                                                                 // action, objective, tokenBudget → goal
                                                                 // prompt, limit, condition → loop
-                                                                // enabled → set-extended-context
+                                                                // enabled → set-extended-context, pause
                                                                 // name, dataB64 → upload-file
                                                                 // text → prompt
                                                                 // name → rename; no params → generate-title
                                                                 // name, scope, url, transport, token, command, args → mcp-*
+                                                                // action, target, level → prewalk
+                                                                // action, planFilePath → plan
+                                                                // action → advisor
+                                                                // action, family, tier → tier
+                                                                // direction → cycle-model
+                                                                // settingId, value → set-setting
 ```
 
 agent→hub:
@@ -217,6 +236,18 @@ interface AgentState {
   goal: SessionGoalState | null;            // active/paused goal; null when off
   loop: LoopStatus | null;                  // host-side loop mode; null when off
   tools: string[];                          // top-level callable tools, sorted (0.9.0+; what start.tools produced)
+  prewalk: {                                // armed one-shot model hand-off (0.9.0+); null when disarmed
+    provider: string; id: string; name: string;
+    thinkingLevel: string | null;
+  } | null;
+  plan: {                                   // plan-mode state (0.9.0+); null when the SDK reports none
+    enabled: boolean;
+    planFilePath: string;
+    workflow: string | null;                // "parallel" | "iterative" | null
+  } | null;
+  advisor: { enabled: boolean };            // second-model advisor toggle (0.9.0+)
+  paused: boolean;                          // process-wide pause gate, this child (0.9.0+)
+  tiers: Record<string, string>;            // applied service tiers, family → tier (0.9.0+)
 }
 ```
 
@@ -391,6 +422,56 @@ interface McpServerRow {
   down before the reply. Unknown/disabled targets fail before any connection attempt
   (`server "…" not found or disabled (see mcp-list)` → 404); connect failures bubble as
   `ok:false` (500) and count against the same 15 s cmd budget.
+- `prewalk {action?, target?, level?}` (0.9.0+): `arm` resolves `target` (a role alias such as
+  `@smol` — the default — or a provider/model pattern) like the SDK's own prewalk settings
+  watcher (`resolveCliModel` over the session model registry, scoped to the session's model
+  list) and arms the one-shot hand-off (`data: { armed, prewalk }`; `armed: false` = no-op,
+  target equals the active model and level). `restart` is TUI `/prewalk restart`: restore the
+  pre-prewalk model and re-arm (`data: { result: "armed" | "reset" | "rejected", prewalk }`).
+  Bare/`state` returns `data: { prewalk }`. Unresolvable targets fail (`ok:false`). The
+  hand-off itself fires at the SDK's turn boundary (after the plan nudge's todo list exists
+  and the first edit/write lands) and is visible through `model_change` transcript entries.
+- `plan {action?, planFilePath?}` (0.9.0+): `enable` activates read-only plan mode from the
+  next prompt (`data: { plan }`; `planFilePath` optional — SDK default reference path when
+  omitted), `disable` clears it, bare/`status` reports `data: { plan }`. TUI `/plan` parity.
+- `advisor {action?}` (0.9.0+): `enable` discovers the SDK's advisor configs and turns the
+  second-model advisor on (`data: { enabled, advisors }` — advisor names); no discovered
+  configs → `ok:false`. `disable` turns it off; bare/`status` reports. The advisor model
+  resolves through the `advisor` model role, so it follows role reassignment live.
+- `tier {action?, family?, tier?}` (0.9.0+): `set` applies a service tier (`data: { tiers }`).
+  `family` ∈ `openai | anthropic | google`, omitted = the current model's family (error when
+  no model is selected). `tier` validates against the family's values — openai
+  `none | auto | default | flex | scale | priority`, anthropic `none | priority`, google
+  `none | flex | priority` (`"none"` clears). Bare/`status` reports `data: { tiers }`.
+  TUI `/fast` (priority) / `/slow` (flex / low-priority) parity.
+- `pause {enabled?}` (0.9.0+): freezes / resumes the session's agent loop through the SDK's
+  process-wide pause gate (`data: { paused }`; omitted `enabled` toggles, mirroring
+  `set-extended-context`). One child hosts exactly one session, so the process-wide gate is
+  session-scoped in practice.
+- `cycle-model {direction?}` (0.9.0+): `session.cycleModel` (`direction` `"forward"` default |
+  `"backward"`) over the session's model list — `data: { switched, model, thinkingLevel }`;
+  `switched: false` when there is nothing to cycle to. TUI model-cycling keybinding parity.
+- `get-settings` (0.9.0+, no parameters) → `data: { settings: SettingWire[] }`: the
+  hub-curated allowlist of the SDK's typed setting descriptors, current values included. The
+  model registry, provider credentials, and other never-expose surfaces are not allowlisted.
+  ```ts
+interface SettingWire {
+  id: string;                 // descriptor id, e.g. "compaction.thresholdPercent"
+  value: unknown;             // JSON-safe current value (override wins over config)
+  defaultValue: unknown;      // descriptor default; null when none
+  type: string;               // "boolean" | "enum" | "number" | "string" | "array" | "record"
+  values?: string[];          // enum settings only, allowed values in order
+  tab?: string;               // TUI /settings tab hint, e.g. "context"
+  group?: string;             // TUI /settings group hint, e.g. "Compaction"
+  description: string;        // descriptor documentation
+  configured: boolean;        // present in user/project config
+  overridden: boolean;        // session runtime override active
+}
+  ```
+- `set-setting {settingId, value}` (0.9.0+) → `data: { setting: SettingWire }`: applies a
+  session-scoped runtime override (`Setting.override`) to an allowlisted descriptor; `value:
+  null` clears the override. Type mismatches and non-allowlisted ids fail (`ok:false`).
+  Overrides never persist to `settings.json` and die with the session.
 - Hub times out any pending cmd after 15 s (→ 504 to the caller). Unknown session →
   `ok:false, "unknown session"`.
 
@@ -404,6 +485,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 { t: "cmd", reqId: string, cmd: "list-profiles" }
 { t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
 { t: "cmd", reqId: string, cmd: "restart-daemon" }               // 0.9.0+
+{ t: "cmd", reqId: string, cmd: "search-sessions", query: string, paths?: string[] }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -463,6 +545,24 @@ interface SessionListing {
   refused with `session-error` `"daemon is restarting"`. Older daemons answer
   `ok:false, "unknown machine command: restart-daemon"` (the hub surfaces 400). Code updates only:
   dependency changes still need a manual install on the machine before restarting.
+- `search-sessions` → `data: { results: SessionSearchHit[] }`: case-insensitive prompt/assistant
+  text search over session files, powering the hub web's session filter boxes. `query` is required
+  (trimmed, ≤ 256 chars) and matched against the text content of `user`/`assistant` message entries
+  only — thinking, tool-call, and image blocks never match; one matching message counts once.
+  `paths` lists absolute candidate session files (≤ 200 after deduplication); paths that do not
+  resolve to a `.jsonl` file inside an omp session store (`<…>/agent/sessions/…`) are skipped
+  silently — the cmd never becomes an arbitrary-file read. Files stream line-by-line, 8 at a time,
+  inside the 15 s cmd budget; unreadable files read as "no hit". Only matching files are reported,
+  in request order. Caller-input failures use deterministic strings the hub maps to 400:
+  `empty query` / `query too long` / `invalid paths` / `too many paths`.
+  ```ts
+interface SessionSearchHit {
+  path: string;                // absolute session file, echoed from the request
+  count: number;               // matching user/assistant messages in the file
+  snippet?: string;            // single-line window around the first match (≤ ~200 chars)
+}
+```
+
 
 ## 3. HTTP API (`/api/*`)
 
@@ -523,6 +623,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `POST /api/machines/:machineId/restart-daemon` | → `{ ok: true, machine: MachineRecord }` (0.9.0+; panel-triggered daemon upgrade, §2 `restart-daemon`). 404 unknown machine, 409 `daemon restart already in progress`, 502 agent offline, 504 cmd timeout, 400 agent-reported refusal (e.g. an older daemon). The machine record carries `restarting: true` until the fresh daemon's reconciling heartbeat has replayed the same-id resumes (or the 90 s watchdog TTL expires) |
+| `POST /api/machines/:machineId/sessions/search` | `{query, paths?}` → `{ ok: true, matches: SessionSearchHit[] }` (§2 `search-sessions`; `paths` omitted ⇒ every registry session's `sessionFile` on that machine, capped at 200 after deduplication; needle trimmed, ≤ 256 chars); 400 blank/oversize `query`, non-string-array/oversize `paths`, or mapped agent-reported input failures; error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |
@@ -549,7 +650,15 @@ interface Notice {              // 0.8.0+, in-memory only
 | `POST /api/sessions/:id/mcp/remove` | `{name, scope?}` → `{ ok: true, name, scope }` (§2 `mcp-remove`); 400 missing/blank `name` or bad `scope`; 404 missing entry, unknown/offline; 409 not live; 502/504 cmd plumbing |
 | `POST /api/sessions/:id/mcp/enabled` | `{name, enabled}` → `{ ok: true, name, enabled, where }` (§2 `mcp-set-enabled`); 400 missing/blank `name` or non-boolean `enabled`; 404 name in no config and not listed, unknown/offline; 409 not live; 502/504 cmd plumbing |
 | `POST /api/sessions/:id/mcp/test` | `{name}` → `{ ok: true, name, count, tools }` (§2 `mcp-test`); 400 missing/blank `name`; 404 unknown/disabled target, unknown/offline; 409 not live; 500 connect failure; 502/504 cmd plumbing |
-| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent?, tools? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, blank `sessionFile`, or malformed `tools`. `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`); `tools` (0.9.0+) whitelists the session's callable tools — non-empty array of non-empty strings (§2 `start.tools`, `SessionRecord.tools`) |
+| `POST /api/sessions/:id/prewalk` | `{action?, target?, level?}` → `{ ok: true, prewalk }` (+ `armed` on `arm`, `result` on `restart`) (§2 `prewalk`, 0.9.0+); 400 bad `action`, non-string `target`/`level`; same error set otherwise |
+| `POST /api/sessions/:id/plan` | `{action?, planFilePath?}` → `{ ok: true, plan }` (§2 `plan`, 0.9.0+); 400 bad `action`, non-string `planFilePath`; same error set |
+| `POST /api/sessions/:id/advisor` | `{action?}` → `{ ok: true, enabled, advisors }` (§2 `advisor`, 0.9.0+); 400 bad `action`; 500 enabling with no discovered advisor configs; same error set |
+| `POST /api/sessions/:id/tier` | `{action?, family?, tier?}` → `{ ok: true, tiers }` (§2 `tier`, 0.9.0+); 400 bad `action`, unknown `family`, `tier` invalid for the family, or `family` omitted with no current model; same error set |
+| `POST /api/sessions/:id/pause` | `{enabled?}` → `{ ok: true, paused }` (§2 `pause`, 0.9.0+); 400 non-boolean `enabled`; same error set |
+| `POST /api/sessions/:id/cycle` | `{direction?}` → `{ ok: true, switched, model, thinkingLevel }` (§2 `cycle-model`, 0.9.0+); 400 bad `direction`; same error set |
+| `GET /api/sessions/:id/settings` | → `{ ok: true, settings: SettingWire[] }` (§2 `get-settings`, 0.9.0+); same error set |
+| `POST /api/sessions/:id/settings` | `{settingId, value}` → `{ ok: true, setting: SettingWire }` (§2 `set-setting`, 0.9.0+; `value: null` clears the override); 400 missing `settingId` or absent `value` key, 400 unknown/disallowed id or type-invalid value (agent-reported); same error set |
+| `POST /api/sessions` | `{ machineId, cwd, name?, prompt?, profile?, sessionFile?, superagent?, tools?, prewalk?, planYolo? }` → 202 `{ session }` (status `starting`); 404 unknown machine; 400 missing fields, invalid profile name, blank `sessionFile`, malformed `tools`, or a bad `prewalk`/`planYolo` selector (must be boolean or non-empty string). `profile` starts under that omp profile (§2 `start.profile`); `sessionFile` resumes that omp session file (`start.sessionFile`, §2); `superagent: true` (0.8.0+) starts a fleet-operator session (§2 `start.superagent`, `SessionRecord.superagent`); `tools` (0.9.0+) whitelists the session's callable tools — non-empty array of non-empty strings (§2 `start.tools`, `SessionRecord.tools`); `prewalk` / `planYolo` (0.9.0+, boolean or model/role pattern string) arm the startup hand-offs (§2 `start.prewalk`) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }`; 404 unknown id; 409 already exited |
 | `POST /api/notices` | `{message, urgency?, sessionId?}` → `{ ok: true, notice }` (0.8.0+): record a human-facing notification; urgency ∈ `"info"|"warn"|"urgent"` (default `"info"`); `sessionId` optionally attributes it to a session record. 400 blank/oversize (>2000 chars) `message` or bad urgency |
 | `GET /api/notices` | → `{ notices: Notice[] }` — newest first, capped at the 50 most recent (0.8.0+). Notices are in-memory only (like the registry beyond the state file: restart drops them); web clients poll this listing for toasts |
@@ -691,7 +800,14 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/goal` | goal mode modal: status card, set/replace objective + token budget, pause/resume/drop (drives `…/agent-state`, `POST …/goal`) |
 | `/loop` | loop mode modal: status card, prompt + iteration/duration limit + `--while`/`--until` gate, enable/disable/pause/resume (drives `…/agent-state`, `POST …/loop`) |
 | `/extended-context` | toggle extended context windows; bare = toggle, `on`/`off` forces (drives `POST …/extended-context`) |
-| `/settings` | settings modal: model + thinking + links + theme + display name |
+| `/prewalk` | arm the one-shot prewalk hand-off — bare or `[target]` arms (default the `@smol` role), `restart` restores the pre-prewalk model and re-arms (drives `POST …/prewalk`; the header chip shows the armed target while active) |
+| `/plan` | toggle plan mode — read-only until disabled; optional `[path]` sets the plan file (drives `POST …/plan`; header chip while enabled) |
+| `/advisor` | toggle the second-model advisor (drives `POST …/advisor`; header chip while enabled) |
+| `/fast` | priority service tier on the current model's provider family (drives `POST …/tier` `set tier=priority`) |
+| `/slow` | low-priority tier on the current model's provider family — flex where offered (drives `POST …/tier` `set tier=flex`) |
+| `/pause` | freeze/resume the session's agent loop; bare toggles (drives `POST …/pause`; header chip while paused) |
+| `/cycle` | cycle to the next model in the session's list (drives `POST …/cycle`) |
+| `/settings` | settings modal: model + thinking + links + theme + display name + Advanced (session settings from `GET/POST …/settings` — runtime overrides, not persisted) |
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |
 | `/theme` | toggle light/dark (vendored theme store) |

@@ -239,6 +239,8 @@ async function main(): Promise<void> {
 					sessionFile: frame.sessionFile,
 					superagent: frame.superagent === true ? true : undefined,
 					tools: frame.tools,
+					prewalk: frame.prewalk,
+					planYolo: frame.planYolo,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})

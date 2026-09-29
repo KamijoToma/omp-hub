@@ -969,6 +969,12 @@
 	color: var(--accent);
 }
 
+/* Advanced session-mode chips (prewalk/plan/advisor/paused): same accent
+ * family as the handoff chip, display-only. */
+.sh-chip-advanced {
+	color: var(--accent);
+}
+
 .sh-chip-handoff-icon {
 	animation: sh-atchip-rotate 900ms linear infinite;
 }

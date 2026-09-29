@@ -59,6 +59,10 @@ export type AgentCommand =
 			superagent?: boolean;
 			/** Callable-tool whitelist (protocol §2 `start.tools`); omitted means the default set. */
 			tools?: string[];
+			/** One-shot prewalk hand-off at startup (0.9.0+): true = SDK default target, or an explicit model/role pattern. */
+			prewalk?: boolean | string;
+			/** One-shot plan-mode hand-off at startup (0.9.0+): true = SDK default target, or an explicit model/role pattern. */
+			planYolo?: boolean | string;
 			relayUrl: string;
 			webUrl: string;
 	  }
@@ -91,10 +95,18 @@ export type SessionCmdName =
 	| "mcp-remove"
 	| "mcp-set-enabled"
 	| "mcp-test"
-	| "prompt";
+	| "prompt"
+	| "prewalk"
+	| "plan"
+	| "advisor"
+	| "tier"
+	| "pause"
+	| "cycle-model"
+	| "get-settings"
+	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -117,6 +129,10 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
+	/** `search-sessions` candidate session files; omitted searches the machine's registry sessions (protocol §2). */
+	paths?: string[];
+	/** `search-sessions` needle; matched case-insensitively (protocol §2). */
+	query?: string;
 	/** `upload-file` client-supplied file name, or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
@@ -164,6 +180,18 @@ export interface CmdRequest {
 	enabled?: boolean;
 	/** `prompt` message text delivered to the session (protocol §2). */
 	text?: string;
+	/** `prewalk` target: a role alias (`@smol`) or provider/model pattern (protocol §2, 0.9.0+). */
+	target?: string;
+	/** `tier` provider family (protocol §2, 0.9.0+). */
+	family?: string;
+	/** `tier` service tier within the family (protocol §2, 0.9.0+). */
+	tier?: string;
+	/** `cycle-model` traversal direction; omitted means `"forward"` (protocol §2, 0.9.0+). */
+	direction?: string;
+	/** `set-setting` descriptor id (protocol §2, 0.9.0+). */
+	settingId?: string;
+	/** `set-setting` override value (JSON-safe); `null` clears it (protocol §2, 0.9.0+). */
+	value?: unknown;
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */

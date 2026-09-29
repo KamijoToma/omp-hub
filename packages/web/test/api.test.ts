@@ -24,10 +24,12 @@ import {
 	postMcpEnabled,
 	postMcpRemove,
 	postMcpTest,
+	postPrewalk,
 	postRename,
 	postRetry,
 	postSessionPrompt,
 	postShake,
+	searchSessionMessages,
 	setModel,
 	setToken,
 	startSession,
@@ -157,6 +159,21 @@ describe("hub api", () => {
 
 		expect(calls[0].url).toBe("/api/machines/m1/sessions");
 		expect(result).toEqual(listing);
+	});
+
+	test("searchSessionMessages posts query with optional paths and unwraps matches", async () => {
+		setToken("t0k3n");
+		const matches = [{ path: "/store/a.jsonl", count: 2, snippet: "the needle" }];
+		stubFetch(() => json({ ok: true, matches }));
+
+		const withPaths = await searchSessionMessages("m1", "needle", ["/store/a.jsonl", "/store/b.jsonl"]);
+		expect(withPaths).toEqual(matches);
+		expect(calls[0].url).toBe("/api/machines/m1/sessions/search");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ query: "needle", paths: ["/store/a.jsonl", "/store/b.jsonl"] });
+
+		await searchSessionMessages("m1", "needle");
+		expect(JSON.parse(String(calls[1].init?.body))).toEqual({ query: "needle" });
 	});
 
 	test("startSession omits unset optional fields", async () => {
@@ -529,6 +546,32 @@ describe("hub api", () => {
 
 		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
 		expect(result).toBe(false);
+	});
+
+	test("postPrewalk posts the arm action and unwraps the armed state", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, armed: true, prewalk: { provider: "openai", id: "gpt-5-mini", name: "GPT-5 mini", thinkingLevel: null } }));
+
+		const result = await postPrewalk("s1", { action: "arm", target: "@smol" });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/prewalk");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ action: "arm", target: "@smol" });
+		expect(result).toEqual({
+			armed: true,
+			result: undefined,
+			prewalk: { provider: "openai", id: "gpt-5-mini", name: "GPT-5 mini", thinkingLevel: null },
+		});
+	});
+
+	test("postPrewalk sends an empty body for the bare state query", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, prewalk: null }));
+
+		const result = await postPrewalk("s1");
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
+		expect(result).toEqual({ armed: undefined, result: undefined, prewalk: null });
 	});
 
 	test("getMcpServers GETs the mcp path and unwraps the rows", async () => {
