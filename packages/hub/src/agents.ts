@@ -701,6 +701,10 @@ export class AgentRegistry {
 		for (const record of this.#sessions.list()) {
 			if (record.machineId !== conn.machineId || isTerminalStatus(record.status)) continue;
 			if (record.startedAt >= conn.connectedAt) continue;
+			// A same-id user restart (§3 `POST /api/sessions/:id/restart`) re-arms
+			// an old-id record while the connection stays up; the heartbeat that
+			// races the fresh child's spawn must not retire it (restart grace).
+			if (this.#sessions.inRestartGrace(record.id)) continue;
 			if (exempt?.has(record.id)) continue;
 			const status = statuses.get(record.id);
 			if (status === undefined) {
