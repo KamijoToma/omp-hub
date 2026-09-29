@@ -32,6 +32,18 @@ function spawnReplacement(argv: string[]): unknown {
 }
 
 /**
+ * argv for the restart re-exec. Compiled binaries report a virtual `$bunfs`
+ * entry as argv[1] (empirically `["bun", "/$bunfs/root/<name>", ...args]`), so
+ * user args start at index 2 there; source runs start at 1. Spawning with the
+ * virtual path as an argument would make the fresh daemon fail its own argv
+ * parsing and die — bricking the machine.
+ */
+export function restartSpawnArgv(argv: readonly string[] = process.argv): string[] {
+	const offset = argv[1]?.includes("/$bunfs/") === true ? 2 : 1;
+	return [process.execPath, ...argv.slice(offset)];
+}
+
+/**
  * The restart sequence. Order matters: children must be fully stopped (their
  * session files released, transcripts flushed) BEFORE the replacement spawns,
  * because the hub replays same-id resumes as soon as the fresh daemon
@@ -45,7 +57,7 @@ export async function performDaemonRestart(options: DaemonRestartOptions): Promi
 	stopDashboards();
 	const spawn = options.spawnReplacement ?? spawnReplacement;
 	const exit = options.exit ?? ((code: number) => process.exit(code));
-	spawn([process.execPath, ...process.argv.slice(1)]);
+	spawn(restartSpawnArgv());
 	// Give the fork a beat to register with the OS before this process vanishes;
 	// an orphaned-but-unexeced child would leave the machine daemonless.
 	await Bun.sleep(100);
