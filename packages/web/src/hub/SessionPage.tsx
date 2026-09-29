@@ -18,7 +18,7 @@ import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { steerPendingCount } from "./steering-queue";
-import { useSessionAlerts, alertsEnabled, requestAlertPermission, setAlertsEnabled } from "./session-alerts";
+import { alertsEnabled, requestAlertPermission, setAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./session-alerts";
 import { clearCompletedSession, useCompletedSessionTracker } from "./rail-completion";
 import { SessionView } from "./SessionView";
 
@@ -211,7 +211,10 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 			else pushToast("warning", "alerts on — notifications blocked, using toasts and the tab title");
 		});
 	}, [alertsOn]);
-	useSessionAlerts({ enabled: alertsOn, currentId: id, notify: pushToast });
+	// Completion notices ride the same registry diff with their own toggle
+	// (settings dialog), independent of the rail bell.
+	const completionsOn = useCompletionsEnabled();
+	useSessionAlerts({ enabled: alertsOn, completions: completionsOn, currentId: id, notify: pushToast });
 
 	return (
 		<div className="hb-frame">
