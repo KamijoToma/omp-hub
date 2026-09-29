@@ -4,7 +4,7 @@
  * process alive without spawning.
  */
 import { describe, expect, test } from "bun:test";
-import { performDaemonRestart, restartFailure } from "../src/daemon-restart";
+import { performDaemonRestart, restartFailure, restartSpawnArgv } from "../src/daemon-restart";
 import type { Logger } from "../src/log";
 
 const SILENT: Logger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -37,6 +37,13 @@ describe("performDaemonRestart", () => {
 		expect(order).toEqual(["stopAll", "dashboards", "spawn", "exit 0"]);
 		expect(spawned[0]![0]).toBe(process.execPath);
 		expect(spawned[0]![1]).toBe(process.argv[1]);
+	});
+
+	test("compiled daemon re-execs without passing its virtual entry as a CLI argument", () => {
+		expect(restartSpawnArgv(["bun", "/$bunfs/root/packages/agent/src/main.js", "--hub", "wss://hub.test", "--name", "m"], true))
+			.toEqual([process.execPath, "--hub", "wss://hub.test", "--name", "m"]);
+		expect(restartSpawnArgv(["bun", "/repo/packages/agent/src/main.ts", "--hub", "ws://localhost"], false))
+			.toEqual([process.execPath, "/repo/packages/agent/src/main.ts", "--hub", "ws://localhost"]);
 	});
 
 	test("a stop failure aborts the handover without spawning or exiting", async () => {

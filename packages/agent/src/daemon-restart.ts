@@ -10,6 +10,7 @@
 
 import type { Logger } from "./log";
 import { errorMessage } from "./log";
+import { isCompiledAgent } from "./native-mode";
 import type { Supervisor } from "./supervisor";
 
 export interface DaemonRestartOptions {
@@ -31,6 +32,12 @@ function spawnReplacement(argv: string[]): unknown {
 	return Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"] });
 }
 
+/** A compiled daemon is the executable itself; its virtual `$bunfs` argv[1] is not an entry argument. */
+export function restartSpawnArgv(argv: readonly string[] = process.argv, compiled = isCompiledAgent): string[] {
+	const userArgs = argv.slice(compiled ? 2 : 1);
+	return [process.execPath, ...userArgs];
+}
+
 /**
  * The restart sequence. Order matters: children must be fully stopped (their
  * session files released, transcripts flushed) BEFORE the replacement spawns,
@@ -45,7 +52,7 @@ export async function performDaemonRestart(options: DaemonRestartOptions): Promi
 	stopDashboards();
 	const spawn = options.spawnReplacement ?? spawnReplacement;
 	const exit = options.exit ?? ((code: number) => process.exit(code));
-	spawn([process.execPath, ...process.argv.slice(1)]);
+	spawn(restartSpawnArgv());
 	// Give the fork a beat to register with the OS before this process vanishes;
 	// an orphaned-but-unexeced child would leave the machine daemonless.
 	await Bun.sleep(100);
