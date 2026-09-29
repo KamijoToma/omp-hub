@@ -198,6 +198,29 @@ export class SessionStore {
 		return record;
 	}
 
+	/**
+	 * Daemon-restart recovery (protocol §2 `restart-daemon`): flips a terminal
+	 * record back to `starting` so the hub can re-issue a `start` under the SAME
+	 * id, keeping panel pages and links stable. Identity fields (cwd, name,
+	 * profile, sessionFile, superagent) survive; volatile child state (links,
+	 * pid, activity, exit fields) clears and refills from `session-ready`.
+	 * `startedAt` deliberately stays: the reconcile watermark (`startedAt <
+	 * connectedAt`) must keep treating the resumed record as pre-connection, so
+	 * later heartbeats still retire it if the resumed child dies quietly.
+	 */
+	reissue(id: string): SessionRecord | undefined {
+		const record = this.#sessions.get(id);
+		if (!record || !record.sessionFile) return record;
+		record.status = "starting";
+		record.links = undefined;
+		record.pid = undefined;
+		record.activity = undefined;
+		record.exitedAt = undefined;
+		record.exitReason = undefined;
+		record.error = undefined;
+		return record;
+	}
+
 	/** Marks every non-terminal session of a machine exited; returns the affected ids. */
 	exitSessionsFor(machineId: string, reason: string): string[] {
 		const ids: string[] = [];

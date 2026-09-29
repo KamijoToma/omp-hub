@@ -5,7 +5,7 @@
  * keeps no push channel for the registry); a poll failure is surfaced in a
  * banner but never clears the last good rows.
  */
-import { Activity, Copy, FolderClock, FolderOpen, History, LogOut, Play, Square } from "lucide-react";
+import { Activity, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
@@ -17,6 +17,7 @@ import {
 	getMachines,
 	getSessions,
 	listMachineProfiles,
+	restartDaemon,
 	startSession,
 	stopSession,
 } from "./api";
@@ -24,6 +25,7 @@ import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { historyStatus } from "./history-status";
 import { navigate } from "./router";
+import { Modal } from "./Modal";
 
 const POLL_MS = 2000;
 
@@ -46,6 +48,8 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 	const [sessions, setSessions] = useState<SessionRecord[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [machineId, setMachineId] = useState("");
+	/** Machine awaiting restart confirmation; null renders no dialog. */
+	const [confirmRestart, setConfirmRestart] = useState<MachineRecord | null>(null);
 	const [cwd, setCwd] = useState("");
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
@@ -267,6 +271,18 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 										<span className="hb-machine-name">{m.name}</span>
 										<span className="hb-machine-count">{m.sessionCount} running</span>
 										<span className="hb-machine-id">{m.machineId}</span>
+										{m.connected && !m.restarting && (
+											<button
+												type="button"
+												className="sh-btn hb-machine-restart"
+												onClick={() => setConfirmRestart(m)}
+												title="restart the machine daemon to pick up new agent code; sessions resume from their transcripts"
+											>
+												<RefreshCw size={14} aria-hidden="true" />
+												<span className="sh-btn-label">Restart daemon</span>
+											</button>
+										)}
+										{m.restarting && <span className="hb-machine-note">restarting…</span>}
 										{m.connected && (
 											<button
 												type="button"
@@ -589,6 +605,61 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 					}}
 				/>
 			)}
+			{confirmRestart && <RestartConfirmModal machine={confirmRestart} sessions={sessions} onDone={() => setConfirmRestart(null)} />}
 		</div>
+	);
+}
+
+/** Confirmation dialog for the panel daemon restart (protocol §3): names the
+ * sessions the restart bounces, warns about mid-turn runs, and surfaces the
+ * API refusal (409 already restarting, 502 offline) inline. */
+function RestartConfirmModal(props: {
+	machine: MachineRecord;
+	sessions: readonly SessionRecord[];
+	onDone(): void;
+}): ReactNode {
+	const { machine, sessions, onDone } = props;
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string | null>(null);
+	const mine = sessions.filter(s => s.machineId === machine.machineId && (s.status === "live" || s.status === "starting"));
+	const working = mine.filter(s => s.activity?.working);
+	const submit = (): void => {
+		setBusy(true);
+		setFailure(null);
+		restartDaemon(machine.machineId)
+			.then(onDone)
+			.catch(err => {
+				setBusy(false);
+				setFailure(errorText(err));
+			});
+	};
+	return (
+		<Modal title={`Restart daemon “${machine.name}”?`} onClose={onDone}>
+			<p className="hb-restart-note">
+				The machine's daemon process stops and starts again from disk to pick up new agent code.
+				Its {mine.length} session{mine.length === 1 ? "" : "s"} stop and then resume automatically
+				from their transcripts, keeping the same session ids.
+			</p>
+			{working.length > 0 && (
+				<p className="hb-restart-warning" role="alert">
+					{working.length} session{working.length === 1 ? " is" : "s are"} mid-turn — the current
+					run aborts. The transcript stays resumable up to the abort.
+				</p>
+			)}
+			{failure && (
+				<div className="sh-connect-error" role="alert">
+					{failure}
+				</div>
+			)}
+			<div className="hb-restart-actions">
+				<button type="button" className="sh-btn" onClick={onDone} disabled={busy}>
+					Cancel
+				</button>
+				<button type="button" className="sh-btn sh-btn-primary" onClick={submit} disabled={busy}>
+					<RefreshCw size={14} aria-hidden="true" />
+					{busy ? "restarting…" : "Restart daemon"}
+				</button>
+			</div>
+		</Modal>
 	);
 }

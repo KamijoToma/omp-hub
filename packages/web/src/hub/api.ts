@@ -46,6 +46,8 @@ export interface MachineRecord {
 	sessionCount: number;
 	/** Agent-reported temp directory (`os.tmpdir()`); missing from pre-0.3.0 agents. */
 	tmpdir?: string;
+	/** Daemon upgrade restart in flight; sessions resume under their old ids when it lands. */
+	restarting?: true;
 }
 
 export interface StartSessionRequest {
@@ -256,6 +258,20 @@ export async function uploadSessionFile(id: string, file: File): Promise<{ path:
 
 export async function getMachines(): Promise<MachineRecord[]> {
 	return (await api<{ machines: MachineRecord[] }>("/api/machines")).machines;
+}
+
+/**
+ * Panel-triggered daemon upgrade restart (protocol §3). Resolves with the
+ * machine once the daemon accepted the restart; the fresh daemon reconnects on
+ * its own and the hub resumes the machine's sessions under their old ids.
+ * Throws {@link HubApiError} on 404/409/502/504.
+ */
+export async function restartDaemon(machineId: string): Promise<MachineRecord> {
+	const reply = await api<{ ok: true; machine: MachineRecord }>(
+		`/api/machines/${encodeURIComponent(machineId)}/restart-daemon`,
+		{ method: "POST" },
+	);
+	return reply.machine;
 }
 
 /** Time ranges the machine's stats dashboard accepts (protocol §3 usage relay). */

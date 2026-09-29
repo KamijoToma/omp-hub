@@ -2,10 +2,17 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
-Revision **0.9.0** — adds per-session tool whitelists: `POST /api/sessions` accepts `tools`
-(§3) and `SessionRecord` echoes it, and the hub forwards `start.tools` (§2); the session
+Revision **0.9.0** — two additions. Per-session tool whitelists: `POST /api/sessions` accepts
+`tools` (§3) and `SessionRecord` echoes it, and the hub forwards `start.tools` (§2); the session
 child restricts the SDK session to exactly those tools. Optional and additive: older agents
-ignore the unknown `start` field, and an absent `tools` keeps the full default tool set.
+ignore the unknown `start` field, and an absent `tools` keeps the full default tool set. And the
+panel-triggered daemon upgrade restart: the `restart-daemon` machine command (§2) stops all
+children and self-respawns the daemon from disk, `POST /api/machines/:id/restart-daemon` (§3)
+drives it from the web panel, and the hub re-issues same-id `start`s for sessions the fresh
+daemon no longer reports (first-heartbeat reconcile against the disconnect-time snapshot).
+`MachineRecord` gains `restarting` (§3). Upgrade the hub and agent together to *use* either
+addition; older peers answer `ok:false` / ignore unknown fields, so mixed fleets degrade
+gracefully.
 
 Revision **0.8.0** — adds the superagent surface: `start.superagent` (§2) marks a session as a
 fleet operator (the child registers the fleet tools, §4 fleet-req), `POST /api/sessions` accepts
@@ -389,6 +396,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
 { t: "cmd", reqId: string, cmd: "list-profiles" }
 { t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
+{ t: "cmd", reqId: string, cmd: "restart-daemon" }               // 0.9.0+
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -436,7 +444,18 @@ interface SessionListing {
 }
 ```
 
-
+- `restart-daemon` (0.9.0+) → `data: { restarting: true }`. Panel-triggered daemon upgrade: the
+  daemon acks immediately, then stops every session child gracefully (transcripts flush), stops
+  its usage dashboards, spawns a fresh daemon from disk with the same entry point and argv, and
+  exits. The hub arms a same-id resume plan when the restarting daemon's socket drops; the fresh
+  daemon's first heartbeat reconciles against the plan and re-issues `start` frames with the SAME
+  session ids, recorded `cwd`/`name`/`profile`/`sessionFile`, and fresh links — sessions recover
+  with full history without any shell access. Children the daemon still reports (a restart frame
+  lost in transit) are never resumed against their session-file lock; sessions that die during
+  the handover keep their own terminal state. Starts the daemon receives while restarting are
+  refused with `session-error` `"daemon is restarting"`. Older daemons answer
+  `ok:false, "unknown machine command: restart-daemon"` (the hub surfaces 400). Code updates only:
+  dependency changes still need a manual install on the machine before restarting.
 
 ## 3. HTTP API (`/api/*`)
 
@@ -476,6 +495,7 @@ interface MachineRecord {
   connectedAt: number;
   sessionCount: number;       // live+starting sessions on this machine
   tmpdir?: string;            // agent os.tmpdir(); absent until a ≥0.3.0 hello
+  restarting?: true;          // 0.9.0+: daemon upgrade restart in flight (§2 `restart-daemon`)
 }
 
 interface Notice {              // 0.8.0+, in-memory only
@@ -495,6 +515,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to a machine-local omp stats dashboard; status/content-type/body replayed verbatim. `?profile=<name>` (0.5.0+) selects the named omp profile's dashboard — consumed by the hub, never forwarded in `<path>`; `default`/empty mean the default profile. 404 unknown machine, 400 invalid profile name or agent <0.5.0, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
+| `POST /api/machines/:machineId/restart-daemon` | → `{ ok: true, machine: MachineRecord }` (0.9.0+; panel-triggered daemon upgrade, §2 `restart-daemon`). 404 unknown machine, 409 `daemon restart already in progress`, 502 agent offline, 504 cmd timeout, 400 agent-reported refusal (e.g. an older daemon). The machine record carries `restarting: true` until the fresh daemon's reconciling heartbeat has replayed the same-id resumes (or the 90 s watchdog TTL expires) |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |
