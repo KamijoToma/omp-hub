@@ -6,6 +6,7 @@
  * stop every child and exit.
  */
 
+import "./profile-env-bootstrap";
 import { hostname } from "node:os";
 import { performDaemonRestart, restartFailure } from "./daemon-restart";
 import { handleFleetRequest, hubHttpBase } from "./fleet-proxy";

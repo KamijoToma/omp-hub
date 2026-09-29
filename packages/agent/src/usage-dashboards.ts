@@ -12,6 +12,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCompiledAgent } from "./native-mode";
+import { applyProfileSelection } from "./profiles";
 
 /** Minimal handle of one spawned dashboard child. */
 export interface DashboardChild {
@@ -86,13 +87,11 @@ export function spawnDashboard(profile: string): DashboardChild {
 	const child = Bun.spawn(dashboardCommand({ execPath: process.execPath, compiled: isCompiledAgent }), {
 		// The web selection fully determines the child's omp profile: ambient
 		// daemon-level OMP_PROFILE/PI_PROFILE never leaks into a profile
-		// dashboard (pi-utils/dirs resolves these before any SDK import).
+		// dashboard, and the inherited PI_CODING_AGENT_DIR goes with them
+		// (pi-utils/dirs resolves these before any SDK import).
 		env: (() => {
 			const env: Record<string, string | undefined> = { ...process.env };
-			delete env.OMP_PROFILE;
-			delete env.PI_PROFILE;
-			env.OMP_PROFILE = profile;
-			env.PI_PROFILE = profile;
+			applyProfileSelection(env, profile);
 			return env;
 		})(),
 		stdout: "pipe",

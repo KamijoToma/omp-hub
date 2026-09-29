@@ -10,7 +10,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { errorMessage, type Logger, type LogLevel } from "./log";
 import { isCompiledAgent } from "./native-mode";
-import { defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
+import { applyProfileSelection, defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
 
 /** docs/protocol.md §3 SessionStatus. */
 export type SessionStatus = "starting" | "live" | "exited" | "failed";
@@ -266,15 +266,13 @@ export class Supervisor {
 		try {
 			// The web selection fully determines the child's omp profile: ambient
 			// daemon-level OMP_PROFILE/PI_PROFILE never leaks into a session the hub
-			// started as "default", and a chosen profile overrides both. The child
-			// resolves these before any SDK import (pi-utils/dirs, module load).
+			// started as "default", and a chosen profile overrides both. The
+			// inherited PI_CODING_AGENT_DIR goes too — pi-utils honors a lone
+			// override in default mode, so it would silently point the session at
+			// another profile's agent dir. The child resolves all of this before
+			// any SDK import (pi-utils/dirs, module load).
 			const env: Record<string, string | undefined> = { ...process.env };
-			delete env.OMP_PROFILE;
-			delete env.PI_PROFILE;
-			if (profile) {
-				env.OMP_PROFILE = profile;
-				env.PI_PROFILE = profile;
-			}
+			applyProfileSelection(env, profile);
 			child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", cwd: config.cwd, env });
 		} catch (err) {
 			const message = `failed to spawn session host: ${errorMessage(err)}`;
