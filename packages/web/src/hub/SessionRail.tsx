@@ -12,14 +12,15 @@
  * live without opening the drawer. `SessionSwitcherModal` (the `/sessions`
  * slash command and Ctrl+K dialog) shares the picker body.
  */
-import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2 } from "lucide-react";
+import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
-import { deleteSession, errorText, postGenerateTitle, postRename } from "./api";
+import { deleteSession, errorText, postGenerateTitle, postRename, restartSession } from "./api";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
+import { isEndedStatus, partitionEnded, setShowEnded, useShowEnded } from "./rail-filter";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
@@ -235,8 +236,17 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 	const hitOf = (session: SessionRecord): SessionMessageHit | undefined =>
 		session.sessionFile ? msgMatches?.[session.sessionFile] : undefined;
 	const hidden = useHiddenSessions();
+	const showEnded = useShowEnded();
 	const [showHiddenRows, setShowHiddenRows] = useState(false);
-	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(filtered, hidden), [filtered, hidden]);
+	// Ended rows fold by default and sink below the active ones; the session
+	// currently on screen never folds away — its row must not vanish under
+	// the viewer.
+	const { active, ended } = useMemo(() => partitionEnded(filtered), [filtered]);
+	const ordered = useMemo(
+		() => [...active, ...(showEnded ? ended : ended.filter(row => row.id !== currentId))],
+		[active, ended, showEnded, currentId],
+	);
+	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(ordered, hidden), [ordered, hidden]);
 	const rows = showHiddenRows ? hiddenRows : visible;
 	// Two-step delete: the first click arms the row, the second (within the
 	// arm window) confirms. No modal, no accidental deletes.
@@ -267,6 +277,23 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 		[onDeleted],
 	);
 
+	// One restart in flight at a time; the row's icon spins while it runs.
+	const [restartingId, setRestartingId] = useState<string | null>(null);
+	const restart = useCallback(
+		(session: SessionRecord): void => {
+			if (restartingId !== null) return;
+			setRestartingId(session.id);
+			void restartSession(session.id).then(
+				reissued => {
+					sessionsStore.refreshSession(reissued.id);
+					pushToast("info", `restarting ${reissued.name}`);
+				},
+				(err: unknown) => pushToast("error", errorText(err)),
+			).finally(() => setRestartingId(null));
+		},
+		[restartingId],
+	);
+
 	return (
 		<>
 			<input
@@ -281,6 +308,11 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 			{sessions === null && !error && <p className="hb-empty">loading…</p>}
 			{sessions === null && error && <p className="hb-empty">{error}</p>}
 			{sessions !== null && filtered.length === 0 && <p className="hb-empty">no matching sessions</p>}
+			{ended.length > 0 && (
+				<button type="button" className="hb-hidden-toggle" onClick={() => setShowEnded(!showEnded)}>
+					{showEnded ? `showing ${ended.length} ended — back` : `${ended.length} ended — show`}
+				</button>
+			)}
 			{hiddenRows.length > 0 && (
 				<button type="button" className="hb-hidden-toggle" onClick={() => setShowHiddenRows(value => !value)}>
 					{showHiddenRows ? `showing ${hiddenRows.length} hidden — back` : `${hiddenRows.length} hidden — show`}
@@ -310,7 +342,9 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 											? "hb-nav-row-wrap hb-nav-current"
 											: isHiddenRow
 												? "hb-nav-row-wrap hb-nav-hidden"
-												: "hb-nav-row-wrap"
+												: isEndedStatus(session.status)
+													? "hb-nav-row-wrap hb-nav-ended"
+													: "hb-nav-row-wrap"
 									}
 								>
 									<button
@@ -358,6 +392,17 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 											title="rename session"
 										>
 											<Pencil size={12} aria-hidden="true" />
+										</button>
+									)}
+									{renames && isEndedStatus(session.status) && (
+										<button
+											type="button"
+											className="hb-nav-act"
+											onClick={() => restart(session)}
+											disabled={restartingId !== null}
+											title="restart session (same id; resumes its transcript)"
+										>
+											<RotateCcw size={12} className={restartingId === session.id ? "hb-spin" : undefined} aria-hidden="true" />
 										</button>
 									)}
 									{!current &&
@@ -503,6 +548,13 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
 	// expanded picker still lists them behind the "hidden" toggle.
 	const listed = useMemo(() => (sessions ?? []).filter(session => !hidden.has(session.id)), [sessions, hidden]);
+	// Collapsed strip: ended sessions stay folded (the expanded picker explains
+	// why and offers the restart); the session on screen keeps its glyph even
+	// when terminal.
+	const strip = useMemo(
+		() => listed.filter(session => !isEndedStatus(session.status) || session.id === currentId),
+		[listed, currentId],
+	);
 	const [renaming, setRenaming] = useState<SessionRecord | null>(null);
 	// The rename dialog must survive list refreshes (the poll replaces record
 	// objects), so it re-reads the fresh record by id.
@@ -594,7 +646,7 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 									</li>
 								</>
 							)}
-							{listed.map(session => (
+							{strip.map(session => (
 								<RailRow key={session.id} session={session} current={session.id === currentId} onSwitch={onSwitch} />
 							))}
 						</ul>

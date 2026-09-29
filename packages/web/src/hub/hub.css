@@ -2097,6 +2097,15 @@
 	margin-top: 4px;
 }
 
+/** Restart + back pair on the terminal status cards. */
+.hb-status-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
+	margin-top: 4px;
+}
+
 .hb-status-skel {
 	display: flex;
 	flex-direction: column;
@@ -2240,6 +2249,11 @@
 }
 
 .hb-nav-hidden {
+	opacity: 0.55;
+}
+
+/** Terminal rows shown behind the "N ended — show" fold: dimmed, sunk. */
+.hb-nav-ended {
 	opacity: 0.55;
 }
 

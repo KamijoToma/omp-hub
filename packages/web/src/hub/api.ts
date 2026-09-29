@@ -431,6 +431,16 @@ export async function stopSession(id: string): Promise<void> {
 }
 
 /**
+ * Restart a terminal session under its old id (protocol §3): the hub re-sends
+ * the stored start parameters, resuming the transcript when one exists. The
+ * returned record is the same id flipped back to `starting`.
+ */
+export async function restartSession(id: string): Promise<SessionRecord> {
+	const reply = await api<{ session: SessionRecord }>(`/api/sessions/${encodeURIComponent(id)}/restart`, { method: "POST" });
+	return reply.session;
+}
+
+/**
  * Delete a session from the hub registry (a live session is stopped first).
  * The machine-side omp session file stays; `/resume` can re-attach later.
  */

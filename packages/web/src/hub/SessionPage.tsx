@@ -12,8 +12,10 @@
  */
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDisplayName, type SessionRecord } from "./api";
+import { RotateCcw } from "lucide-react";
+import { errorText, getDisplayName, restartSession, type SessionRecord } from "./api";
 import { pushToast } from "./toasts";
+import { relTime } from "../lib/format";
 import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
@@ -52,6 +54,22 @@ function writeRailExpanded(expanded: boolean): void {
  * full-page card swap ever flashes over the shell.
  */
 function SessionStatusCard({ id, record, loadError, onHome }: { id: string; record: SessionRecord | null; loadError: string | null; onHome(): void }): ReactNode {
+	// Restart applies to the terminal branches below; `starting` needs no gate
+	// (the button is not rendered there) and a successful restart unmounts the
+	// card once the record flips live.
+	const [restarting, setRestarting] = useState(false);
+	const restart = useCallback((): void => {
+		if (restarting) return;
+		setRestarting(true);
+		void restartSession(id).then(
+			session => {
+				// Instant flip to the "starting" surface; the store poll would
+				// catch it too, but not before the next tick.
+				sessionsStore.refreshSession(session.id);
+			},
+			(err: unknown) => pushToast("error", errorText(err)),
+		).finally(() => setRestarting(false));
+	}, [id, restarting]);
 	return (
 		<div className="hb-frame-status">
 			<div className="hb-card hb-status-card">
@@ -86,18 +104,45 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 							{record.error ?? "start failed"}
 						</div>
 						<div className="hb-card-note">on {record.machineName}</div>
-						<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
-							Back to hub
-						</button>
+						<div className="hb-status-actions">
+							<button
+								type="button"
+								className="sh-btn sh-btn-primary"
+								onClick={restart}
+								disabled={restarting}
+								title="start again with the same directory and profile"
+							>
+								<RotateCcw size={13} className={restarting ? "hb-spin" : undefined} aria-hidden="true" />
+								{restarting ? "restarting…" : "Retry start"}
+							</button>
+							<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
+								Back to hub
+							</button>
+						</div>
 					</>
 				)}
 				{record?.status === "exited" && (
 					<>
-						<div className="hb-card-note">exited{record.exitReason ? ` — ${record.exitReason}` : ""}</div>
+						<div className="hb-card-note">
+							exited{record.exitReason ? ` — ${record.exitReason}` : ""}
+							{record.exitedAt ? ` · ${relTime(record.exitedAt)}` : ""}
+						</div>
 						<div className="hb-card-note">on {record.machineName}</div>
-						<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
-							Back to hub
-						</button>
+						<div className="hb-status-actions">
+							<button
+								type="button"
+								className="sh-btn sh-btn-primary"
+								onClick={restart}
+								disabled={restarting}
+								title="restart under the same id — resumes this session's transcript"
+							>
+								<RotateCcw size={13} className={restarting ? "hb-spin" : undefined} aria-hidden="true" />
+								{restarting ? "restarting…" : "Restart"}
+							</button>
+							<button type="button" className="sh-btn hb-status-back" onClick={onHome}>
+								Back to hub
+							</button>
+						</div>
 					</>
 				)}
 			</div>

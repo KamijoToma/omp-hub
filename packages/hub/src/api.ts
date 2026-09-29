@@ -5,7 +5,7 @@
 import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import { normalizeProfileName } from "./profiles";
-import type { SessionStore } from "./sessions";
+import { isTerminalStatus, type SessionStore } from "./sessions";
 import type { NoticeStore } from "./notices";
 
 export interface ApiContext {
@@ -25,6 +25,8 @@ type CmdOutcome = { readonly ok: true; readonly data: unknown } | { readonly ok:
 
 const SESSION_PATH_RE = /^\/api\/sessions\/([^/]+)$/;
 const STOP_PATH_RE = /^\/api\/sessions\/([^/]+)\/stop$/;
+/** Same-id restart of a terminal session (protocol §3). */
+const RESTART_PATH_RE = /^\/api\/sessions\/([^/]+)\/restart$/;
 const AGENT_STATE_PATH_RE = /^\/api\/sessions\/([^/]+)\/agent-state$/;
 const CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/context$/;
 const MODEL_PATH_RE = /^\/api\/sessions\/([^/]+)\/model$/;
@@ -173,6 +175,11 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const stop = STOP_PATH_RE.exec(route);
 	if (stop && req.method === "POST") {
 		return stopSession(decodeURIComponent(stop[1]!), ctx);
+	}
+
+	const restart = RESTART_PATH_RE.exec(route);
+	if (restart && req.method === "POST") {
+		return restartSession(decodeURIComponent(restart[1]!), req, ctx);
 	}
 
 	const state = AGENT_STATE_PATH_RE.exec(route);
@@ -410,6 +417,38 @@ function stopSession(id: string, ctx: ApiContext): Response {
 	// Best effort: the record flips when the agent reports session-exit.
 	ctx.agents.send(record.machineId, { t: "stop", id: record.id, reason: "user stop" });
 	return json({ ok: true });
+}
+
+/**
+ * Restart a terminal session under its old id (protocol §3): re-sends the
+ * stored start parameters — resuming the session's transcript when
+ * `session-ready` minted a `sessionFile`, a fresh start in the same
+ * cwd/profile otherwise. The frame goes out before the record flips, so a
+ * failed dispatch leaves the terminal record untouched. No new agent frame:
+ * this is the plain `start` the daemon-restart resume already speaks.
+ */
+function restartSession(id: string, req: Request, ctx: ApiContext): Response {
+	const record = ctx.sessions.get(id);
+	if (!record) return json({ error: "session not found" }, 404);
+	if (!isTerminalStatus(record.status)) return json({ error: "session is not finished" }, 409);
+	const machine = ctx.agents.getMachine(record.machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	if (!machine.connected) return json({ error: "machine offline" }, 404);
+	const base = derivePublicBase(req, ctx.cfg);
+	const dispatched = ctx.agents.send(record.machineId, {
+		t: "start",
+		id: record.id,
+		cwd: record.cwd,
+		...(record.name ? { name: record.name } : {}),
+		...(record.profile ? { profile: record.profile } : {}),
+		...(record.sessionFile ? { sessionFile: record.sessionFile } : {}),
+		...(record.tools ? { tools: record.tools } : {}),
+		...(record.superagent ? { superagent: true } : {}),
+		relayUrl: base.wsBase,
+		webUrl: base.httpBase,
+	});
+	if (!dispatched) return json({ error: "machine write failed" }, 502);
+	return json({ session: ctx.sessions.reissue(id, { requireSessionFile: false }) }, 202);
 }
 
 /**
