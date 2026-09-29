@@ -25,6 +25,7 @@ import type {
 import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
+import type { cfgCycleOrder as CfgCycleOrder } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { computeSessionContextBreakdown } from "@oh-my-pi/pi-coding-agent/session/context-usage-runtime";
 import type { ShakeMode } from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import type { SessionEntry as StoredSessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -81,6 +82,8 @@ export type CommandFrame = {
 	role?: string;
 	/** `set-model`: persist a non-default role assignment (default true). */
 	persist?: boolean;
+	/** `set-model` (0.10.0+): clear the role's persisted assignment — auto-selection applies. */
+	clearRole?: boolean;
 	/** `set-thinking` level. */
 	level?: string;
 	/** `navigate-tree` target entry. */
@@ -128,6 +131,8 @@ export type CommandFrame = {
 	target?: string;
 	/** `cycle-model` cycle direction (`forward` default). */
 	direction?: string;
+	/** `cycle-model` (0.10.0+): cycle the configured role models (`cycleOrder`) instead of the model list. */
+	roleCycle?: boolean;
 	/** `tier` target family; omitted derives from the current model. */
 	family?: string;
 	/** `tier` service-tier value (`"none"` clears). */
@@ -167,7 +172,10 @@ interface AgentModelRef extends AgentModelId {
 interface AgentRoleState {
 	role: string;
 	name: string;
+	/** Resolved assignment; `null` when neither configured nor auto-inferred. */
 	model: AgentModelId | null;
+	/** `model` came from fallback — the role has no configured value (0.10.0+). */
+	auto: boolean;
 }
 
 /** `get-state` payload (protocol §2 AgentState). */
@@ -220,6 +228,8 @@ interface CommandDeps {
 	computeSessionContextBreakdown: typeof computeSessionContextBreakdown;
 	/** Valid one-off compact mode names (contract §1). */
 	compactModes: typeof COMPACT_MODES;
+	/** Settings `cycleOrder` descriptor (`cycle-model` `roleCycle`, 0.10.0+). */
+	cfgCycleOrder: typeof CfgCycleOrder;
 	evaluateLoopCondition: typeof evaluateLoopCondition;
 	/** MCP management surface (protocol §2 `mcp-*`): config writer, test client, live manager class. */
 	mcp: {
@@ -354,19 +364,43 @@ function resolveModelSelector(
  * Chat-section roles with their resolved assignment. Kind roles (image/web/
  * speech/…) select non-chat models the web picker never lists, so they stay
  * host-only. The default role resolves to the active model when unconfigured.
+ * Exported for tests (same as `executeCommand`).
  */
-function agentRoles(session: AgentSession, available: Model[], deps: CommandDeps): AgentRoleState[] {
+export function agentRoles(session: AgentSession, available: Model[], deps: CommandDeps): AgentRoleState[] {
 	const roles: AgentRoleState[] = [];
+	const matchPreferences = deps.modelResolver.getModelMatchPreferences(session.settings);
 	for (const role of deps.modelRoles.getKnownRoleIds(session.settings)) {
 		const info = deps.modelRoles.getRoleInfo(role, session.settings);
 		if (info.section !== "chat") continue;
+		const configured = session.settings.getModelRole(role);
 		const resolved = deps.roleModels.resolveRoleModelFull(session.settings, role, available, session.model ?? undefined);
+		let model = resolved.model ?? null;
+		// No configured value but a resolved model ⇒ auto-selection (TUI parity):
+		// `default` falls back to the active session model, the rest fall through
+		// to the priority/auto-selection expansion below.
+		let auto = configured === undefined && model !== null;
+		if (!model && configured === undefined && role !== "default") {
+			// Unconfigured role (0.10.0): mirror the TUI model hub's auto-selection —
+			// expand the legacy `pi/<role>` alias over the accepts-filtered pool,
+			// which walks the role's fallback chain (configured-role fallbacks →
+			// default inheritance → priority lists) instead of reporting null.
+			const inferred = deps.modelResolver.resolveModelRoleValue(
+				`${deps.modelRoles.LEGACY_MODEL_ROLE_ALIAS_PREFIX}${role}`,
+				available.filter(info.accepts),
+				{ settings: session.settings, matchPreferences },
+			);
+			if (inferred.model) {
+				model = inferred.model;
+				auto = true;
+			}
+		}
 		roles.push({
 			role,
 			name: info.name || role,
-			model: resolved.model
-				? { provider: resolved.model.provider, id: resolved.model.id, name: resolved.model.name ?? resolved.model.id }
+			model: model
+				? { provider: model.provider, id: model.id, name: model.name ?? model.id }
 				: null,
+			auto,
 		});
 	}
 	return roles;
@@ -378,6 +412,40 @@ function parseRole(role: string | undefined): string {
 	const trimmed = role.trim();
 	if (trimmed === "" || trimmed.length > 64) throw new Error(`invalid model role: ${JSON.stringify(role)}`);
 	return trimmed;
+}
+
+/**
+ * `set-model` `clearRole` (0.10.0+): drop the role's persisted assignment so
+ * auto-selection applies (TUI unassign parity). The value is cleared on the
+ * layer that supplies it (project shadows global); a `default` clear then
+ * mirrors the TUI by switching the live session to any newly exposed
+ * persisted value — without writing settings back. Returns whether the
+ * active model changed.
+ */
+async function clearModelRole(session: AgentSession, role: string, deps: CommandDeps): Promise<boolean> {
+	const settings = session.settings;
+	// Effective value before the clear; a default clear that exposes the same
+	// value must not churn the live session (TUI parity).
+	const previous = role === "default" ? settings.getModelRole("default") : undefined;
+	if (settings.getProjectModelRole(role) !== undefined) settings.clearProjectModelRole(role);
+	else settings.setModelRole(role, undefined);
+	if (role !== "default") return false;
+	// Clearing the default can expose a persisted project/global value that now
+	// rules; resolve it and move the active model without persisting anything.
+	const fallbackValue = settings.getModelRole("default");
+	const provenance = settings.getModelRoleProvenance("default");
+	if (!fallbackValue || fallbackValue === previous) return false;
+	if (provenance !== "project" && provenance !== "global") return false;
+	const scoped = session.scopedModels.map(entry => entry.model);
+	const available = scoped.length > 0 ? scoped : session.getAvailableModels();
+	const resolved = deps.modelResolver.resolveModelRoleValue(fallbackValue, available, { settings });
+	if (!resolved.model) return false;
+	const level = resolved.explicitThinkingLevel
+		? deps.parseThinkingLevel(String(resolved.thinkingLevel ?? ""))
+		: undefined;
+	const { switched } = await session.setModel(resolved.model, "default", { persist: false });
+	if (switched && level !== undefined) session.setThinkingLevel(level);
+	return switched;
 }
 
 /** Preview cap per `get-tree` node, in characters after whitespace folding. */
@@ -869,6 +937,13 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 			// labels only — no prompt text and no model object cross this boundary.
 			return sessionContextPayload(deps.computeSessionContextBreakdown(session));
 		case "set-model": {
+			// 0.10.0 `clearRole`: unassign the role (auto-selection applies) instead
+			// of switching; `provider`/`modelId` are ignored on this path.
+			if (frame.clearRole === true) {
+				const role = parseRole(frame.role);
+				const switched = await clearModelRole(session, role, deps);
+				return { switched, role, thinkingLevel: session.thinkingLevel ?? null };
+			}
 			const { provider, modelId } = frame;
 			if (!provider || !modelId) throw new Error("set-model requires provider and modelId");
 			const role = parseRole(frame.role);
@@ -1245,6 +1320,19 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 			if (direction !== "forward" && direction !== "backward") {
 				throw new Error(`invalid cycle direction: ${String(frame.direction)}`);
 			}
+			// 0.10.0 `roleCycle`: TUI ctrl+p parity — cycle the configured role
+			// models in settings `cycleOrder` order (default smol → default → slow)
+			// instead of the model list; unresolvable roles are skipped and a
+			// single-entry cycle reports `switched: false`.
+			if (frame.roleCycle === true) {
+				const cycled = await session.cycleRoleModels(deps.cfgCycleOrder.get(session.settings), direction);
+				if (!cycled) return { switched: false, model: null, thinkingLevel: null };
+				return {
+					switched: true,
+					model: { provider: cycled.model.provider, id: cycled.model.id, name: cycled.model.name ?? cycled.model.id },
+					thinkingLevel: cycled.thinkingLevel ?? null,
+				};
+			}
 			const result = await session.cycleModel(direction);
 			if (!result) return { switched: false, model: null, thinkingLevel: null };
 			return {
@@ -1509,6 +1597,7 @@ async function run(): Promise<void> {
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
 	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
+	const { cfgCycleOrder } = await import("@oh-my-pi/pi-coding-agent/config/model-settings");
 	const mcpConfig = await import("@oh-my-pi/pi-coding-agent/mcp/config-writer");
 	const mcpClient = await import("@oh-my-pi/pi-coding-agent/mcp/client");
 	const { MCPManager } = await import("@oh-my-pi/pi-coding-agent/mcp/manager");
@@ -1531,6 +1620,7 @@ async function run(): Promise<void> {
 		roleModels,
 		computeSessionContextBreakdown,
 		compactModes: COMPACT_MODES,
+		cfgCycleOrder,
 		evaluateLoopCondition,
 		mcp: { config: mcpConfig, client: mcpClient, manager: MCPManager, configPath: getMCPConfigPath },
 		cfgExtendedContext,

@@ -650,10 +650,6 @@ async function sessionContext(id: string, ctx: ApiContext): Promise<Response> {
 async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Response> {
 	const body = await jsonBody(req);
 	if (body === null) return json({ error: "invalid json body" }, 400);
-	const provider = field(body, "provider");
-	if (!provider || provider.trim() === "") return json({ error: "provider is required" }, 400);
-	const modelId = field(body, "modelId");
-	if (!modelId || modelId.trim() === "") return json({ error: "modelId is required" }, 400);
 	const role = field(body, "role");
 	if (role !== undefined && (role.trim() === "" || role.length > 64)) {
 		return json({ error: "invalid role" }, 400);
@@ -662,10 +658,34 @@ async function setModel(id: string, req: Request, ctx: ApiContext): Promise<Resp
 	if (persist !== undefined && typeof persist !== "boolean") {
 		return json({ error: "persist must be a boolean" }, 400);
 	}
+	const clearRole = body["clearRole"];
+	if (clearRole !== undefined && typeof clearRole !== "boolean") {
+		return json({ error: "clearRole must be a boolean" }, 400);
+	}
 	const level = field(body, "level");
 	if (level !== undefined && level.trim() === "") {
 		return json({ error: "invalid level" }, 400);
 	}
+
+	// 0.10.0 `clearRole` unassigns the role: `role` carries the target and
+	// `provider`/`modelId` are meaningless on this path.
+	if (clearRole === true) {
+		if (role === undefined) return json({ error: "role is required with clearRole" }, 400);
+		const outcome = await dispatchCmd(id, "set-model", { role, clearRole: true }, ctx);
+		return outcome.ok
+			? json({
+					ok: true,
+					switched: pick(outcome.data, "switched") ?? false,
+					role: pick(outcome.data, "role") ?? role,
+					thinkingLevel: pick(outcome.data, "thinkingLevel") ?? null,
+				})
+			: outcome.response;
+	}
+
+	const provider = field(body, "provider");
+	if (!provider || provider.trim() === "") return json({ error: "provider is required" }, 400);
+	const modelId = field(body, "modelId");
+	if (!modelId || modelId.trim() === "") return json({ error: "modelId is required" }, 400);
 
 	const outcome = await dispatchCmd(id, "set-model", {
 		provider,
@@ -1116,7 +1136,7 @@ async function sessionPause(id: string, req: Request, ctx: ApiContext): Promise<
 
 const CYCLE_DIRECTIONS: Record<string, true> = { forward: true, backward: true };
 
-/** Cycle through the session's model list (protocol §2 `cycle-model`, 0.9.0+). */
+/** Cycle the session's model list or configured role models (protocol §2 `cycle-model`, 0.9.0+; `roleCycle` 0.10.0+). */
 async function sessionCycle(id: string, req: Request, ctx: ApiContext): Promise<Response> {
 	const body = await jsonBody(req);
 	if (body === null) return json({ error: "invalid json body" }, 400);
@@ -1124,8 +1144,15 @@ async function sessionCycle(id: string, req: Request, ctx: ApiContext): Promise<
 	if (direction !== undefined && !CYCLE_DIRECTIONS[direction]) {
 		return json({ error: "direction must be forward or backward" }, 400);
 	}
+	const roleCycle = body["roleCycle"];
+	if (roleCycle !== undefined && typeof roleCycle !== "boolean") {
+		return json({ error: "roleCycle must be a boolean" }, 400);
+	}
 
-	const outcome = await dispatchCmd(id, "cycle-model", direction === undefined ? {} : { direction }, ctx);
+	const outcome = await dispatchCmd(id, "cycle-model", {
+		...(direction === undefined ? {} : { direction }),
+		...(roleCycle === true ? { roleCycle: true } : {}),
+	}, ctx);
 	return outcome.ok
 		? json({ ok: true, ...pickRecord(outcome.data, ["switched", "model", "thinkingLevel"]) })
 		: outcome.response;

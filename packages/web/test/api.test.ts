@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	clearModelRole,
 	clearToken,
 	deleteSession,
 	getMachineSessions,
@@ -16,6 +17,7 @@ import {
 	listMachineProfiles,
 	navigateTree,
 	postCompact,
+	postCycle,
 	postExtendedContext,
 	postGoal,
 	postHandoff,
@@ -242,6 +244,28 @@ describe("hub api", () => {
 			persist: false,
 		});
 		expect(result).toEqual({ switched: true, role: "smol", thinkingLevel: null });
+	});
+
+	test("clearModelRole posts the role with clearRole and unwraps the reply", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, switched: false, role: "smol", thinkingLevel: null }));
+
+		const result = await clearModelRole("s1", "smol");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/model");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ role: "smol", clearRole: true });
+		expect(result).toEqual({ switched: false, thinkingLevel: null });
+	});
+
+	test("postCycle forwards the roleCycle flag", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, switched: true, model: { provider: "openai", id: "gpt-5", name: "GPT-5" }, thinkingLevel: null }));
+
+		const result = await postCycle("s1", { direction: "forward", roleCycle: true });
+
+		expect(calls[0].url).toBe("/api/sessions/s1/cycle");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ direction: "forward", roleCycle: true });
+		expect(result).toEqual({ switched: true, model: { provider: "openai", id: "gpt-5", name: "GPT-5" }, thinkingLevel: null });
 	});
 
 	test("navigateTree posts the target entry and unwraps the move result", async () => {

@@ -946,6 +946,61 @@
 	border-color: var(--accent);
 }
 
+.hb-role-current {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	padding: 4px 2px;
+	font-size: 12px;
+}
+
+.hb-role-current-label {
+	flex: none;
+	color: var(--fg-muted);
+}
+
+.hb-role-current-model {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg);
+}
+
+.hb-role-auto {
+	flex: none;
+	margin-left: 6px;
+	padding: 1px 5px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	font: 400 10px / 1.4 var(--font-ui);
+	color: var(--fg-faint);
+}
+
+.hb-role-clear {
+	flex: none;
+	padding: 2px 8px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: none;
+	font-size: 11px;
+	color: var(--fg-muted);
+	cursor: pointer;
+}
+
+.hb-role-clear:hover:not(:disabled) {
+	color: var(--fg);
+	border-color: var(--border-strong);
+}
+
+.hb-role-clear:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
 .hb-rewind-list {
 	display: flex;
 	flex-direction: column;

@@ -92,6 +92,8 @@ export interface AgentRole {
 	name: string;
 	/** Currently assigned model; `null` when the role is unconfigured. */
 	model: AgentModel | null;
+	/** `model` is auto-selected — the role has no configured value (0.10.0+ agents). */
+	auto?: boolean;
 }
 
 /** Agent-side session state behind the slash-command pickers (docs/protocol.md §2). */
@@ -502,6 +504,23 @@ export async function setModel(
 	return { switched: reply.switched, role: reply.role, thinkingLevel: reply.thinkingLevel };
 }
 
+/**
+ * Clear a role's persisted model assignment (agent `set-model` `clearRole`,
+ * 0.10.0+): auto-selection applies. `switched` reports whether the active
+ * model moved — only possible when clearing `default` onto an exposed
+ * persisted value.
+ */
+export async function clearModelRole(
+	id: string,
+	role: string,
+): Promise<{ switched: boolean; thinkingLevel: string | null }> {
+	const reply = await api<{ ok: true; switched: boolean; role: string; thinkingLevel: string | null }>(
+		`/api/sessions/${encodeURIComponent(id)}/model`,
+		{ method: "POST", body: JSON.stringify({ role, clearRole: true }) },
+	);
+	return { switched: reply.switched, thinkingLevel: reply.thinkingLevel };
+}
+
 /** Result of moving the session tree leaf (rewind). */
 export interface NavigateTreeResult {
 	/** A session hook cancelled the navigation; the tree is unchanged. */
@@ -834,11 +853,13 @@ export async function postPause(id: string, opts: { enabled?: boolean } = {}): P
 
 /**
  * Cycle to the next (default) or previous model in the session's list (agent
- * `cycle-model`); `switched: false` when there is nothing to cycle to.
+ * `cycle-model`); `roleCycle` cycles the configured role models in
+ * `cycleOrder` order instead (0.10.0+ agents); `switched: false` when there
+ * is nothing to cycle to.
  */
 export async function postCycle(
 	id: string,
-	opts: { direction?: "forward" | "backward" } = {},
+	opts: { direction?: "forward" | "backward"; roleCycle?: boolean } = {},
 ): Promise<{ switched: boolean; model: { provider: string; id: string; name: string } | null; thinkingLevel: string | null }> {
 	const reply = await api<{
 		ok: true;

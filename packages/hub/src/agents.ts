@@ -155,6 +155,8 @@ export interface CmdRequest {
 	role?: string;
 	/** `set-model`: persist a non-default role assignment (default true). */
 	persist?: boolean;
+	/** `set-model` (0.10.0+): clear the role's persisted assignment — auto-selection applies. */
+	clearRole?: boolean;
 	/** `navigate-tree` target entry (protocol §2). */
 	entryId?: string;
 	/** `navigate-tree`: build a branch summary (default false). */
@@ -188,6 +190,8 @@ export interface CmdRequest {
 	tier?: string;
 	/** `cycle-model` traversal direction; omitted means `"forward"` (protocol §2, 0.9.0+). */
 	direction?: string;
+	/** `cycle-model` (0.10.0+): cycle the configured role models (`cycleOrder`) instead of the model list. */
+	roleCycle?: boolean;
 	/** `set-setting` descriptor id (protocol §2, 0.9.0+). */
 	settingId?: string;
 	/** `set-setting` override value (JSON-safe); `null` clears it (protocol §2, 0.9.0+). */
