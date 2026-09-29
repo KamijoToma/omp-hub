@@ -53,6 +53,10 @@ export type AgentCommand =
 			sessionFile?: string;
 			/** Fleet-operator session (protocol §2): the child registers the fleet tools. */
 			superagent?: boolean;
+			/** One-shot prewalk hand-off at startup (0.9.0+): true = SDK default target, or an explicit model/role pattern. */
+			prewalk?: boolean | string;
+			/** One-shot plan-mode hand-off at startup (0.9.0+): true = SDK default target, or an explicit model/role pattern. */
+			planYolo?: boolean | string;
 			relayUrl: string;
 			webUrl: string;
 	  }
@@ -85,7 +89,15 @@ export type SessionCmdName =
 	| "mcp-remove"
 	| "mcp-set-enabled"
 	| "mcp-test"
-	| "prompt";
+	| "prompt"
+	| "prewalk"
+	| "plan"
+	| "advisor"
+	| "tier"
+	| "pause"
+	| "cycle-model"
+	| "get-settings"
+	| "set-setting";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
@@ -158,6 +170,18 @@ export interface CmdRequest {
 	enabled?: boolean;
 	/** `prompt` message text delivered to the session (protocol §2). */
 	text?: string;
+	/** `prewalk` target: a role alias (`@smol`) or provider/model pattern (protocol §2, 0.9.0+). */
+	target?: string;
+	/** `tier` provider family (protocol §2, 0.9.0+). */
+	family?: string;
+	/** `tier` service tier within the family (protocol §2, 0.9.0+). */
+	tier?: string;
+	/** `cycle-model` traversal direction; omitted means `"forward"` (protocol §2, 0.9.0+). */
+	direction?: string;
+	/** `set-setting` descriptor id (protocol §2, 0.9.0+). */
+	settingId?: string;
+	/** `set-setting` override value (JSON-safe); `null` clears it (protocol §2, 0.9.0+). */
+	value?: unknown;
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */

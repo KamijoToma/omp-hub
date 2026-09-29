@@ -38,6 +38,10 @@ export interface StartFrame {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — the child registers the fleet tools and may issue `fleet-req`. */
 	superagent?: boolean;
+	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */
+	prewalk?: boolean | string;
+	/** 0.9.0: start in plan mode with the hand-off target; `true` = `@smol`, a string = explicit pattern. */
+	planYolo?: boolean | string;
 	relayUrl: string;
 	webUrl: string;
 }

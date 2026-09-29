@@ -57,6 +57,14 @@ export interface StartSessionRequest {
 	sessionFile?: string;
 	/** Start a fleet-operator session (protocol §2 `start.superagent`). */
 	superagent?: boolean;
+	/**
+	 * Arm the one-shot prewalk hand-off at startup (protocol §2 `start.prewalk`,
+	 * 0.9.0+): `true` targets the SDK default (`@smol`), a string is an explicit
+	 * model/role pattern.
+	 */
+	prewalk?: boolean | string;
+	/** Arm plan mode's one-shot model hand-off at startup (protocol §2, 0.9.0+). */
+	planYolo?: boolean | string;
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -99,6 +107,55 @@ export interface AgentState {
 	goal: GoalModeState | null;
 	/** Loop-controller status; null when the loop is disabled. */
 	loop: LoopStatus | null;
+	/** Armed one-shot model hand-off; null when disarmed (0.9.0+). */
+	prewalk: PrewalkState | null;
+	/** Plan-mode state; null when the SDK reports none (0.9.0+). */
+	plan: PlanState | null;
+	/** Second-model advisor toggle (0.9.0+). */
+	advisor: { enabled: boolean };
+	/** Process-wide pause gate for this child (0.9.0+). */
+	paused: boolean;
+	/** Applied service tiers, provider family → tier (0.9.0+). */
+	tiers: Record<string, string>;
+}
+
+/** Armed prewalk hand-off (agent `get-state.prewalk`, protocol §2). */
+export interface PrewalkState {
+	provider: string;
+	id: string;
+	name: string;
+	thinkingLevel: string | null;
+}
+
+/** Plan-mode state (agent `get-state.plan`, protocol §2). */
+export interface PlanState {
+	enabled: boolean;
+	planFilePath: string;
+	/** `"parallel"` | `"iterative"` when the SDK reports one. */
+	workflow: string | null;
+}
+
+/** One allowlisted session setting (agent `get-settings`, protocol §2). */
+export interface SettingWire {
+	/** Descriptor id, e.g. `"compaction.thresholdPercent"`. */
+	id: string;
+	/** JSON-safe current value (override wins over config). */
+	value: unknown;
+	/** Descriptor default; null when none. */
+	defaultValue: unknown;
+	/** `"boolean" | "enum" | "number" | "string" | "array" | "record"`. */
+	type: string;
+	/** Enum settings only: allowed values in order. */
+	values?: string[];
+	/** TUI `/settings` tab hint, e.g. `"context"`. */
+	tab?: string;
+	/** TUI `/settings` group hint, e.g. `"Compaction"`. */
+	group?: string;
+	description: string;
+	/** Present in user/project config. */
+	configured: boolean;
+	/** Session runtime override active. */
+	overridden: boolean;
 }
 
 /** The session's tracked goal object (agent `get-state.goal.goal`). */
@@ -338,6 +395,8 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	if (input.superagent) body.superagent = true;
+	if (input.prewalk !== undefined) body.prewalk = input.prewalk;
+	if (input.planYolo !== undefined) body.planYolo = input.planYolo;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -663,6 +722,130 @@ export async function postExtendedContext(id: string, opts: { enabled?: boolean 
 		{ method: "POST", body: JSON.stringify(opts) },
 	);
 	return reply.extendedContext;
+}
+
+/** Result of arming the prewalk hand-off (agent `prewalk`, protocol §2). */
+export interface PrewalkResult {
+	/** Present on `arm`: false means a no-op (target equals the active model). */
+	armed?: boolean;
+	/** Present on `restart`: `"armed"` | `"reset"` | `"rejected"`. */
+	result?: "armed" | "reset" | "rejected";
+	prewalk: PrewalkState | null;
+}
+
+/**
+ * Drive the one-shot prewalk hand-off (agent `prewalk`, TUI `/prewalk` parity):
+ * `arm` resolves `target` (a role alias like `@smol` — the default — or a
+ * provider/model pattern) and arms the hand-off; `restart` restores the
+ * pre-prewalk model and re-arms; bare reports the armed state.
+ */
+export async function postPrewalk(
+	id: string,
+	opts: { action?: "arm" | "restart" | "state"; target?: string } = {},
+): Promise<PrewalkResult> {
+	const reply = await api<{ ok: true } & PrewalkResult>(`/api/sessions/${encodeURIComponent(id)}/prewalk`, {
+		method: "POST",
+		body: JSON.stringify(opts),
+	});
+	return { armed: reply.armed, result: reply.result, prewalk: reply.prewalk };
+}
+
+/**
+ * Drive plan mode (agent `plan`, TUI `/plan` parity): `enable` activates
+ * read-only plan mode from the next prompt, `disable` clears it, bare reports.
+ */
+export async function postPlan(
+	id: string,
+	opts: { action?: "enable" | "disable" | "status"; planFilePath?: string } = {},
+): Promise<PlanState | null> {
+	const reply = await api<{ ok: true; plan: PlanState | null }>(`/api/sessions/${encodeURIComponent(id)}/plan`, {
+		method: "POST",
+		body: JSON.stringify(opts),
+	});
+	return reply.plan;
+}
+
+/**
+ * Drive the second-model advisor (agent `advisor`): `enable` discovers the
+ * SDK's advisor configs and turns it on (fails with none), `disable` turns it
+ * off, bare reports. Returns the enabled flag and the discovered advisor names.
+ */
+export async function postAdvisor(
+	id: string,
+	opts: { action?: "enable" | "disable" | "status" } = {},
+): Promise<{ enabled: boolean; advisors: string[] }> {
+	const reply = await api<{ ok: true; enabled: boolean; advisors: string[] }>(
+		`/api/sessions/${encodeURIComponent(id)}/advisor`,
+		{ method: "POST", body: JSON.stringify(opts) },
+	);
+	return { enabled: reply.enabled, advisors: reply.advisors };
+}
+
+/**
+ * Set or report a service tier (agent `tier`, TUI `/fast` / `/slow` parity):
+ * `set` applies `tier` to `family` (`openai | anthropic | google`, omitted =
+ * the current model's family); `"none"` clears. Bare reports all applied tiers.
+ */
+export async function postTier(
+	id: string,
+	opts: { action?: "set" | "status"; family?: string; tier?: string } = {},
+): Promise<Record<string, string>> {
+	const reply = await api<{ ok: true; tiers: Record<string, string> }>(`/api/sessions/${encodeURIComponent(id)}/tier`, {
+		method: "POST",
+		body: JSON.stringify(opts),
+	});
+	return reply.tiers;
+}
+
+/**
+ * Freeze or resume the session's agent loop (agent `pause`); omit `enabled`
+ * to toggle. Returns the resulting state.
+ */
+export async function postPause(id: string, opts: { enabled?: boolean } = {}): Promise<boolean> {
+	const reply = await api<{ ok: true; paused: boolean }>(`/api/sessions/${encodeURIComponent(id)}/pause`, {
+		method: "POST",
+		body: JSON.stringify(opts),
+	});
+	return reply.paused;
+}
+
+/**
+ * Cycle to the next (default) or previous model in the session's list (agent
+ * `cycle-model`); `switched: false` when there is nothing to cycle to.
+ */
+export async function postCycle(
+	id: string,
+	opts: { direction?: "forward" | "backward" } = {},
+): Promise<{ switched: boolean; model: { provider: string; id: string; name: string } | null; thinkingLevel: string | null }> {
+	const reply = await api<{
+		ok: true;
+		switched: boolean;
+		model: { provider: string; id: string; name: string } | null;
+		thinkingLevel: string | null;
+	}>(`/api/sessions/${encodeURIComponent(id)}/cycle`, { method: "POST", body: JSON.stringify(opts) });
+	return { switched: reply.switched, model: reply.model, thinkingLevel: reply.thinkingLevel };
+}
+
+/**
+ * The hub-curated allowlist of the agent's typed settings with current values
+ * (agent `get-settings`, 0.9.0+). Error set mirrors {@link getAgentState}.
+ */
+export async function getSessionSettings(id: string): Promise<SettingWire[]> {
+	const reply = await api<{ ok: true; settings: SettingWire[] }>(`/api/sessions/${encodeURIComponent(id)}/settings`);
+	return reply.settings;
+}
+
+/**
+ * Apply a session-scoped runtime override for one allowlisted setting (agent
+ * `set-setting`, 0.9.0+); `value: null` clears the override. Overrides never
+ * persist to `settings.json` and die with the session.
+ */
+export async function postSessionSetting(id: string, settingId: string, value: unknown): Promise<SettingWire> {
+	const reply = await api<{ ok: true; setting: SettingWire }>(`/api/sessions/${encodeURIComponent(id)}/settings`, {
+		method: "POST",
+		body: JSON.stringify({ settingId, value }),
+	});
+	return reply.setting;
 }
 
 /** Renames a live session (§2 `rename`); returns the hub's applied name. */

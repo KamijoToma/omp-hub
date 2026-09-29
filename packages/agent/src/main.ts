@@ -207,6 +207,8 @@ async function main(): Promise<void> {
 					profile: frame.profile,
 					sessionFile: frame.sessionFile,
 					superagent: frame.superagent === true ? true : undefined,
+					prewalk: frame.prewalk,
+					planYolo: frame.planYolo,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})

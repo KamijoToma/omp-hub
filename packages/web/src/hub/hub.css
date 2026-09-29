@@ -682,6 +682,55 @@
 	overflow-wrap: anywhere;
 }
 
+/* ---- settings: advanced view ---- */
+.hb-setting-row {
+	align-items: flex-start;
+}
+
+.hb-setting-info {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.hb-setting-id {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font: 400 12px / 1.4 var(--font-mono);
+	color: var(--fg);
+}
+
+.hb-setting-override {
+	padding: 0 4px;
+	font: 400 10px / 1.5 var(--font-mono);
+	color: var(--accent);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+
+.hb-setting-desc {
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--fg-faint);
+	overflow-wrap: anywhere;
+}
+
+.hb-setting-control {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 6px;
+	max-width: 50%;
+}
+
+.hb-setting-control .sh-input {
+	min-width: 0;
+	width: 160px;
+}
+
 /* ---- slash commands: pickers ---- */
 .hb-search {
 	position: relative;
