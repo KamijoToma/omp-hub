@@ -278,6 +278,50 @@ describe("daemon upgrade restart", () => {
 		expect((await machineJson("m4")).restarting).toBeUndefined();
 	});
 
+	test("resumes children the daemon stopped during its upgrade", async () => {
+		// Real daemon flow: stopAll makes every child send `session-exit` BEFORE
+		// the socket handover, so the records are terminal (reason "daemon
+		// upgrade") by the time the fresh daemon connects.
+		const agent = await connectAgent("m5", "stopping");
+		const live = await liveSession(agent, "m5");
+
+		const acceptedPromise = api("/api/machines/m5/restart-daemon", { method: "POST" });
+		const cmd = await agent.wait((frame) => (frame.t === "cmd" && frame.cmd === "restart-daemon" ? frame : undefined), "restart cmd");
+		agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true, data: {} }));
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: live.id, code: 0, reason: "daemon upgrade" }));
+		agent.ws.close(1000);
+		await acceptedPromise;
+
+		const fresh = await connectFreshDaemon("m5", "stopping");
+		const replay = await fresh.wait((frame) => (frame.t === "start" ? frame : undefined), "replayed start frame");
+		expect(replay.id).toBe(live.id);
+		fresh.ws.send(JSON.stringify({ t: "session-ready", id: replay.id, sessionFile: SESSION_FILE, pid: 4245, links: LINKS_B }));
+		expect((await waitForStatus(live.id, "live")).links?.full).toBe(LINKS_B.full);
+	});
+
+	test("leaves sessions the operator stopped in the window alone", async () => {
+		const agent = await connectAgent("m6", "operator-stop");
+		const live = await liveSession(agent, "m6");
+
+		const acceptedPromise = api("/api/machines/m6/restart-daemon", { method: "POST" });
+		const cmd = await agent.wait((frame) => (frame.t === "cmd" && frame.cmd === "restart-daemon" ? frame : undefined), "restart cmd");
+		agent.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true, data: {} }));
+		// The operator stops it mid-window: a reason that is not the handover's.
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: live.id, code: 0, reason: "user stop" }));
+		agent.ws.close(1000);
+		await acceptedPromise;
+
+		const fresh = await connectFreshDaemon("m6", "operator-stop");
+		await fresh
+			.wait((frame) => (frame.t === "start" ? frame : undefined), "unexpected start frame", 300)
+			.then(() => {
+				throw new Error("resumed a session the operator stopped");
+			})
+			.catch((err: Error) => {
+				expect(err.message).toContain("timeout waiting");
+			});
+	});
+
 	test("restarting an offline machine is 502", async () => {
 		const offline = await api("/api/machines/never-connected/restart-daemon", { method: "POST" });
 		expect(offline.status).toBe(404);
