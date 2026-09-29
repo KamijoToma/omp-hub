@@ -51,6 +51,12 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
   fleet controls scoped to a required namespace; superagents use fleet-only
   tools to start, stop and message other sessions. An empty whitelist keeps the
   default tool set for ordinary sessions.
+- **Find fleet evidence:** Superagents can search their namespace's live and terminal
+  transcripts, including tool arguments/results, with time, role, tool, source and
+  argument-field filters. Read a hit directly with `fleet_get_message`, including
+  nonadjacent paired results and continuations of long output. Global pages have
+  snapshot cursors and explicit partial coverage; see [the fleet protocol](docs/protocol.md).
+  Namespace search/context requires agent 0.15.0+; restart upgraded daemons to load it.
 - **Operate the fleet:** See machine usage and restart an agent daemon from the dashboard to load
   new code: its session children stop and resume from saved transcripts under their existing IDs.
   The authenticated hub restart API hands over machine/session records from `hub-state.json` (the

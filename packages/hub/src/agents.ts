@@ -108,6 +108,7 @@ export type SessionCmdName =
 	| "get-settings"
 	| "fleet-get-messages"
 	| "fleet-search-messages"
+	| "fleet-get-message"
 	| "fleet-get-input"
 	| "fleet-answer-input"
 	| "fleet-message"
@@ -116,7 +117,7 @@ export type SessionCmdName =
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "search-session-messages" | "get-subscriptions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "search-session-messages" | "read-session-message" | "get-subscriptions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -213,6 +214,21 @@ export interface CmdRequest {
 	/** Fleet message-search time bounds (ISO-8601 timestamps with timezone). */
 	from?: string;
 	to?: string;
+	/** Fleet 0.15 content-part filters and frozen global-search boundaries. */
+	roles?: string[];
+	toolNames?: string[];
+	sources?: string[];
+	fields?: string[];
+	snapshotLeafId?: string | null;
+	searchOrder?: "timestamp";
+	searchBefore?: { timestamp: string; sequence: number };
+	/** Inclusive branch message context and bounded visible-content continuation. */
+	messageId?: string;
+	before?: number;
+	after?: number;
+	leafId?: string;
+	toolCallId?: string;
+	contentCursor?: string;
 	requestId?: string;
 	answer?: string;
 	clearQueue?: boolean;
@@ -369,6 +385,13 @@ export function supportsFleetMessageSearch(version: string | null): boolean {
 	if (version === null) return false;
 	const triple = versionTriple(version);
 	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 14));
+}
+
+/** Namespace snapshots, content-part filters, and message context require 0.15.0+. */
+export function supportsFleetSearchContext(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 15));
 }
 
 function parseLinks(value: unknown): SessionLinks | undefined {

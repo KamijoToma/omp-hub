@@ -42,7 +42,7 @@ import type * as ServiceTierConfig from "@oh-my-pi/pi-coding-agent/config/servic
 import type * as AdvisorDiscovery from "@oh-my-pi/pi-coding-agent/advisor/config";
 import type * as SettingsGateway from "./settings-gateway";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
-import { createFleetClient, pageFleetMessages, searchFleetMessages } from "./fleet-client";
+import { createFleetClient, getFleetMessage, pageFleetMessages, searchFleetMessages } from "./fleet-client";
 import { buildFleetTools } from "./fleet-tools";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
@@ -138,6 +138,21 @@ export type CommandFrame = {
 	query?: string;
 	from?: string;
 	to?: string;
+	/** Fleet search filters and hub-owned namespace pagination snapshot. */
+	roles?: string[];
+	toolNames?: string[];
+	sources?: string[];
+	fields?: string[];
+	snapshotLeafId?: string | null;
+	searchOrder?: "timestamp";
+	searchBefore?: { timestamp: string; sequence: number };
+	/** Fleet anchored message context and full visible-content continuation. */
+	messageId?: string;
+	before?: number;
+	after?: number;
+	leafId?: string;
+	toolCallId?: string;
+	contentCursor?: string;
 	/** Fleet UI response correlation. */
 	requestId?: string;
 	answer?: string;
@@ -1195,6 +1210,13 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 		case "fleet-search-messages":
 			return searchFleetMessages(session.sessionManager, {
 				query: frame.query, from: frame.from, to: frame.to, cursor: frame.cursor, limit: frame.pageLimit,
+				roles: frame.roles, toolNames: frame.toolNames, sources: frame.sources, fields: frame.fields,
+				snapshotLeafId: frame.snapshotLeafId, searchOrder: frame.searchOrder, searchBefore: frame.searchBefore,
+			});
+		case "fleet-get-message":
+			return getFleetMessage(session.sessionManager, {
+				messageId: frame.messageId, before: frame.before, after: frame.after, leafId: frame.leafId,
+				toolCallId: frame.toolCallId, contentCursor: frame.contentCursor,
 			});
 		case "fleet-get-input":
 			return { pending: ui?.getPendingInput() ?? [] };

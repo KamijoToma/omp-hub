@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import type * as Sdk from "@oh-my-pi/pi-coding-agent";
-import { pageFleetMessages, searchFleetMessages, validateFleetSearch, type FleetMessagePage, type FleetSearchOptions, type FleetSearchPage } from "./fleet-client";
+import { getFleetMessage, pageFleetMessages, searchFleetMessages, validateFleetSearch, type FleetMessageContext, type FleetMessageOptions, type FleetMessagePage, type FleetSearchOptions, type FleetSearchPage } from "./fleet-client";
 import { errorMessage } from "./log";
 import { defaultProfilesRoot, listProfiles } from "./profiles";
 import { getSubscriptions } from "./subscriptions";
@@ -329,10 +329,23 @@ export interface MachineCmdFrame {
 	/** `search-session-messages` inclusive/exclusive ISO time bounds. */
 	from?: string;
 	to?: string;
+	roles?: string[];
+	toolNames?: string[];
+	sources?: string[];
+	fields?: string[];
+	snapshotLeafId?: string | null;
+	searchOrder?: "timestamp";
+	searchBefore?: { timestamp: string; sequence: number };
+	messageId?: string;
+	before?: number;
+	after?: number;
+	leafId?: string;
+	toolCallId?: string;
+	contentCursor?: string;
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage | FleetSearchPage }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage | FleetSearchPage | FleetMessageContext }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -527,6 +540,13 @@ export async function searchStoredSessionMessages(
 	return searchFleetMessages(await openStoredSession(file, options), search);
 }
 
+/** Read an anchored stored message with the same projection and continuation as a live host. */
+export async function readStoredSessionMessage(
+	file: unknown, read: FleetMessageOptions, options?: { sessionRoots: readonly string[] },
+): Promise<FleetMessageContext> {
+	return getFleetMessage(await openStoredSession(file, options), read);
+}
+
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
 export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineCmdResult> {
 	if (frame.cmd === "list-dir") {
@@ -577,6 +597,18 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 		try {
 			return { ok: true, data: await searchStoredSessionMessages(frame.path, {
 				query: frame.query, from: frame.from, to: frame.to, cursor: frame.cursor, limit: frame.pageLimit,
+				roles: frame.roles, toolNames: frame.toolNames, sources: frame.sources, fields: frame.fields,
+				snapshotLeafId: frame.snapshotLeafId, searchOrder: frame.searchOrder, searchBefore: frame.searchBefore,
+			}) };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "read-session-message") {
+		try {
+			return { ok: true, data: await readStoredSessionMessage(frame.path, {
+				messageId: frame.messageId, before: frame.before, after: frame.after, leafId: frame.leafId,
+				toolCallId: frame.toolCallId, contentCursor: frame.contentCursor,
 			}) };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
