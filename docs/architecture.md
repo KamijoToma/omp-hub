@@ -96,6 +96,10 @@ Guest prompts arrive through collab (`prompt` frames) and land via
 `session.promptCustomMessage({customType:"collab-prompt", …})` — handled entirely by
 `CollabHost`; the child does not proxy prompts itself in the MVP.
 
+The encrypted-relay history integration test supplies an isolated SDK model backed
+by a local OpenAI-compatible responder. This keeps its live guest-prompt and
+pagination assertions independent of the developer's credentials or CI secrets.
+
 ### 3. Web (`packages/web`)
 
 Vendored copy of `@oh-my-pi/collab-web` (MIT) plus a hub layer. Rationale: the guest client
