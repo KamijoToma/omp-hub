@@ -289,6 +289,77 @@ describe("hub api", () => {
 		expect(missing.status).toBe(404);
 	});
 
+	test("restart re-arms an exited session under the same id, resuming its transcript", async () => {
+		const { agent } = await connectAgent("m-restart", "restart-machine");
+		const session = await startSession("m-restart", "/srv/restart", { name: "rs", profile: "work" });
+		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "first start frame");
+		const links = { full: "wss://r/r1#w", view: "wss://r/r1#v", web: "https://r/#w", webView: "https://r/#v" };
+		agent.ws.send(JSON.stringify({ t: "session-ready", id: session.id, sessionFile: "/tmp/rs.jsonl", pid: 11, links }));
+		await waitForStatus(session.id, "live");
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "crashed" }));
+		await waitForStatus(session.id, "exited");
+
+		const response = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
+		expect(response.status).toBe(202);
+		const reissued = await sessionOf(response);
+		expect(reissued.id).toBe(session.id);
+		expect(reissued.status).toBe("starting");
+		expect(reissued.exitReason).toBeUndefined();
+		expect(reissued.exitedAt).toBeUndefined();
+		expect(reissued.links).toBeUndefined();
+		expect(reissued.sessionFile).toBe("/tmp/rs.jsonl");
+
+		const restart = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "restart start frame");
+		expect(restart).toMatchObject({
+			id: session.id,
+			cwd: "/srv/restart",
+			name: "rs",
+			profile: "work",
+			sessionFile: "/tmp/rs.jsonl",
+			relayUrl: wsBase,
+			webUrl: httpBase,
+		});
+
+		// A heartbeat racing the fresh child's spawn must not retire the
+		// re-armed record ("no such child") — the restart grace window.
+		agent.ws.send(JSON.stringify({ t: "hb", ts: Date.now(), sessions: [] }));
+		await yieldLoop();
+		expect((await sessionJson(session.id)).status).toBe("starting");
+
+		agent.ws.send(JSON.stringify({ t: "session-ready", id: session.id, sessionFile: "/tmp/rs.jsonl", pid: 12, links }));
+		expect((await waitForStatus(session.id, "live")).pid).toBe(12);
+
+		// Restarting a still-active session is rejected.
+		const conflict = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
+		expect(conflict.status).toBe(409);
+		expect((await sessionJson(session.id)).status).toBe("live");
+
+		const missing = await api("/api/sessions/s_0000000000/restart", { method: "POST" });
+		expect(missing.status).toBe(404);
+	});
+
+	test("restart of a failed start re-runs fresh; an offline machine is 404", async () => {
+		const { agent } = await connectAgent("m-retry", "retry-machine");
+		const session = await startSession("m-retry", "/nope");
+		await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "first start frame");
+		agent.ws.send(JSON.stringify({ t: "session-error", id: session.id, error: "cwd is not an existing directory" }));
+		await waitForStatus(session.id, "failed");
+
+		const response = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
+		expect(response.status).toBe(202);
+		expect((await sessionOf(response)).status).toBe("starting");
+		const retry = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "retry start frame");
+		expect(retry).toMatchObject({ id: session.id, cwd: "/nope" });
+		expect(retry.sessionFile).toBeUndefined(); // nothing to resume
+
+		// Offline: disconnect the agent; the terminal record stays, restart refuses.
+		agent.ws.close();
+		await waitForMachine("m-retry", false);
+		const offline = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
+		expect(offline.status).toBe(404);
+		expect(await offline.json()).toEqual({ error: "machine offline" });
+	});
+
 	test("DELETE drops the record and stops a live session first", async () => {
 		const { agent } = await connectAgent("m-del", "del-machine");
 		const session = await startSession("m-del", "/srv/del");

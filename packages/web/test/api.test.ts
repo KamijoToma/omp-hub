@@ -31,6 +31,7 @@ import {
 	postRetry,
 	postSessionPrompt,
 	postShake,
+	restartSession,
 	searchSessionMessages,
 	setModel,
 	setToken,
@@ -421,6 +422,32 @@ describe("hub api", () => {
 
 		expect(calls[0].url).toBe("/api/sessions/s1");
 		expect(calls[0].init?.method).toBe("DELETE");
+	});
+
+	test("restartSession posts to the restart route and unwraps the re-armed session", async () => {
+		setToken("t0k3n");
+		const reissued = { id: "s1", status: "starting" } as SessionRecord;
+		stubFetch(() => json({ session: reissued }, 202));
+
+		const result = await restartSession("s1");
+
+		expect(result).toEqual(reissued);
+		expect(calls[0].url).toBe("/api/sessions/s1/restart");
+		expect(calls[0].init?.method).toBe("POST");
+	});
+
+	test("restartSession surfaces offline/active-refusal errors as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "machine offline" }, 404));
+
+		const err = await restartSession("s1").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(404);
+		expect((err as HubApiError).message).toBe("machine offline");
 	});
 
 	test("postRetry surfaces the 409 message as HubApiError", async () => {

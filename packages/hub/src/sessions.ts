@@ -68,6 +68,15 @@ export interface SessionReadyInput {
 /** MVP pruning cap: beyond this, the oldest terminal records are dropped first. */
 export const SESSION_CAP = 500;
 
+/**
+ * Grace after `reissue` before heartbeat reconcile may retire the record
+ * again: covers one agent heartbeat interval (15 s) plus spawn latency, so
+ * the heartbeat that races a restarted child's spawn cannot retire the
+ * re-armed record as "no such child". `session-ready`/`session-error` end the
+ * concern by flipping the record out of the reconcile's non-terminal set.
+ */
+const RESTART_GRACE_MS = 25_000;
+
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 /** `prefix` + 10 base36 characters from a CSPRNG. */
@@ -87,6 +96,8 @@ export class SessionStore {
 	readonly #sessions = new Map<string, SessionRecord>();
 	/** Insertion order, so "newest first" is exact even within the same millisecond. */
 	readonly #order = new Map<string, number>();
+	/** id → `reissue` time; drives the heartbeat-reconcile restart grace window. */
+	readonly #reissuedAt = new Map<string, number>();
 	#sequence = 0;
 
 	create(input: CreateSessionInput): SessionRecord {
@@ -115,6 +126,7 @@ export class SessionStore {
 	/** Rolls back a record whose `start` frame never reached the agent. */
 	delete(id: string): boolean {
 		this.#order.delete(id);
+		this.#reissuedAt.delete(id);
 		return this.#sessions.delete(id);
 	}
 
@@ -132,6 +144,7 @@ export class SessionStore {
 	adopt(records: readonly SessionRecord[]): void {
 		this.#sessions.clear();
 		this.#order.clear();
+		this.#reissuedAt.clear();
 		this.#sequence = 0;
 		for (const record of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
 			this.#sessions.set(record.id, record);
@@ -199,7 +212,8 @@ export class SessionStore {
 	}
 
 	/**
-	 * Daemon-restart recovery (protocol §2 `restart-daemon`): flips a terminal
+	 * Daemon-restart recovery (protocol §2 `restart-daemon`) and same-id user
+	 * restarts (protocol §3 `POST /api/sessions/:id/restart`): flip a terminal
 	 * record back to `starting` so the hub can re-issue a `start` under the SAME
 	 * id, keeping panel pages and links stable. Identity fields (cwd, name,
 	 * profile, sessionFile, superagent) survive; volatile child state (links,
@@ -207,10 +221,16 @@ export class SessionStore {
 	 * `startedAt` deliberately stays: the reconcile watermark (`startedAt <
 	 * connectedAt`) must keep treating the resumed record as pre-connection, so
 	 * later heartbeats still retire it if the resumed child dies quietly.
+	 *
+	 * `requireSessionFile` (default true) keeps the daemon-restart contract: a
+	 * record that never reached `session-ready` has no transcript to resume, so
+	 * only a user restart (`requireSessionFile: false`) may re-arm it — as a
+	 * fresh start under the same id.
 	 */
-	reissue(id: string): SessionRecord | undefined {
+	reissue(id: string, opts: { requireSessionFile?: boolean } = {}): SessionRecord | undefined {
 		const record = this.#sessions.get(id);
-		if (!record || !record.sessionFile) return record;
+		if (!record) return record;
+		if ((opts.requireSessionFile ?? true) && !record.sessionFile) return record;
 		record.status = "starting";
 		record.links = undefined;
 		record.pid = undefined;
@@ -218,7 +238,24 @@ export class SessionStore {
 		record.exitedAt = undefined;
 		record.exitReason = undefined;
 		record.error = undefined;
+		this.#reissuedAt.set(id, Date.now());
 		return record;
+	}
+
+	/**
+	 * True within the post-`reissue` window (see {@link RESTART_GRACE_MS}).
+	 * Expiry is lazy and self-heals: after the window the heartbeat reconcile
+	 * resumes retiring a quietly-dead restart exactly like a daemon-restart
+	 * resume that never came back.
+	 */
+	inRestartGrace(id: string): boolean {
+		const at = this.#reissuedAt.get(id);
+		if (at === undefined) return false;
+		if (Date.now() - at >= RESTART_GRACE_MS) {
+			this.#reissuedAt.delete(id);
+			return false;
+		}
+		return true;
 	}
 
 	/** Marks every non-terminal session of a machine exited; returns the affected ids. */
@@ -246,6 +283,7 @@ export class SessionStore {
 			if (this.#sessions.size <= cap) break;
 			this.#sessions.delete(record.id);
 			this.#order.delete(record.id);
+			this.#reissuedAt.delete(record.id);
 			dropped++;
 		}
 		return dropped;
