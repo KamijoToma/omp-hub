@@ -10,5 +10,5 @@
     "allowArbitraryExtensions": true,
     "noEmit": true
   },
-  "include": ["src", "test", "types"]
+  "include": ["src", "test", "types", "scripts"]
 }

@@ -4,7 +4,21 @@
  * failure, LRU eviction, and shutdown.
  */
 import { describe, expect, test } from "bun:test";
-import { ProfileDashboards, type DashboardChild } from "../src/usage-dashboards";
+import { dashboardCommand, ProfileDashboards, type DashboardChild } from "../src/usage-dashboards";
+
+test("compiled dashboards launch the sibling stats binary without resolving SDK source", () => {
+	const runtime = "/missing/distribution/omp-hub-agent";
+	expect(dashboardCommand({
+		execPath: runtime,
+		compiled: true,
+		resolveSource: () => { throw new Error("source resolution must not run"); },
+	})).toEqual(["/missing/distribution/omp-hub-agent-stats", "--port", "0"]);
+	expect(dashboardCommand({
+		execPath: runtime,
+		compiled: false,
+		resolveSource: () => "file:///source/sdk/omp-stats.ts",
+	})).toEqual([runtime, "/source/sdk/omp-stats.ts", "--port", "0"]);
+});
 
 interface FakeChild extends DashboardChild {
 	origin: string;

@@ -1,14 +1,15 @@
 /**
  * Parent-side session registry: one child process per session (docs/protocol.md §4).
  *
- * The child is `bun session-host.ts --config <json>`; it speaks JSONL on stdout and
- * accepts `{t:"stop"}` on stdin. Non-JSON stdout lines are treated as logs (they
- * should not happen — the child seals stdout), stderr is inherited.
+ * Each child speaks JSONL on stdout and accepts `{t:"stop"}` on stdin.
+ * Non-JSON stdout lines are treated as logs (they should not happen — the
+ * child seals stdout); stderr is inherited.
  */
 
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { errorMessage, type Logger, type LogLevel } from "./log";
+import { isCompiledAgent } from "./native-mode";
 import { defaultProfilesRoot, normalizeProfileName, profileExists } from "./profiles";
 
 /** docs/protocol.md §3 SessionStatus. */
@@ -96,7 +97,7 @@ interface PendingCommand {
 }
 
 export interface SupervisorOptions {
-	/** Session host entry point to spawn; defaults to `./session-host.ts`. */
+	/** Source/fixture session host entry point; defaults to `./session-host.ts` outside compiled mode. */
 	hostEntry?: string;
 	/** omp profiles root for existence checks; defaults to `~/$PI_CONFIG_DIR|.omp/profiles`. */
 	profilesRoot?: string;
@@ -128,12 +129,24 @@ interface ChildRecord {
 	killTimer?: Timer;
 }
 
+/** Select a separate session process, never a virtual bunfs entry in compiled mode. */
+export function sessionHostCommand(
+	config: SessionConfig,
+	options: { execPath: string; compiled: boolean; hostEntry?: string },
+): string[] {
+	const entry = options.hostEntry ?? (options.compiled ? undefined : new URL("./session-host.ts", import.meta.url).pathname);
+	const payload = JSON.stringify(config);
+	return entry
+		? [options.execPath, entry, "--config", payload]
+		: [path.join(path.dirname(options.execPath), "omp-hub-agent-session"), "--config", payload];
+}
+
 export class Supervisor {
 	#children = new Map<string, ChildRecord>();
 	#handlers: SupervisorHandlers;
 	#log: Logger;
-	/** Session host entry point spawned for every child. */
-	#hostEntry: string;
+	/** Explicit source/fixture host override, if any. */
+	#hostEntry: string | undefined;
 	/** omp profiles root backing profile existence checks. */
 	#profilesRoot: string;
 	/** Fleet proxy handler for superagent children (protocol 0.8.0). */
@@ -144,7 +157,7 @@ export class Supervisor {
 	constructor(handlers: SupervisorHandlers, log: Logger, options: SupervisorOptions = {}) {
 		this.#handlers = handlers;
 		this.#log = log;
-		this.#hostEntry = options.hostEntry ?? new URL("./session-host.ts", import.meta.url).pathname;
+		this.#hostEntry = options.hostEntry;
 		this.#profilesRoot = options.profilesRoot ?? defaultProfilesRoot();
 		this.#fleet = options.fleet;
 	}
@@ -244,7 +257,11 @@ export class Supervisor {
 			}
 		}
 
-		const argv = [process.execPath, this.#hostEntry, "--config", JSON.stringify(config)];
+		const argv = sessionHostCommand(config, {
+			execPath: process.execPath,
+			compiled: isCompiledAgent,
+			hostEntry: this.#hostEntry,
+		});
 		let child: SessionChild;
 		try {
 			// The web selection fully determines the child's omp profile: ambient

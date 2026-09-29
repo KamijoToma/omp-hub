@@ -40,6 +40,26 @@ shares it with any local omp install. Provider env keys work too.
 Type-check from this package with `bun run typecheck`; it does not emit files or type-check
 against a mock SDK.
 
+## Native Linux x64 distribution
+
+The release archive `omp-hub-agent-linux-x64-vX.Y.Z.tar.gz` includes a compiled daemon,
+`omp-hub-agent-session`, `omp-hub-agent-stats` and a pinned
+`pi_natives.linux-x64-baseline.node`. Extract them into the **same directory** and run
+`HUB_TOKEN=\"<secret>\" ./omp-hub-agent --hub wss://hub.example.com`. No Bun or npm install is
+needed on that machine. The native addon is versioned with the pinned SDK and must not be
+replaced by an addon from another release. Keep the included notices with the archive.
+
+To build and verify a Linux x64 archive locally from a locked SDK install:
+
+```bash
+bun --cwd=packages/agent install --frozen-lockfile
+bun packages/agent/scripts/build-native.ts --out-dir /tmp/omp-hub-agent-native
+bun packages/agent/test/fixtures/native-smoke.ts /tmp/omp-hub-agent-native
+```
+
+The smoke creates its own temporary home and exercises a live session, named-profile stats and
+the compiled daemon's upgrade restart. It does not use provider credentials.
+
 ## Layout
 
 | file | role |

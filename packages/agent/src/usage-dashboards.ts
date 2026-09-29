@@ -4,12 +4,14 @@
  * The stats package pins its database path at module load from the active
  * profile, so one process can never serve two profiles: the daemon's default
  * dashboard is in-process (`usage-proxy.ts`), while every named profile gets
- * a `bun omp-stats --port 0` child spawned with `OMP_PROFILE`/`PI_PROFILE`
- * set — the same env contract the supervisor uses for session hosts. Children
+ * a separate stats child spawned with `OMP_PROFILE`/`PI_PROFILE` set — the
+ * same env contract the supervisor uses for session hosts. Children
  * are started lazily on first request, cached per profile, and LRU-evicted;
  * an exiting child drops its entry so the next request respawns it.
  */
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCompiledAgent } from "./native-mode";
 
 /** Minimal handle of one spawned dashboard child. */
 export interface DashboardChild {
@@ -67,11 +69,21 @@ async function readOrigin(child: DashboardChild): Promise<string> {
 	throw new Error(`stats dashboard exited (code ${code}) before reporting its port`);
 }
 
-/** Default spawn: the pinned `@oh-my-pi/omp-stats` package's CLI entry via this runtime. */
-export function spawnDashboard(profile: string): DashboardChild {
-	const resolved = import.meta.resolve("@oh-my-pi/omp-stats");
+/** Select the stats executable; compiled daemons must never execute a virtual SDK specifier. */
+export function dashboardCommand(
+	options: { execPath: string; compiled: boolean; resolveSource?: () => string },
+): string[] {
+	if (options.compiled) {
+		return [path.join(path.dirname(options.execPath), "omp-hub-agent-stats"), "--port", "0"];
+	}
+	const resolved = (options.resolveSource ?? (() => import.meta.resolve("@oh-my-pi/omp-stats")))();
 	const entry = resolved.startsWith("file://") ? fileURLToPath(resolved) : resolved;
-	const child = Bun.spawn([process.execPath, entry, "--port", "0"], {
+	return [options.execPath, entry, "--port", "0"];
+}
+
+/** Default spawn: a sibling binary in compiled mode, the pinned SDK CLI in source mode. */
+export function spawnDashboard(profile: string): DashboardChild {
+	const child = Bun.spawn(dashboardCommand({ execPath: process.execPath, compiled: isCompiledAgent }), {
 		// The web selection fully determines the child's omp profile: ambient
 		// daemon-level OMP_PROFILE/PI_PROFILE never leaks into a profile
 		// dashboard (pi-utils/dirs resolves these before any SDK import).
