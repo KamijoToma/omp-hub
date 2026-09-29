@@ -6,6 +6,8 @@ test("only fleet namespace routes can cross the daemon boundary", () => {
 		["GET", "/api/fleet/machines"], ["GET", "/api/fleet/sessions"], ["GET", "/api/fleet/events"],
 		["GET", "/api/fleet/sessions/s_worker"], ["GET", "/api/fleet/sessions/s_worker/input"],
 		["GET", "/api/fleet/sessions/s_worker/messages?cursor=a1&limit=20"],
+		["GET", "/api/fleet/sessions/s_worker/search?query=git+merge&from=2026-09-30T12%3A00%3A00Z&to=2026-10-01T12%3A00%3A00Z&cursor=a1&limit=20"],
+		["GET", "/api/fleet/sessions/s_worker/search?to=2026-09-30T12%3A00%3A00Z"],
 		["POST", "/api/fleet/sessions"], ["POST", "/api/fleet/notices"],
 		...["claim", "stop", "message", "interrupt", "watch", "input"].map(action => ["POST", `/api/fleet/sessions/s_worker/${action}`]),
 		["POST", "/api/fleet/events/e_123/ack"],
@@ -13,6 +15,11 @@ test("only fleet namespace routes can cross the daemon boundary", () => {
 	for (const [method, path] of [
 		["GET", "/api/sessions"], ["POST", "/api/sessions/s_worker/prompt"],
 		["GET", "/api/fleet/sessions/s_worker/messages?ownerId=s_other"],
+		["GET", "/api/fleet/sessions/s_worker/search?ownerId=s_other"],
+		["GET", "/api/fleet/sessions/s_worker/search?sessionFile=%2Ftmp%2Fprivate.jsonl"],
+		["GET", "/api/fleet/sessions/s_worker/search?namespaceId=other"],
+		["GET", "/api/fleet/sessions/s_worker/messages?query=private"],
+		["POST", "/api/fleet/sessions/s_worker/search?query=test"],
 		["GET", "/api/fleet/machines?namespaceId=other"],
 		["GET", "//evil.invalid/api/fleet/sessions"],
 		["GET", "/api/fleet/sessions/s_worker%2Fsecret"],
@@ -41,12 +48,17 @@ test("proxy derives owner from supervisor and removes caller-supplied identities
 		method: "POST", path: "/api/fleet/sessions/s_worker/message",
 		body: { mode: "steer", text: "help", ownerId: "s_other", namespaceId: "other" },
 	}, deps);
+	await handleFleetRequest({
+		method: "GET", path: "/api/fleet/sessions/s_worker/search?query=merge",
+		body: { ownerId: "s_other", namespaceId: "other", sessionFile: "/private/history.jsonl" },
+	}, deps);
 	expect(calls.map(call => call.body)).toEqual([
-		{ machineId: "m1", cwd: "/work", forkFrom: "s_source" }, { mode: "steer", text: "help" },
+		{ machineId: "m1", cwd: "/work", forkFrom: "s_source" }, { mode: "steer", text: "help" }, null,
 	]);
 	expect(calls.every(call => call.headers.get("X-Fleet-Owner") === "s_actual")).toBe(true);
 	expect(calls.every(call => call.headers.get("authorization") === "Bearer secret")).toBe(true);
 	expect(calls[0]?.url).toBe("https://hub/api/fleet/sessions");
+	expect(calls[2]?.url).toBe("https://hub/api/fleet/sessions/s_worker/search?query=merge");
 });
 
 test("refused routes do not fetch; HTTP errors remain visible to tools", async () => {

@@ -25,9 +25,145 @@ export interface FleetMessagePage {
 		stopReason?: string;
 		errorMessage?: string;
 	}>;
+	/** Oldest returned message id; pass it as `cursor` to read strictly earlier history. */
 	nextCursor: string | null;
 	hasMore: boolean;
 	leafId: string | null;
+}
+
+export interface FleetSearchPage {
+	hits: Array<{ id: string; timestamp: string; role: string; source: "text" | "toolCall" | "toolResult" | "custom"; snippet: string; toolName?: string }>;
+	nextCursor: string | null;
+	hasMore: boolean;
+	leafId: string | null;
+}
+
+export interface FleetSearchOptions {
+	query?: unknown;
+	from?: unknown;
+	to?: unknown;
+	cursor?: unknown;
+	limit?: unknown;
+}
+
+export interface FleetBranchEntry {
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	type: string;
+	message?: { role: string; content?: unknown; toolName?: string; toolCallId?: string; isError?: boolean;
+		stopReason?: string; errorMessage?: string };
+	content?: unknown;
+	display?: boolean;
+}
+
+export interface FleetBranchManager {
+	getBranch(): FleetBranchEntry[];
+	getLeafId(): string | null;
+}
+
+/** Strict wire validation shared by live and stored-history commands. */
+export function validateFleetSearch(options: FleetSearchOptions): {
+	query?: string; from?: number; to?: number; cursor?: string; limit: number
+} {
+	const { query, from, to, cursor, limit = 20 } = options;
+	if (query !== undefined && (typeof query !== "string" || !query.trim() || query.trim().length > 256)) {
+		throw new Error("query must be between 1 and 256 characters");
+	}
+	const timestamp = (value: unknown, field: string): number | undefined => {
+		if (value === undefined) return undefined;
+		const parts = typeof value === "string" &&
+			/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+		if (!parts) throw new Error(`${field} must be an ISO-8601 timestamp with timezone`);
+		const [, year, month, day, hours, minutes, seconds, , offsetHour, offsetMinute] = parts;
+		const calendar = new Date(0);
+		calendar.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
+		if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() + 1 !== Number(month) ||
+			calendar.getUTCDate() !== Number(day) || Number(hours) > 23 || Number(minutes) > 59 ||
+			Number(seconds) > 59 || Number(offsetHour ?? 0) > 23 || Number(offsetMinute ?? 0) > 59) {
+			throw new Error(`${field} must be an ISO-8601 timestamp with timezone`);
+		}
+		const parsed = Date.parse(value);
+		if (!Number.isFinite(parsed)) throw new Error(`${field} must be an ISO-8601 timestamp with timezone`);
+		return parsed;
+	};
+	const start = timestamp(from, "from");
+	const end = timestamp(to, "to");
+	if (query === undefined && start === undefined && end === undefined) throw new Error("query, from, or to is required");
+	if (start !== undefined && end !== undefined && start >= end) throw new Error("from must be before to");
+	if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 50) throw new Error("limit must be between 1 and 50");
+	if (cursor !== undefined && (typeof cursor !== "string" || !cursor.trim() || cursor.length > 128)) {
+		throw new Error("cursor must be between 1 and 128 characters");
+	}
+	return { ...(query === undefined ? {} : { query: query.trim().toLowerCase() }), from: start, to: end,
+		...(cursor === undefined ? {} : { cursor: cursor as string }), limit: limit as number };
+}
+
+/** Search source strings in SDK block order, never projecting hidden or binary blocks. */
+function* searchableContent(content: unknown): Generator<{ text: string; source: "text" | "toolCall"; toolName?: string }> {
+	if (typeof content === "string") { yield { text: content, source: "text" }; return; }
+	if (!Array.isArray(content)) return;
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		if (block.type === "text" && typeof block.text === "string") yield { text: block.text, source: "text" };
+		if (block.type !== "toolCall") continue;
+		// The arguments are stored structured data, not the 2k text projected by
+		// fleet_get_messages. Scan nested string values without serializing the object.
+		const stack: unknown[] = [block.arguments];
+		while (stack.length) {
+			const value = stack.pop();
+			if (typeof value === "string") yield { text: value, source: "toolCall",
+				...(typeof block.name === "string" ? { toolName: block.name } : {}) };
+			else if (value && typeof value === "object") {
+				const values = Object.values(value);
+				for (let index = values.length - 1; index >= 0; index--) stack.push(values[index]);
+			}
+		}
+	}
+}
+
+/** A short one-line preview centered at the first literal match. */
+function searchSnippet(text: string, match: number): string {
+	const start = match < 0 ? 0 : Math.max(0, match - 80);
+	return text.slice(start, start + 200).replace(/\s+/g, " ").trim();
+}
+
+/** Newest matching entries are paged first; returned hits remain chronological. */
+export function searchFleetMessages(manager: FleetBranchManager, options: FleetSearchOptions): FleetSearchPage {
+	const { query, from, to, cursor, limit } = validateFleetSearch(options);
+	const pattern = query === undefined ? undefined : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+	const branch = manager.getBranch();
+	const end = cursor === undefined ? branch.length : branch.findLastIndex(entry => entry.id === cursor);
+	if (end < 0) throw new Error("cursor is not on the active branch");
+	const hits: FleetSearchPage["hits"] = [];
+	let hasMore = false;
+	for (let index = end - 1; index >= 0; index--) {
+		const entry: FleetBranchEntry = branch[index]!;
+		if (entry.type !== "message" && (entry.type !== "custom_message" || entry.display === false)) continue;
+		if (from !== undefined || to !== undefined) {
+			const when = Date.parse(entry.timestamp);
+			if (from !== undefined && !(when >= from) || to !== undefined && !(when < to)) continue;
+		}
+		const message = entry.message;
+		const role = entry.type === "custom_message" ? "custom" : message?.role ?? "unknown";
+		const content = entry.type === "custom_message" ? entry.content : message?.content;
+		let found: { text: string; source: "text" | "toolCall"; toolName?: string; index: number } | undefined;
+		for (const part of searchableContent(content)) {
+			const match = pattern === undefined ? 0 : pattern.exec(part.text)?.index ?? -1;
+			if (match >= 0) { found = { ...part, index: match }; break; }
+		}
+		if (query !== undefined && !found) continue;
+		if (hits.length >= limit) { hasMore = true; break; }
+		const source = entry.type === "custom_message" ? "custom" :
+			role === "toolResult" ? "toolResult" : found?.source ?? "text";
+		hits.push({
+			id: entry.id, timestamp: entry.timestamp, role, source,
+			snippet: found ? searchSnippet(found.text, found.index) : "",
+			...(found?.toolName || message?.toolName ? { toolName: found?.toolName ?? message?.toolName } : {}),
+		});
+	}
+	hits.reverse();
+	return { hits, nextCursor: hits[0]?.id ?? cursor ?? null, hasMore, leafId: manager.getLeafId() };
 }
 
 const MAX_BLOCKS = 12;
@@ -70,24 +206,26 @@ function boundedContent(content: unknown): { value: unknown; truncated: boolean 
 	return { value: blocks, truncated };
 }
 
-/** Page active-branch messages; rewinding past a cursor is an explicit conflict. */
+/** Page the active branch from its newest messages; a rewound cursor is an explicit conflict. */
 export function pageFleetMessages(
-	manager: { getBranch(): Array<{ id: string; parentId: string | null; timestamp: string; type: string;
-		message?: { role: string; content?: unknown; toolName?: string; toolCallId?: string; isError?: boolean;
-			stopReason?: string; errorMessage?: string }; content?: unknown; display?: boolean }>; getLeafId(): string | null },
+	manager: FleetBranchManager,
 	cursor?: string,
-	limit = 50,
+	limit = 20,
 ): FleetMessagePage {
 	if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("limit must be between 1 and 100");
 	const branch = manager.getBranch();
-	const start = cursor === undefined ? 0 : branch.findIndex(entry => entry.id === cursor) + 1;
-	if (cursor !== undefined && start === 0) throw new Error("cursor is not on the active branch");
+	const end = cursor === undefined ? branch.length : branch.findLastIndex(entry => entry.id === cursor);
+	if (end < 0) throw new Error("cursor is not on the active branch");
 	const messages: FleetMessagePage["messages"] = [];
 	let usedChars = 0;
 	let hasMore = false;
-	for (let index = start; index < branch.length; index++) {
+	for (let index = end - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		if (entry.type !== "message" && (entry.type !== "custom_message" || entry.display === false)) continue;
+		if (messages.length >= limit) {
+			hasMore = true;
+			break;
+		}
 		const message = entry.message;
 		const content = boundedContent(entry.type === "custom_message" ? entry.content : message?.content);
 		const row: FleetMessagePage["messages"][number] = {
@@ -102,14 +240,15 @@ export function pageFleetMessages(
 			...(message?.errorMessage ? { errorMessage: message.errorMessage.slice(0, MAX_TEXT_CHARS) } : {}),
 		};
 		const size = JSON.stringify(row).length;
-		if (messages.length >= limit || (messages.length > 0 && usedChars + size > MAX_PAGE_CHARS)) {
+		if (messages.length > 0 && usedChars + size > MAX_PAGE_CHARS) {
 			hasMore = true;
 			break;
 		}
 		messages.push(row);
 		usedChars += size;
 	}
-	return { messages, nextCursor: messages.at(-1)?.id ?? cursor ?? null, hasMore, leafId: manager.getLeafId() };
+	messages.reverse();
+	return { messages, nextCursor: messages[0]?.id ?? cursor ?? null, hasMore, leafId: manager.getLeafId() };
 }
 
 /** Unanswered `fleet-req`s the client still owes a tool. */

@@ -104,6 +104,19 @@ test("handleMachineCmd answers list-dir and rejects unknown commands without thr
 	}
 });
 
+test("machine search rejects malformed filters before opening a session file", async () => {
+	const path = "/outside/not-a-session.jsonl";
+	expect(await handleMachineCmd({ cmd: "search-session-messages", path }))
+		.toEqual({ ok: false, error: "query, from, or to is required" });
+	expect(await handleMachineCmd({ cmd: "search-session-messages", path, query: "merge", pageLimit: 51 }))
+		.toEqual({ ok: false, error: "limit must be between 1 and 50" });
+	expect(await handleMachineCmd({ cmd: "search-session-messages", path, query: "merge", cursor: " " }))
+		.toEqual({ ok: false, error: "cursor must be between 1 and 128 characters" });
+	expect(await handleMachineCmd({ cmd: "search-session-messages", path,
+		from: "2026-09-30T12:00:00Z", to: "2026-09-30T11:59:59Z" }))
+		.toEqual({ ok: false, error: "from must be before to" });
+});
+
 test("handleMachineCmd answers list-profiles with a profile array", async () => {
 	// The machine's real profile root is content this suite cannot pin; the
 	// enumeration rules themselves are covered in profiles.test.ts. Here the

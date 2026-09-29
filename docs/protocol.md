@@ -2,6 +2,23 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.14.0** — `fleet_search_messages` searches one namespace worker's
+active-branch transcript by literal text and/or timestamp range (§2–§4).
+Assistant tool-call arguments and persisted tool results are searched before
+message-page truncation, but only bounded match snippets leave the daemon;
+hidden UI events, reasoning blocks and images are excluded. Live and terminal
+sessions share the same newest-page/backward-cursor contract. The hub requires
+both operator and worker daemons ≥0.14.0 for search rather than exposing the
+global machine-history search route to superagents.
+
+Revision **0.13.0** — fleet message reads start at the newest active-branch page
+(20 entries by default), return that page oldest-to-newest, and page strictly
+earlier history with an exclusive `cursor` equal to the oldest returned id.
+`nextCursor` points backward and `hasMore` means older visible messages exist.
+Both the operator and the worker daemon must be ≥0.13.0 for this read; the hub
+rejects mixed 0.12/0.13 cursor semantics instead of silently skipping context.
+The same bounded pager serves live sessions and read-only terminal history.
+
 Revision **0.12.0** — namespace-scoped fleet control and closed-loop supervision. Session records
 carry namespace membership and controller version; authenticated users may create namespaces and
 move live workers, while daemon-proxied superagent tools use only `/api/fleet/*` with the parent-
@@ -537,6 +554,9 @@ lookups.
 { t: "cmd", reqId: string, cmd: "restart-daemon" }               // 0.9.0+
 { t: "cmd", reqId: string, cmd: "search-sessions", query: string, paths?: string[] }
 { t: "cmd", reqId: string, cmd: "get-subscriptions", profile?: string }
+{ t: "cmd", reqId: string, cmd: "read-session-messages", path: string, cursor?: string, pageLimit?: number }
+{ t: "cmd", reqId: string, cmd: "search-session-messages", path: string,
+  query?: string, from?: string, to?: string, cursor?: string, pageLimit?: number } // 0.14.0+
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -666,7 +686,15 @@ interface SessionSearchHit {
   session's active branch using the SDK's read-only session loader. The hub
   supplies `path` from the registry, never from the fleet caller; the daemon
   additionally realpaths and permits only default/named-profile omp session
-  stores. Output uses the same bounded `FleetMessagePage` as live reads.
+  stores. On 0.13.0+ the bounded `FleetMessagePage` uses the same newest-first
+  page selection and backward cursor as live reads (§3); earlier agents used
+  forward cursors and cannot serve the new API alongside upgraded operators.
+- `search-session-messages {path,query?,from?,to?,cursor?,pageLimit?}` (0.14.0+)
+  searches the selected active branch of the hub-supplied managed session file
+  without modifying it. It uses the same contained, realpath-checked profile
+  stores as `read-session-messages`. A match on stored text beyond the normal
+  2,000-character block projection returns only a bounded snippet, not the
+  entire untruncated output.
 
 ## 3. HTTP API (`/api/*`)
 
@@ -806,13 +834,21 @@ read/watch.
 | `GET /api/fleet/machines`, `GET /api/fleet/sessions`, `GET /api/fleet/sessions/:id` | Scoped machine inventory (`sessionCount` includes only this namespace) and sanitized session records |
 | `POST /api/fleet/sessions` | `{machineId,cwd,name?,prompt?,profile?,forkFrom?}` → 202 `{session}`; plain worker automatically inherits the operator's namespace, controller and watch. `forkFrom` is the id of a controlled, live, idle worker in that namespace: it copies the worker's current persisted transcript and artifacts to an independent file, then starts the new worker on the **same** machine, cwd and profile. Supply `machineId`/`cwd` matching the source; an omitted `profile` inherits it. The original keeps running. 403 unclaimed/operator source; 404 out-of-scope source; 409 busy, missing persisted history or terminal source; 400 mismatched machine/cwd/profile. The copy's path is never returned to fleet clients |
 | `POST /api/fleet/sessions/:id/claim`, `/watch`, `/stop` | Claim single-writer control, watch events (including a pending-input snapshot), or terminate an owned worker |
-| `GET /api/fleet/sessions/:id/messages?cursor=&limit=` | `{messages,nextCursor,hasMore,leafId}`; current branch, 1–100 entries per page, invalidated cursor → 409; terminal sessions use the machine's read-only command |
+| `GET /api/fleet/sessions/:id/messages?cursor=&limit=` | `{messages,nextCursor,hasMore,leafId}`; no cursor returns the newest 20 visible active-branch messages by default (limit 1–100, also bounded by payload size), with each page in chronological order. `nextCursor` is the oldest returned id; pass it as an exclusive `cursor` for earlier messages while `hasMore` is true. An empty page echoes the supplied cursor or returns null. `leafId` identifies the current branch tip; a cursor removed by a rewind → 409. Operator and worker daemons must both be ≥0.13.0 when online or the read returns 409. Terminal sessions use the machine's read-only command |
+| `GET /api/fleet/sessions/:id/search?query=&from=&to=&cursor=&limit=` | `fleet_search_messages` → `{hits:[{id,timestamp,role,source,snippet,toolName?}],nextCursor,hasMore,leafId}`. At least a literal case-insensitive `query` (1–256 characters) or one ISO-8601 timezone-qualified bound is required; `from` is inclusive and `to` exclusive, and `from < to` when both are set. Newest 20 hits by default (limit 1–50), returned chronologically; an exclusive `cursor` of the oldest hit pages to earlier matching entries, and a cursor removed by a rewind returns 409. One bounded snippet per visible active-branch entry; text, assistant tool-call string arguments, stored tool results and displayed custom messages are searchable, but hidden/reasoning/image content is not. Invalid filters → 400; out-of-namespace id → 404; operator or online worker daemon <0.14.0 → 409. Terminal sessions use the managed read-only machine command, never a caller-supplied file path |
 | `GET /api/fleet/sessions/:id/input` | `{pending:[{requestId,kind,title,options?,prefill?}]}` |
 | `POST /api/fleet/sessions/:id/input` | `{requestId,answer}`; first valid answer wins against writable guests, stale request → 409, bad option → 400 |
 | `POST /api/fleet/sessions/:id/message` | `{text,mode:"start"|"steer"|"follow_up"}` → `{ok:true,scheduled:true,operationId}`; scheduling, not completion |
 | `POST /api/fleet/sessions/:id/interrupt` | `{text?,clearQueue?}` → scheduled abort/optional replacement; queued work needs explicit `clearQueue:true` before replacement |
 | `GET /api/fleet/events`, `POST /api/fleet/events/:eventId/ack` | Unacknowledged inbox and idempotent acknowledgement |
 | `POST /api/fleet/notices` | Human notice; optional session attribution must stay in the operator's namespace |
+
+Time-only search may return a visible image-only or reasoning-only message with
+an empty `snippet`: its id, role and timestamp remain visible, but its image or
+reasoning payload is neither searched nor returned. Hidden custom entries never
+appear. Text search matches the persisted content before `fleet_get_messages`
+applies its block-size cap; a hit exposes only a nearby bounded excerpt. If the
+daemon did not persist an output, search cannot recover it.
 
 An admin move first fences new fleet mutations and waits for commands already
 dispatched to the worker to acknowledge before committing membership and
@@ -887,14 +923,14 @@ parent → child (stdin):
 { t: "fleet-notification", event: FleetEvent } // unsolicited push to operator child
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
      |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt"
-     |"fleet-fork-session"|"fleet-get-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
+     |"fleet-fork-session"|"fleet-get-messages"|"fleet-search-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
   action?: string, objective?: string, tokenBudget?: number,
   prompt?: string, limit?: object, condition?: object, enabled?: boolean,
   name?: string, dataB64?: string, text?: string,
-  cursor?: string, pageLimit?: number, requestId?: string, answer?: string,
+  cursor?: string, pageLimit?: number, query?: string, from?: string, to?: string, requestId?: string, answer?: string,
   messageMode?: "start"|"steer"|"follow_up", clearQueue?: boolean }
                                             // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation

@@ -84,13 +84,24 @@ export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
 				...(p.clearQueue === undefined ? {} : { clearQueue: p.clearQueue }),
 			})).body),
 		tool("fleet_get_messages", "Read worker messages",
-			"Page structured active-branch messages in chronological order; cursor is the last entry id seen. Returns nextCursor, hasMore and leafId. Includes tool output and custom messages.",
+			"Without cursor return the latest messages (20 by default); messages stay chronological. Pass nextCursor (the oldest returned id) as cursor to page strictly earlier history while hasMore is true. Includes tool output and custom messages; leafId identifies the current branch tip.",
 			type({ id: type.string, "cursor?": type.string, "limit?": type.number }),
 			async p => {
 				const query = new URLSearchParams();
 				if (typeof p.cursor === "string" && p.cursor.trim()) query.set("cursor", p.cursor.trim());
 				if (p.limit !== undefined) query.set("limit", String(p.limit));
 				return assertFetched(await request("GET", `${sessionPath(p.id)}/messages${query.size ? `?${query}` : ""}`)).body;
+			}),
+		tool("fleet_search_messages", "Search worker messages",
+			"Search one namespace worker's active branch, including stored text, tool-call arguments and tool results before message truncation. Use a literal case-insensitive query (1–256 characters) and/or inclusive from / exclusive to ISO-8601 timestamps with timezone. The newest 20 matches (max 50) arrive chronologically; nextCursor fetches older matches. Snippets are short: omit query and set a time window around a hit to inspect nearby messages. fleet_get_messages reads bounded messages from the newest turn backward, not directly by hit id.",
+			type({ id: type.string, "query?": type.string, "from?": type.string, "to?": type.string,
+				"cursor?": type.string, "limit?": type.number }),
+			async p => {
+				const query = new URLSearchParams();
+				for (const key of ["query", "from", "to", "cursor", "limit"] as const) {
+					if (p[key] !== undefined) query.set(key, String(p[key]));
+				}
+				return assertFetched(await request("GET", `${sessionPath(p.id)}/search?${query}`)).body;
 			}),
 		tool("fleet_get_input", "Read worker input",
 			"List pending select/editor/ask steps, including requestId. Can answer even if no human guest is connected.",

@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import type * as Sdk from "@oh-my-pi/pi-coding-agent";
-import { pageFleetMessages, type FleetMessagePage } from "./fleet-client";
+import { pageFleetMessages, searchFleetMessages, validateFleetSearch, type FleetMessagePage, type FleetSearchOptions, type FleetSearchPage } from "./fleet-client";
 import { errorMessage } from "./log";
 import { defaultProfilesRoot, listProfiles } from "./profiles";
 import { getSubscriptions } from "./subscriptions";
@@ -326,10 +326,13 @@ export interface MachineCmdFrame {
 	profile?: string;
 	cursor?: string;
 	pageLimit?: number;
+	/** `search-session-messages` inclusive/exclusive ISO time bounds. */
+	from?: string;
+	to?: string;
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage | FleetSearchPage }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -489,13 +492,16 @@ function fsError(err: unknown): string {
 	return errorMessage(err);
 }
 
-/** Load only a file inside the actual omp default or named-profile session
- * roots. SDK open is used for branch indexing; suppressBreadcrumb prevents
- * metadata writes, and no mutation/flush API is called. */
+/** Read one stored branch without mutating its file. */
 export async function readStoredSessionMessages(
 	file: unknown, cursor?: string, limit?: number,
 	options?: { sessionRoots: readonly string[] },
 ): Promise<FleetMessagePage> {
+	return pageFleetMessages(await openStoredSession(file, options), cursor, limit);
+}
+
+/** Physical path containment is shared by both read-only history commands. */
+async function openStoredSession(file: unknown, options?: { sessionRoots: readonly string[] }): Promise<Sdk.SessionManager> {
 	if (typeof file !== "string" || !path.isAbsolute(file) || !file.endsWith(".jsonl")) throw new Error("invalid session file");
 	const resolved = await realpath(file);
 	const roots = options ? [...options.sessionRoots] : [getSessionsDir()];
@@ -510,8 +516,15 @@ export async function readStoredSessionMessages(
 	}
 	if (!allowed) throw new Error("session file is outside managed omp session stores");
 	const { SessionManager } = await loadSdk();
-	const manager = await SessionManager.open(resolved, undefined, undefined, { throwIfMissing: true, suppressBreadcrumb: true });
-	return pageFleetMessages(manager, cursor, limit);
+	return await SessionManager.open(resolved, undefined, undefined, { throwIfMissing: true, suppressBreadcrumb: true });
+}
+
+export async function searchStoredSessionMessages(
+	file: unknown, search: FleetSearchOptions, options?: { sessionRoots: readonly string[] },
+): Promise<FleetSearchPage> {
+	// Reject malformed filters before touching the filesystem or loading the SDK.
+	validateFleetSearch(search);
+	return searchFleetMessages(await openStoredSession(file, options), search);
 }
 
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
@@ -556,6 +569,15 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 	if (frame.cmd === "read-session-messages") {
 		try {
 			return { ok: true, data: await readStoredSessionMessages(frame.path, frame.cursor, frame.pageLimit) };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "search-session-messages") {
+		try {
+			return { ok: true, data: await searchStoredSessionMessages(frame.path, {
+				query: frame.query, from: frame.from, to: frame.to, cursor: frame.cursor, limit: frame.pageLimit,
+			}) };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
 		}
