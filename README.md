@@ -74,16 +74,16 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
 
 ## Install from a GitHub release
 
-Requires Bun ≥ 1.3.14 and working omp provider credentials (`~/.omp/agent` or provider API keys) on each agent machine. The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. This example uses the published `v0.9.0` assets. To run newer features documented here (such as message-text session search), use the source checkout below until a newer release includes them.
+The Hub/source archive requires Bun ≥ 1.3.14; an agent machine needs working omp provider credentials (`~/.omp/agent` or provider API keys). The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. These examples use the `v0.9.1` assets. For changes made after that tag, use the source checkout below until the next release.
 
 ```bash
 # On the hub machine, from any working directory:
 mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
 umask 077  # keep hub-state.json and its session links private
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/omp-hub-v0.9.0.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
-tar -xzf omp-hub-v0.9.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-v0.9.1.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt
+tar -xzf omp-hub-v0.9.1.tar.gz
 cd omp-hub
 HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
 ```
@@ -113,14 +113,17 @@ HUB_TOKEN='<same-strong-shared-secret>' \
 
 Replace the example secret, certificate paths and DNS name; restrict hub ingress to trusted networks. Alternatively terminate TLS at a reverse proxy and set `HUB_PUBLIC_URL=https://hub.example.com` on the hub so generated session links use WSS. A remote browser needs HTTPS for WebCrypto; remote insecure `ws://` links are rejected. Keep full links private: they grant write access. The agent's frozen lockfile installs platform-specific prebuilt SDK binaries; **no sibling SDK checkout or Rust build** is needed. See [agent setup](packages/agent/README.md).
 
-For **Linux x64 (glibc)** without Bun, extract the native agent archive into its own directory.
-Keep all three executables and `pi_natives.linux-x64-baseline.node` together; the daemon spawns
-the isolated session host and named-profile statistics program from that directory:
+On **Linux x64 (glibc)**, the native Agent archive does **not** require Bun. Download it on the
+controlled machine and keep all three executables and `pi_natives.linux-x64-baseline.node` together.
+The daemon spawns the isolated session host and named-profile statistics process from that directory:
 
 ```bash
-mkdir -p /path/to/agent
-tar -xzf omp-hub-agent-linux-x64-vX.Y.Z.tar.gz -C /path/to/agent
-HUB_TOKEN=\"<same secret as the hub>\" /path/to/agent/omp-hub-agent --hub wss://hub.example.com
+mkdir -p \"$HOME/omp-hub-agent\" && cd \"$HOME/omp-hub-agent\"
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-agent-linux-x64-v0.9.1.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt
+tar -xzf omp-hub-agent-linux-x64-v0.9.1.tar.gz
+HUB_TOKEN=\"<same secret as the hub>\" ./omp-hub-agent --hub wss://hub.example.com
 ```
 
 The native agent needs the machine's omp auth store (`~/.omp/agent`) or provider credentials,
@@ -168,7 +171,7 @@ The relay `/r/` does not authenticate peers or enforce room quotas/host identity
 - [docs/milestones.md](docs/milestones.md) — MVP phases and post-MVP roadmap
 - [docs/e2e.md](docs/e2e.md) — manual end-to-end verification and known limitations
 
-GitHub Actions runs frozen installs, typechecks and Bun tests for all three packages, then builds the web UI and hub-only container. A qualifying version tag on `main` assembles the release archive and `SHA256SUMS.txt`, tests the unpacked archive and publishes the assets. Releases contain the tagged version, not unreleased source changes; no npm package or Docker image is published by this workflow.
+GitHub Actions runs frozen installs, typechecks and Bun tests for all three packages, then builds the web UI, hub-only container and Linux x64 native Agent bundle. Every push exercises the unpacked native Agent against a live session, named-profile statistics and daemon restart; a qualifying tag repeats this after artifact download, adds both archives and checksums to the GitHub Release. Releases contain the tagged version, not unreleased source changes; no npm package or Docker image is published by this workflow.
 
 ## License
 
