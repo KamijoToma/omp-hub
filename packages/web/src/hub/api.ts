@@ -1094,6 +1094,33 @@ export async function getNotices(): Promise<Notice[]> {
 	return (await api<{ notices: Notice[] }>("/api/notices")).notices;
 }
 
+/** One session file's message-text hits (protocol §2 `search-sessions`). */
+export interface SessionMessageHit {
+	/** Absolute session file path, echoed from the request. */
+	path: string;
+	/** Matching user/assistant messages in the file. */
+	count: number;
+	/** Single-line window around the first match. */
+	snippet?: string;
+}
+
+/**
+ * Case-insensitive prompt/assistant text search over session files on one
+ * machine (protocol §3 `POST /api/machines/:id/sessions/search`). `paths`
+ * defaults to every registry session's file on that machine. Errors mirror
+ * {@link getMachineSessions}: 404 unknown machine, 502 offline, 504 timeout,
+ * 400 caller-input failures.
+ */
+export async function searchSessionMessages(machineId: string, query: string, paths?: string[]): Promise<SessionMessageHit[]> {
+	const body: { query: string; paths?: string[] } = { query };
+	if (paths !== undefined) body.paths = paths;
+	const reply = await api<{ ok: true; matches: SessionMessageHit[] }>(
+		`/api/machines/${encodeURIComponent(machineId)}/sessions/search`,
+		{ method: "POST", body: JSON.stringify(body) },
+	);
+	return reply.matches;
+}
+
 /** Human-readable message for an unknown thrown value. */
 export function errorText(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);

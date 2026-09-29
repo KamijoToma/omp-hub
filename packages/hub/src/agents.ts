@@ -106,7 +106,7 @@ export type SessionCmdName =
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -129,6 +129,10 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
+	/** `search-sessions` candidate session files; omitted searches the machine's registry sessions (protocol §2). */
+	paths?: string[];
+	/** `search-sessions` needle; matched case-insensitively (protocol §2). */
+	query?: string;
 	/** `upload-file` client-supplied file name, or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
@@ -861,7 +865,11 @@ export class AgentRegistry {
 		if (machine) machine.connected = false;
 		const exited = this.#sessions.exitSessionsFor(conn.machineId, plan ? "daemon upgrade" : reason);
 		try {
-			conn.ws.close(4000, reason);
+			// 1001 (going away), NOT 4000: the agent treats 4000 as fatal and
+			// permanently stops reconnecting — right for "agent replaced" (the
+			// hello race must not end with two daemons), wrong for a heartbeat
+			// timeout, which a live daemon must be able to recover from.
+			conn.ws.close(1001, reason);
 		} catch {
 			// Already closing.
 		}

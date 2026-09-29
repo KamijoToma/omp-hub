@@ -10,7 +10,6 @@
 
 import type { Logger } from "./log";
 import { errorMessage } from "./log";
-import { isCompiledAgent } from "./native-mode";
 import type { Supervisor } from "./supervisor";
 
 export interface DaemonRestartOptions {
@@ -29,13 +28,27 @@ export interface DaemonRestartOptions {
  * production logs keep flowing into whatever stream the operator launched with
  * (e.g. the `daemon.log` shell redirect) with no reconfiguration. */
 function spawnReplacement(argv: string[]): unknown {
-	return Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"] });
+	try {
+		return Bun.spawn(argv, { stdio: ["ignore", "inherit", "inherit"] });
+	} catch {
+		// execPath can point at a deleted inode when the on-disk binary was
+		// rebuilt while this daemon ran; /proc/self/exe still resolves the
+		// RUNNING build (Linux). Re-executing it keeps the daemon alive —
+		// loading the new build takes a fresh deploy.
+		return Bun.spawn(["/proc/self/exe", ...argv.slice(1)], { stdio: ["ignore", "inherit", "inherit"] });
+	}
 }
 
-/** A compiled daemon is the executable itself; its virtual `$bunfs` argv[1] is not an entry argument. */
-export function restartSpawnArgv(argv: readonly string[] = process.argv, compiled = isCompiledAgent): string[] {
-	const userArgs = argv.slice(compiled ? 2 : 1);
-	return [process.execPath, ...userArgs];
+/**
+ * argv for the restart re-exec. Compiled binaries report a virtual `$bunfs`
+ * entry as argv[1] (empirically `["bun", "/$bunfs/root/<name>", ...args]`), so
+ * user args start at index 2 there; source runs start at 1. Spawning with the
+ * virtual path as an argument would make the fresh daemon fail its own argv
+ * parsing and die — bricking the machine.
+ */
+export function restartSpawnArgv(argv: readonly string[] = process.argv): string[] {
+	const offset = argv[1]?.includes("/$bunfs/") === true ? 2 : 1;
+	return [process.execPath, ...argv.slice(offset)];
 }
 
 /**

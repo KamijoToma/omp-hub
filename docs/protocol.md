@@ -150,7 +150,10 @@ Semantics:
   it; `session-exit`/`-error` clears the field. Older agents never send it, so `activity` stays
   absent — consumers must treat it as optional (and `handoff` too: absent clears the bit).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
-  reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
+  reason `"agent lost"`) and closes the socket with **1001** — a live daemon treats that as
+  transient and reconnects. Only protocol violations and the same-machineId replacement
+  (`"agent replaced"`, `"re-hello"`, …) close with **4000**, which the agent treats as fatal
+  and does NOT reconnect from. `ping` must be answered with `pong`; it does not replace `hb`.
 - `hb.sessions` doubles as the upgrade-restart reconcile (0.6.0+): records restored from the
   state snapshot (§3) that this connection's heartbeat no longer reports — or reports
   `exited`/`failed` — flip to that terminal state (`"agent heartbeat: no such child"` /
@@ -478,6 +481,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 { t: "cmd", reqId: string, cmd: "list-profiles" }
 { t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
 { t: "cmd", reqId: string, cmd: "restart-daemon" }               // 0.9.0+
+{ t: "cmd", reqId: string, cmd: "search-sessions", query: string, paths?: string[] }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -537,6 +541,24 @@ interface SessionListing {
   refused with `session-error` `"daemon is restarting"`. Older daemons answer
   `ok:false, "unknown machine command: restart-daemon"` (the hub surfaces 400). Code updates only:
   dependency changes still need a manual install on the machine before restarting.
+- `search-sessions` → `data: { results: SessionSearchHit[] }`: case-insensitive prompt/assistant
+  text search over session files, powering the hub web's session filter boxes. `query` is required
+  (trimmed, ≤ 256 chars) and matched against the text content of `user`/`assistant` message entries
+  only — thinking, tool-call, and image blocks never match; one matching message counts once.
+  `paths` lists absolute candidate session files (≤ 200 after deduplication); paths that do not
+  resolve to a `.jsonl` file inside an omp session store (`<…>/agent/sessions/…`) are skipped
+  silently — the cmd never becomes an arbitrary-file read. Files stream line-by-line, 8 at a time,
+  inside the 15 s cmd budget; unreadable files read as "no hit". Only matching files are reported,
+  in request order. Caller-input failures use deterministic strings the hub maps to 400:
+  `empty query` / `query too long` / `invalid paths` / `too many paths`.
+  ```ts
+interface SessionSearchHit {
+  path: string;                // absolute session file, echoed from the request
+  count: number;               // matching user/assistant messages in the file
+  snippet?: string;            // single-line window around the first match (≤ ~200 chars)
+}
+```
+
 
 ## 3. HTTP API (`/api/*`)
 
@@ -597,6 +619,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `POST /api/machines/:machineId/restart-daemon` | → `{ ok: true, machine: MachineRecord }` (0.9.0+; panel-triggered daemon upgrade, §2 `restart-daemon`). 404 unknown machine, 409 `daemon restart already in progress`, 502 agent offline, 504 cmd timeout, 400 agent-reported refusal (e.g. an older daemon). The machine record carries `restarting: true` until the fresh daemon's reconciling heartbeat has replayed the same-id resumes (or the 90 s watchdog TTL expires) |
+| `POST /api/machines/:machineId/sessions/search` | `{query, paths?}` → `{ ok: true, matches: SessionSearchHit[] }` (§2 `search-sessions`; `paths` omitted ⇒ every registry session's `sessionFile` on that machine, capped at 200 after deduplication; needle trimmed, ≤ 256 chars); 400 blank/oversize `query`, non-string-array/oversize `paths`, or mapped agent-reported input failures; error set as for `/fs` |
 | `GET /api/sessions` | → `{ sessions: SessionRecord[] }` (all states, newest first) |
 | `GET /api/sessions/:id` | → `{ session: SessionRecord }`, 404 `{error}` |
 | `DELETE /api/sessions/:id` | → `{ ok: true }`; drops the registry record (0.7.0+). A live/starting session is stopped first (§2 `stop`, reason `"user delete"`); the machine-side omp session file is untouched — `/resume` can re-attach. 404 unknown id |

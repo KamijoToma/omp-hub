@@ -8,6 +8,7 @@
 		"dev": "bun src/main.ts",
 		"start": "bun src/main.ts",
 		"demo": "bun --cwd=../web install --frozen-lockfile && bun --cwd=../web run build && bun src/main.ts",
+		"build:binary": "bun build --compile src/main.ts --outfile omp-hub",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
