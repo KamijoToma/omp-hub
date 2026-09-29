@@ -11,6 +11,7 @@ import {
 	getMachines,
 	getMcpServers,
 	getNotices,
+	onUnauthorized,
 	HubApiError,
 	listMachineDirectories,
 	formatShakeSummary,
@@ -87,6 +88,27 @@ describe("hub api", () => {
 		expect(err).toBeInstanceOf(HubApiError);
 		expect((err as HubApiError).status).toBe(401);
 		expect((err as HubApiError).message).toBe("unauthorized");
+	});
+
+	test("revoked current credentials signal cleanup, but a late old-token 401 does not", async () => {
+		const events: string[] = [];
+		const unsubscribe = onUnauthorized(() => events.push("revoked"));
+		try {
+			setToken("old-token");
+			const pending = Promise.withResolvers<Response>();
+			stubFetch(() => pending.promise);
+			const previous = getMachines();
+			setToken("new-token");
+			pending.resolve(json({ error: "unauthorized" }, 401));
+			await expect(previous).rejects.toBeInstanceOf(HubApiError);
+			expect(events).toEqual([]);
+
+			stubFetch(() => json({ error: "unauthorized" }, 401));
+			await expect(getMachines()).rejects.toBeInstanceOf(HubApiError);
+			expect(events).toEqual(["revoked"]);
+		} finally {
+			unsubscribe();
+		}
 	});
 
 	test("startSession posts the protocol body and unwraps the session", async () => {

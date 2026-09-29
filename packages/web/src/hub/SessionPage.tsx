@@ -16,6 +16,7 @@ import { getDisplayName, type SessionRecord } from "./api";
 import { pushToast } from "./toasts";
 import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
+import { clientPool } from "./client-pool";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { steerPendingCount } from "./steering-queue";
 import { alertsEnabled, requestAlertPermission, setAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./session-alerts";
@@ -110,19 +111,17 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 	const { record, error: loadError } = useSessionRecord(id);
 	const displayName = useRef(getDisplayName()).current;
 
-	// Attach latches: once live with links, keep the surface mounted for this
-	// id even if later polls flip the registry status (ended keeps its banner).
-	// Display-relevant record fields still flow through (rename, cwd).
+	// The first render after a route change must never attach the new id using
+	// the previous id's link. Keep the last attachment only for its own id.
 	const [live, setLive] = useState<SessionRecord | null>(null);
 	useEffect(() => {
-		setLive(null);
-	}, [id]);
-	useEffect(() => {
 		if (record === null || record.status !== "live" || record.links === undefined) return;
+		const link = record.links.full;
 		setLive(previous => {
 			if (
 				previous !== null &&
 				previous.id === record.id &&
+				previous.links?.full === link &&
 				previous.name === record.name &&
 				previous.cwd === record.cwd &&
 				previous.profile === record.profile &&
@@ -133,6 +132,15 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 			return record;
 		});
 	}, [record]);
+
+	const attached =
+		record?.status === "live" && record.links
+			? record
+			: live?.id === id
+				? live
+				: record?.links && clientPool.peek(id)
+					? record
+					: null;
 
 	// Unknown id: fetch its detail immediately; `starting`: fast-poll until links.
 	useEffect(() => {
@@ -228,12 +236,12 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 				onToggleAlerts={toggleAlerts}
 			/>
 			<div className="hb-frame-main">
-				{live !== null && live.links ? (
+				{attached?.links ? (
 					<SessionView
 						key={id}
 						sessionId={id}
-						link={live.links.full}
-						record={live}
+						link={attached.links.full}
+						record={attached}
 						displayName={displayName}
 						registryLive={record?.status === "live"}
 						onLeave={leave}

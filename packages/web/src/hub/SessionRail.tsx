@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionMessageHit, SessionRecord, SessionStatus } from "./api";
 import { deleteSession, errorText, postGenerateTitle, postRename } from "./api";
+import { clientPool } from "./client-pool";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { Modal } from "./Modal";
@@ -259,6 +260,7 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 			void deleteSession(session.id).then(
 				() => {
 					sessionsStore.forget(session.id);
+					clientPool.discard(session.id);
 					onDeleted?.(session);
 				},
 				(err: unknown) => pushToast("error", errorText(err)),
