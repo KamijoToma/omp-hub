@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "../components/agents/AgentDrawer";
 import { AgentsPanel } from "../components/agents/AgentsPanel";
 import { Banners } from "../components/shell/Banners";
-import { Composer, isImeComposing } from "../components/shell/Composer";
+import { Composer, isImeComposing, type ComposerDraft } from "../components/shell/Composer";
 import { HeaderBar } from "../components/shell/HeaderBar";
 import { StatsBar } from "../components/shell/StatsBar";
 import { Toasts } from "../components/shell/Toasts";
@@ -66,6 +66,7 @@ import {
 } from "./commands";
 import { rejoinDelayMs, shouldAutoRejoin } from "./auto-rejoin";
 import { usePoolClient } from "./client-pool";
+import { getComposerDraft, setComposerDraft } from "./composer-draft";
 import { ContextModal } from "./ContextModal";
 import { GoalModal } from "./GoalModal";
 import { HelpModal } from "./HelpModal";
@@ -203,8 +204,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	const [railOpen, setRailOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
-	// Composer text mirrored from the vendored textarea (which owns the draft state).
-	const [paletteText, setPaletteText] = useState("");
+	// Composer text mirrored from the vendored textarea (which owns the draft
+	// state). Seeded from the persisted draft so the palette matches the
+	// restored buffer right after a session switch.
+	const [paletteText, setPaletteText] = useState(() => getComposerDraft(sessionId).text);
 	const [paletteIndex, setPaletteIndex] = useState(0);
 	// Set by Esc/blur/command-run; the next keystroke brings the palette back.
 	const [paletteDismissed, setPaletteDismissed] = useState(false);
@@ -608,6 +611,13 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		notify("info", "interrupting — the queued messages deliver now");
 	}, [client, notify]);
 
+	// Persist the unsent composer buffer per session: switching sessions
+	// remounts the vendored Composer, which would start empty without the seed.
+	const onDraftChange = useCallback(
+		(draft: ComposerDraft): void => setComposerDraft(sessionId, draft),
+		[sessionId],
+	);
+
 	const composerClient = useMemo(() => createComposerClient(client, interceptComposer), [client, interceptComposer]);
 
 	const query = snap.uiRequest ? null : commandQuery(paletteText);
@@ -829,6 +839,8 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 					client={composerClient}
 					snapshot={snap}
 					uploadFile={file => uploadSessionFile(sessionId, file)}
+					initialDraft={getComposerDraft(sessionId)}
+					onDraftChange={onDraftChange}
 				/>
 				{paletteOpen && (
 					<SlashPalette

@@ -1,6 +1,6 @@
 import { File as FileIcon, Image as ImageIcon, LoaderCircle, Paperclip, SendHorizontal, Square, X } from "lucide-react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent, ReactNode } from "react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { GuestClient, GuestSnapshot } from "../../lib/client";
 import type { ImageContent } from "../../lib/wire";
 import {
@@ -26,6 +26,15 @@ export interface ComposerProps {
 	 * which inline text and images only.
 	 */
 	uploadFile?: (file: File) => Promise<UploadResult>;
+	/**
+	 * Buffer restored on mount. The hub page passes the per-session draft it
+	 * persists (`hub/composer-draft.ts`): switching sessions remounts this
+	 * surface, and without a seed the unsent text would be lost. Absent on
+	 * guest pages, which have nothing to restore.
+	 */
+	initialDraft?: ComposerDraft;
+	/** Observed on mount and after every buffer change, for draft persistence. */
+	onDraftChange?: (draft: ComposerDraft) => void;
 }
 
 /** Result of a successful hub upload (`POST /api/sessions/:id/files`). */
@@ -39,10 +48,16 @@ export interface UploadResult {
  * `[Paste #N, …]` markers, images ride the wire `images` array, uploads resolve
  * to `@/machine/path` references appended at submit time.
  */
-type Staged =
+export type Staged =
 	| { kind: "image"; id: number; name: string; bytes: number; content?: ImageContent; error?: string }
 	| { kind: "paste"; id: number; name?: string; content: string; expansion: string }
 	| { kind: "upload"; id: number; name: string; bytes: number; state: "uploading" | "ready" | "error"; path?: string; error?: string };
+
+/** Unsent composer buffer: the text plus everything staged behind it. */
+export interface ComposerDraft {
+	text: string;
+	staged: readonly Staged[];
+}
 
 /** Textarea metrics: line-height 20px + 8px vertical padding × 2 (kept in sync with shell.css). */
 const LINE_PX = 20;
@@ -153,14 +168,16 @@ function AskEditor({ prefill, onSubmit }: AskEditorProps): ReactNode {
 	);
 }
 
-export function Composer({ client, snapshot, uploadFile }: ComposerProps): ReactNode {
-	const [text, setText] = useState("");
-	const [staged, setStaged] = useState<Staged[]>([]);
+export function Composer({ client, snapshot, uploadFile, initialDraft, onDraftChange }: ComposerProps): ReactNode {
+	const [text, setText] = useState(initialDraft?.text ?? "");
+	const [staged, setStaged] = useState<Staged[]>(() => [...(initialDraft?.staged ?? [])]);
 	const [stagingError, setStagingError] = useState<string | null>(null);
 	const [dragOver, setDragOver] = useState(false);
 	const taRef = useRef<HTMLTextAreaElement | null>(null);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
-	const nextId = useRef(1);
+	// Restored pastes keep their original ids (their markers are in the seed
+	// text), so new staging continues past the highest restored id.
+	const nextId = useRef(Math.max(0, ...(initialDraft?.staged ?? []).map(item => item.id)) + 1);
 
 	const live = snapshot.phase === "live";
 	const readOnly = snapshot.readOnly;
@@ -177,6 +194,12 @@ export function Composer({ client, snapshot, uploadFile }: ComposerProps): React
 	useLayoutEffect(() => {
 		autosize(taRef.current);
 	}, [text, uiRequest?.reqId]);
+
+	// Report the buffer (also once on mount with the restored seed) so the
+	// owner can persist it per session; the callback identity is stable.
+	useEffect(() => {
+		onDraftChange?.({ text, staged });
+	}, [text, staged, onDraftChange]);
 
 	/** Replace one staged entry (async staging fills content/state in place). */
 	const updateStaged = useCallback((id: number, patch: Partial<Staged>) => {
