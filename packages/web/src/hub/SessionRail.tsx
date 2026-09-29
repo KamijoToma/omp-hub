@@ -21,7 +21,7 @@ import { deleteSession, errorText, postGenerateTitle, postRename, restartSession
 import { clientPool } from "./client-pool";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
-import { isEndedStatus, partitionEnded, setShowEnded, useShowEnded } from "./rail-filter";
+import { isEndedStatus, railRowsOrdered, setShowEnded, useShowEnded } from "./rail-filter";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
 import { useCompletedSessions } from "./rail-completion";
@@ -242,11 +242,11 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 	// Ended rows fold by default and sink below the active ones; the session
 	// currently on screen never folds away — its row must not vanish under
 	// the viewer.
-	const { active, ended } = useMemo(() => partitionEnded(filtered), [filtered]);
 	const ordered = useMemo(
-		() => [...active, ...(showEnded ? ended : ended.filter(row => row.id !== currentId))],
-		[active, ended, showEnded, currentId],
+		() => railRowsOrdered(filtered, showEnded, currentId),
+		[filtered, showEnded, currentId],
 	);
+	const endedCount = useMemo(() => filtered.reduce((n, s) => n + (isEndedStatus(s.status) ? 1 : 0), 0), [filtered]);
 	const { visible, hidden: hiddenRows } = useMemo(() => partitionHidden(ordered, hidden), [ordered, hidden]);
 	const rows = showHiddenRows ? hiddenRows : visible;
 	// Two-step delete: the first click arms the row, the second (within the
@@ -310,9 +310,9 @@ function PickerBody({ sessions, error, currentId, onPick, onRename, onDeleted }:
 			{sessions === null && !error && <p className="hb-empty">loading…</p>}
 			{sessions === null && error && <p className="hb-empty">{error}</p>}
 			{sessions !== null && filtered.length === 0 && <p className="hb-empty">no matching sessions</p>}
-			{ended.length > 0 && (
+			{endedCount > 0 && (
 				<button type="button" className="hb-hidden-toggle" onClick={() => setShowEnded(!showEnded)}>
-					{showEnded ? `showing ${ended.length} ended — back` : `${ended.length} ended — show`}
+					{showEnded ? `showing ${endedCount} ended — back` : `${endedCount} ended — show`}
 				</button>
 			)}
 			{hiddenRows.length > 0 && (
