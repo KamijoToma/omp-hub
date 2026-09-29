@@ -483,6 +483,21 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		);
 	}, [sessionId, notify]);
 
+	// TUI ctrl+p parity: cycle the configured role models (cycleOrder — default
+	// smol → default → slow) instead of the model list; 0.10.0+ agents only.
+	const cycleRoles = useCallback((): void => {
+		void postCycle(sessionId, { direction: "forward", roleCycle: true }).then(
+			result =>
+				notify(
+					result.switched && result.model ? "info" : "warning",
+					result.switched && result.model
+						? `switched to ${result.model.name}${result.thinkingLevel ? ` · ${result.thinkingLevel}` : ""}`
+						: "no role cycle — assign models to smol/default/slow first",
+				),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
 	// `/todo`: the todo board lives in the docked panel (derived from the live
 	// transcript), so the command only guarantees it is expanded.
 	const [todoOpen, setTodoOpen] = useState(() => localStorage.getItem(TODO_COLLAPSE_KEY) !== "1");
@@ -516,6 +531,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		setTier,
 		togglePause,
 		cycleModel,
+		cycleRoles,
 		showTodos,
 	};
 	const ctxRef = useRef(ctx);

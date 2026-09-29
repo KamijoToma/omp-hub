@@ -78,6 +78,8 @@ export interface CommandContext {
 	togglePause(): void;
 	/** POST the model cycle (forward); `SessionView` reports the switched model. */
 	cycleModel(): void;
+	/** POST the role-model cycle (`cycleOrder`, 0.10.0+ agents); `SessionView` reports the switch. */
+	cycleRoles(): void;
 	/** Expand the docked todo panel above the composer. */
 	showTodos(): void;
 }
@@ -336,6 +338,11 @@ export const COMMANDS: readonly CommandSpec[] = [
 	{ name: "slow", description: "low-priority (flex) service tier on the current model's family", run: ctx => ctx.setTier("flex") },
 	{ name: "pause", description: "freeze/resume the session's agent loop", run: ctx => ctx.togglePause() },
 	{ name: "cycle", description: "cycle to the next model in the session's list", run: ctx => ctx.cycleModel() },
+	{
+		name: "cycle-roles",
+		description: "cycle smol/default/slow role models (TUI ctrl+p parity)",
+		run: ctx => ctx.cycleRoles(),
+	},
 	{
 		name: "settings",
 		description: "model, thinking, links, theme, display name, advanced settings",

@@ -1,15 +1,17 @@
 /**
  * `/model` — model picker. Loads `AgentState` (current model + auth-available
  * models), groups the list by provider, filters as you type, and switches
- * through `POST /api/sessions/:id/model`. `ModelPickerView` is also embedded by
- * the settings modal (as a view swap), driven by the same loader.
+ * through `POST /api/sessions/:id/model`. Role tabs switch the target role;
+ * the active role's resolved assignment renders under the tabs with a
+ * `clear → auto` unassign (0.10.0+ agents). `ModelPickerView` is also embedded
+ * by the settings modal (as a view swap), driven by the same loader.
  */
 import { Check, LoaderCircle, Search } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type { Notice } from "../lib/client";
 import type { AgentModel, AgentState } from "./api";
-import { errorText, setModel } from "./api";
+import { clearModelRole, errorText, setModel } from "./api";
 import { Modal } from "./Modal";
 import type { AgentStateLoad } from "./use-agent-state";
 import { useAgentState } from "./use-agent-state";
@@ -70,7 +72,8 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 	const roles = load.state?.roles ?? [];
 	// Falls back when the host hides `"default"` via role tags.
 	const activeRole = roles.some(entry => entry.role === roleTab) ? roleTab : (roles[0]?.role ?? "default");
-	const current = roles.find(entry => entry.role === activeRole)?.model ?? load.state?.model ?? null;
+	const activeEntry = roles.find(entry => entry.role === activeRole) ?? null;
+	const current = activeEntry?.model ?? null;
 
 	const pick = (model: AgentModel): void => {
 		setPending(`${model.provider}/${model.id}`);
@@ -87,6 +90,29 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 					level
 						? `model → ${model.name}${role} · thinking → ${result.thinkingLevel ?? level}`
 						: `model → ${model.name}${role}`,
+				);
+				onClose();
+			},
+			(err: unknown) => {
+				setPending(null);
+				setError(errorText(err));
+			},
+		);
+	};
+
+	// Unassign the active role (0.10.0+ agents): the persisted value drops and
+	// auto-selection applies. `switched` means a cleared `default` moved the
+	// active model onto the newly exposed assignment.
+	const clearRole = (): void => {
+		setPending("clear");
+		setError(null);
+		void clearModelRole(sessionId, activeRole).then(
+			result => {
+				notify(
+					"info",
+					result.switched
+						? `role ${activeRole} cleared — active model follows the exposed assignment`
+						: `role ${activeRole} cleared — auto-selection applies`,
 				);
 				onClose();
 			},
@@ -115,20 +141,43 @@ export function ModelPickerView({ load, sessionId, notify, onClose }: ModelPicke
 	return (
 		<>
 			{roles.length > 1 && (
-				<div className="hb-role-tabs" role="tablist" aria-label="model roles">
-					{roles.map(role => (
-						<button
-							key={role.role}
-							type="button"
-							role="tab"
-							aria-selected={role.role === activeRole}
-							className={`hb-role-tab${role.role === activeRole ? " hb-role-tab-current" : ""}`}
-							onClick={() => setRoleTab(role.role)}
-						>
-							{role.name}
-						</button>
-					))}
-				</div>
+				<>
+					<div className="hb-role-tabs" role="tablist" aria-label="model roles">
+						{roles.map(role => (
+							<button
+								key={role.role}
+								type="button"
+								role="tab"
+								aria-selected={role.role === activeRole}
+								className={`hb-role-tab${role.role === activeRole ? " hb-role-tab-current" : ""}`}
+								onClick={() => setRoleTab(role.role)}
+							>
+								{role.name}
+							</button>
+						))}
+					</div>
+					{activeEntry && (
+						<div className="hb-role-current">
+							<span className="hb-role-current-label">{activeEntry.name}</span>
+							<span className="hb-role-current-model">
+								{activeEntry.model
+									? `${activeEntry.model.provider}/${activeEntry.model.id}`
+									: "unassigned"}
+								{activeEntry.auto && <span className="hb-role-auto">auto</span>}
+							</span>
+							{activeEntry.model && !activeEntry.auto && (
+								<button
+									type="button"
+									className="hb-role-clear"
+									disabled={pending !== null}
+									onClick={clearRole}
+								>
+									clear → auto
+								</button>
+							)}
+						</div>
+					)}
+				</>
 			)}
 			<label className="hb-search">
 				<Search size={13} className="hb-search-icon" aria-hidden="true" />

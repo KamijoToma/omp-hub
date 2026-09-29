@@ -270,6 +270,72 @@ describe("session commands", () => {
 		});
 		expect(blankLevel.status).toBe(400);
 		expect(await blankLevel.json()).toEqual({ error: "invalid level" });
+
+		const badClearRole = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ provider: "openai", modelId: "gpt-5", clearRole: "yes" }),
+		});
+		expect(badClearRole.status).toBe(400);
+		expect(await badClearRole.json()).toEqual({ error: "clearRole must be a boolean" });
+	});
+
+	test("set-model clearRole unassigns without provider/modelId", async () => {
+		const agent = await connectAgent(main, "m-clear", "clear-machine");
+		const session = await liveSession(main, agent, "m-clear", "/srv/clear");
+
+		const response = api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ role: "smol", clearRole: true }),
+		});
+		const frame = await answerCmd(agent, "set-model", {
+			ok: true,
+			data: { switched: false, role: "smol", thinkingLevel: null },
+		});
+		expect(frame).toMatchObject({ id: session.id, cmd: "set-model", role: "smol", clearRole: true });
+		expect(frame).not.toHaveProperty("provider");
+		expect(frame).not.toHaveProperty("modelId");
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({ ok: true, switched: false, role: "smol", thinkingLevel: null });
+
+		const missingRole = await api(main, `/api/sessions/${session.id}/model`, {
+			method: "POST",
+			body: JSON.stringify({ clearRole: true }),
+		});
+		expect(missingRole.status).toBe(400);
+		expect(await missingRole.json()).toEqual({ error: "role is required with clearRole" });
+	});
+
+	test("cycle forwards roleCycle for role-model cycling", async () => {
+		const agent = await connectAgent(main, "m-role-cycle", "role-cycle-machine");
+		const session = await liveSession(main, agent, "m-role-cycle", "/srv/role-cycle");
+
+		const response = api(main, `/api/sessions/${session.id}/cycle`, {
+			method: "POST",
+			body: JSON.stringify({ direction: "forward", roleCycle: true }),
+		});
+		const frame = await answerCmd(agent, "cycle-model", {
+			ok: true,
+			data: { switched: true, model: { provider: "openai", id: "gpt-5", name: "GPT-5" }, thinkingLevel: "high" },
+		});
+		expect(frame).toMatchObject({ id: session.id, cmd: "cycle-model", direction: "forward", roleCycle: true });
+
+		const settled = await response;
+		expect(settled.status).toBe(200);
+		expect(await settled.json()).toEqual({
+			ok: true,
+			switched: true,
+			model: { provider: "openai", id: "gpt-5", name: "GPT-5" },
+			thinkingLevel: "high",
+		});
+
+		const badRoleCycle = await api(main, `/api/sessions/${session.id}/cycle`, {
+			method: "POST",
+			body: JSON.stringify({ roleCycle: "yes" }),
+		});
+		expect(badRoleCycle.status).toBe(400);
+		expect(await badRoleCycle.json()).toEqual({ error: "roleCycle must be a boolean" });
 	});
 
 	test("get-tree serves the agent's session tree with the leaf marked", async () => {
