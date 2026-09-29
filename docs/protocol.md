@@ -2,6 +2,15 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.11.0** — machine-level live subscription usage. `get-subscriptions`
+(`cmd` without a session id, §2) fetches the current `/usage` provider limits for
+one omp profile, and `GET /api/machines/:id/subscriptions?profile=` (§3) exposes
+only display-safe quota fields to authenticated web clients. The existing
+`/usage/<machineId>` page (§5) presents these limits separately from the
+historical `/stats` request statistics. Unknown commands on older agents fail
+explicitly; the hub must never substitute the default profile for a requested
+named profile.
+
 Revision **0.9.0** — three additions. Advanced session modes from the TUI: `prewalk` / `plan` /
 `advisor` / `tier` / `pause` / `cycle-model` / `get-settings` / `set-setting` session commands
 (§2) with matching HTTP endpoints (§3) and web slash commands (§6); `AgentState` grows
@@ -495,8 +504,10 @@ interface SettingWire {
 
 ### Machine commands (hub → agent, no session child)
 
-A `cmd` **without `id`** targets the machine itself; the daemon answers with the same
-`cmd-result` framing, `reqId` correlation, and 15 s hub timeout as session commands.
+A `cmd` **without `id`** targets the machine itself; the daemon answers with
+`cmd-result` and `reqId` correlation. The hub normally times out after 15 s;
+`get-subscriptions` has its own bounded, longer timeout for provider network
+lookups.
 
 ```ts
 { t: "cmd", reqId: string, cmd: "list-dir", path?: string }      // path omitted ⇒ agent user's home
@@ -504,6 +515,7 @@ A `cmd` **without `id`** targets the machine itself; the daemon answers with the
 { t: "cmd", reqId: string, cmd: "list-sessions", cwd?: string, allProfiles?: boolean }
 { t: "cmd", reqId: string, cmd: "restart-daemon" }               // 0.9.0+
 { t: "cmd", reqId: string, cmd: "search-sessions", query: string, paths?: string[] }
+{ t: "cmd", reqId: string, cmd: "get-subscriptions", profile?: string }
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -522,6 +534,51 @@ interface DirListing {
 - `list-profiles` → `data: { profiles: string[] }`: named omp profiles that exist on the
   machine (`~/.omp/profiles/<name>/agent` exists; `PI_CONFIG_DIR` honored), sorted; the
   implicit `"default"` profile is never listed.
+- `get-subscriptions` → `data: SubscriptionUsage`: the machine's live `/usage`
+  reports for the selected omp profile. Omitted or `"default"` means the
+  implicit default; an explicitly empty profile is invalid. Named profiles
+  must exist and are fetched in isolated processes with profile environment
+  set before SDK imports. No session is required.
+  The agent returns only explicit display fields, never credentials,
+  upstream `raw` data, or arbitrary metadata. The auth store's provider cache
+  can make `fetchedAt` older than the HTTP request. Missing provider reports
+  are listed separately from empty limits.
+  ```ts
+interface SubscriptionUsage {
+  fetchedAt: number;
+  reports: {
+    provider: string;
+    account: string;
+    fetchedAt: number;
+    limits: {
+      id: string;
+      label: string;
+      amount: {
+        unit: string;
+        used?: number;
+        limit?: number;
+        remaining?: number;
+        usedFraction?: number;
+        remainingFraction?: number;
+      };
+      window?: {
+        id: string;
+        label: string;
+        durationMs?: number;
+        resetsAt?: number;
+        resetLabel?: string;
+      };
+      status?: string;
+      notes?: string[];
+    }[];
+    resetCredits?: { availableCount: number; redeemableCount?: number };
+  }[];
+  unavailable: { provider: string; account: string }[];
+}
+```
+  Limits are per account and quota window; fractions from different accounts or
+  profiles cannot be added. Older agents return `unknown machine command` rather
+  than inventing a default-profile answer.
 
 - `list-sessions` → `data: SessionListing`: resumable omp sessions known to the machine, most
   recently modified first. Reads the machine's omp session store (SDK picker listing), so empty
@@ -639,6 +696,7 @@ interface Notice {              // 0.8.0+, in-memory only
 | `GET /api/machines/:machineId/fs?path=` | → `{ ok: true, listing: DirListing }` (§2 "Machine commands", `path` omitted ⇒ home); 404 unknown machine, 502 agent offline, 504 cmd timeout, 400 agent-reported path errors |
 | `GET/HEAD/POST /api/machines/:id/usage/<path>` | Relay `<path>` (+query, POST body) to a machine-local omp stats dashboard; status/content-type/body replayed verbatim. `?profile=<name>` (0.5.0+) selects the named omp profile's dashboard — consumed by the hub, never forwarded in `<path>`; `default`/empty mean the default profile. 404 unknown machine, 400 invalid profile name or agent <0.5.0, 405 other methods, 413 oversized POST body, 502 machine offline or malformed reply, 504 usage timeout |
 | `GET /api/machines/:machineId/profiles` | → `{ ok: true, profiles: string[] }` (§2 "Machine commands"); 404 unknown machine, 502 agent offline, 504 cmd timeout, mapped status for agent-reported errors |
+| `GET /api/machines/:machineId/subscriptions?profile=` | → `SubscriptionUsage` (§2 `get-subscriptions`); omit `profile` or use `default` for the implicit default omp profile, or name an existing profile. 400 invalid/empty profile, 404 unknown machine or missing named profile, 501 older agent without the command, 502 offline/agent failure, 504 bounded fetch timeout (95 s hub budget, 90 s worker). Only authenticated requests are served; no credentials or provider `raw` payload cross the hub. |
 | `GET /api/machines/:machineId/sessions` | → `{ ok: true, listing: SessionListing }` (§2 "Machine commands", `allProfiles`: merged across the default profile and every named omp profile, entries stamped with `profile`); error set as for `/fs` |
 | `POST /api/machines/:machineId/restart-daemon` | → `{ ok: true, machine: MachineRecord }` (0.9.0+; panel-triggered daemon upgrade, §2 `restart-daemon`). 404 unknown machine, 409 `daemon restart already in progress`, 502 agent offline, 504 cmd timeout, 400 agent-reported refusal (e.g. an older daemon). The machine record carries `restarting: true` until the fresh daemon's reconciling heartbeat has replayed the same-id resumes (or the 90 s watchdog TTL expires) |
 | `POST /api/machines/:machineId/sessions/search` | `{query, paths?}` → `{ ok: true, matches: SessionSearchHit[] }` (§2 `search-sessions`; `paths` omitted ⇒ every registry session's `sessionFile` on that machine, capped at 200 after deduplication; needle trimmed, ≤ 256 chars); 400 blank/oversize `query`, non-string-array/oversize `paths`, or mapped agent-reported input failures; error set as for `/fs` |
@@ -789,7 +847,7 @@ Child must exit within 10 s of stop; supervisor escalates to SIGKILL.
 |---|---|
 | `/` | token gate (once) → home: machines + start form + sessions |
 | `/s/<id>` | live session (full collab guest powers via `GuestClient`) |
-| `/usage/<machineId>` | machine usage: hub-native view over the machine's omp stats dashboard (§3 usage relay) |
+| `/usage/<machineId>` | machine usage: historical omp stats (§3 usage relay) and separate live per-profile subscription limits (§3 `subscriptions`); the all-profiles view groups quota reports rather than adding percentages |
 | `/join` | arbitrary collab link guest (vendored connect screen; also the `#<link>` deep-link target) |
 
 localStorage keys: `omp-hub.token`, `omp-hub.name` (display name, default `"guest"`),

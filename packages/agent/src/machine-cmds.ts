@@ -11,6 +11,8 @@ import path from "node:path";
 import type * as Sdk from "@oh-my-pi/pi-coding-agent";
 import { errorMessage } from "./log";
 import { defaultProfilesRoot, listProfiles } from "./profiles";
+import { getSubscriptions } from "./subscriptions";
+import type { SubscriptionUsage } from "./subscriptions-worker";
 
 /**
  * The daemon's single, deliberately lazy SDK touchpoint: a broken install or
@@ -318,10 +320,12 @@ export interface MachineCmdFrame {
 	paths?: string[];
 	/** `search-sessions` needle; matched case-insensitively. */
 	query?: string;
+	/** `get-subscriptions` selects one isolated omp profile. */
+	profile?: string;
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -502,6 +506,14 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 			const data = frame.allProfiles ? await listAllProfileSessions() : await listSessions({ cwd: frame.cwd });
 			return { ok: true, data };
 		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "get-subscriptions") {
+		try {
+			return { ok: true, data: await getSubscriptions(frame.profile) };
+		} catch (err) {
+			// The isolated worker never exposes SDK/provider errors.
 			return { ok: false, error: errorMessage(err) };
 		}
 	}

@@ -210,6 +210,7 @@ async function main(): Promise<void> {
 		["omp-hub-agent", path.join(agentDir, "src", "main.ts")],
 		["omp-hub-agent-session", path.join(agentDir, "src", "session-host.ts")],
 		["omp-hub-agent-stats", path.join(packages.get("omp-stats")!.root, "src", "index.ts")],
+		["omp-hub-agent-subscriptions", path.join(agentDir, "src", "subscriptions-worker.ts")],
 	] as const;
 	await mkdir(outDir, { recursive: true });
 	for (const [name, source] of entries) await compile(name, source, outDir, plugins);
