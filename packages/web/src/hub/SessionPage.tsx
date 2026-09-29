@@ -20,6 +20,8 @@ import { relTime } from "../lib/format";
 import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { clientPool } from "./client-pool";
+import { useHiddenSessions } from "./hidden-sessions";
+import { pickFallbackSessionId } from "./rail-filter";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { steerPendingCount } from "./steering-queue";
 import { requestAlertPermission, setAlertsEnabled, useAlertsEnabled } from "./session-alerts";
@@ -253,6 +255,25 @@ export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode
 	);
 	const leave = useCallback((): void => navigate("/"), []);
 
+	// Deleting the on-screen session (rail picker or quick switcher) moves the
+	// page to the newest other session this browser has not hidden — ended ones
+	// only when no active session remains — and goes home when nothing is left.
+	// The store snapshot is read directly: `onDeleted` fires right after
+	// `sessionsStore.forget`, before React has re-rendered with the new listing.
+	// replaceState keeps the dead `/s/<id>` entry out of the history stack.
+	const hidden = useHiddenSessions();
+	const handleDeleted = useCallback(
+		(session: SessionRecord): void => {
+			if (session.id !== id) return;
+			// The frame survives the id swap, so an open switcher would linger
+			// over the replacement session.
+			setSwitcherOpen(false);
+			const next = pickFallbackSessionId(id, sessionsStore.getSnapshot().sessions, hidden);
+			navigate(next === null ? "/" : `/s/${next}`, true);
+		},
+		[id, hidden],
+	);
+
 	// Local "task completed" markers: track working→idle edges registry-wide,
 	// and treat the session on screen as visited (its marker resets to idle).
 	useCompletedSessionTracker(id);
@@ -279,6 +300,7 @@ export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode
 				onToggleExpanded={toggleRailExpanded}
 				onHome={leave}
 				onSwitch={switchSession}
+				onDeleted={handleDeleted}
 				alertsOn={alertsOn}
 				onToggleAlerts={toggleAlerts}
 				onOpenSettings={() => onOpenSettings("browser")}
@@ -312,11 +334,8 @@ export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode
 						onOpenSettings("browser");
 					}}
 					onClose={() => setSwitcherOpen(false)}
-					onDeleted={session => {
-						// Deleting the attached session leaves the page.
-						if (session.id === id) leave();
-					}}
-				/>
+				onDeleted={handleDeleted}
+			/>
 			)}
 		</div>
 	);

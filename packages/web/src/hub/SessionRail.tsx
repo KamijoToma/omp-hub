@@ -543,6 +543,12 @@ export interface SessionRailProps {
 	onHome(): void;
 	/** Switches to another session; the page owns navigation and warnings. */
 	onSwitch(sessionId: string): void;
+	/**
+	 * Fires after a picker-row delete succeeded; the page decides where the
+	 * UI goes when the deleted row is the session on screen (it switches to
+	 * another session, falling back to home).
+	 */
+	onDeleted?(session: SessionRecord): void;
 	/** Cross-session alert toggle state (persisted; see `session-alerts.ts`). */
 	alertsOn: boolean;
 	/** Flips the alert toggle; the page owns permission prompting and polling. */
@@ -551,7 +557,7 @@ export interface SessionRailProps {
 }
 
 /** The docked/overlay session drawer: collapsed icon strip or the full picker. */
-export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
+export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, onDeleted, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
 	const hidden = useHiddenSessions();
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
@@ -626,10 +632,7 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								currentId={currentId}
 								onPick={pick}
 								onRename={openRename}
-								onDeleted={session => {
-									// Deleting the session you are attached to leaves the page.
-									if (session.id === currentId) onHome();
-								}}
+								onDeleted={onDeleted}
 							/>
 						</div>
 					</>
