@@ -222,6 +222,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 
 	// `/dump`: the transcript snapshot as JSONL, handed to the browser as a download.
 	const downloadDump = useCallback((): void => {
+		if (snap.hasMoreHistory) {
+			notify("warning", "Load all older messages before exporting the full transcript.");
+			return;
+		}
 		const name = record?.name ?? snap.header?.title ?? snap.state?.sessionName ?? "session";
 		const blob = new Blob([transcriptJsonl(snap.entries)], { type: "application/x-ndjson" });
 		const url = URL.createObjectURL(blob);
@@ -232,7 +236,7 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		anchor.click();
 		anchor.remove();
 		setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
-	}, [record?.name, snap.header?.title, snap.state?.sessionName, snap.entries]);
+	}, [record?.name, snap.header?.title, snap.state?.sessionName, snap.entries, snap.hasMoreHistory, notify]);
 
 	// `/compact`, `/shake`, `/handoff`, `/retry`, `/extended-context`: fire the
 	// hub command, toast the outcome.
@@ -780,6 +784,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 					<div className="sh-transcript">
 						<Transcript
 							entries={snap.entries}
+							hasMoreHistory={snap.hasMoreHistory}
+							historyLoading={snap.historyLoading}
+							historyError={snap.historyError}
+							onLoadOlder={() => client.loadOlder()}
 							stream={snap.stream}
 							streamDone={snap.streamDone}
 							activeTools={snap.activeTools}
