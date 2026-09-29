@@ -117,10 +117,20 @@ Hub additions:
 - Home: machine list (live, from `/api/machines`), start form (machine, cwd, name, optional
   initial prompt), session list (poll `/api/sessions` every 2s) with status + open/stop actions
   + copyable attach links.
-- Session page `/s/<id>`: fetch `/api/sessions/:id` (contains the full collab link), construct
-  `GuestClient(link, displayName)`, render the vendored session leaves
-  (HeaderBar/Transcript/AgentsPanel/Composer/AgentDrawer/Banners/Toasts) through a thin
-  `SessionView` glue (~40 lines, mirroring upstream `Session` in `app.tsx`).
+- Session registry polling is shared by the rail and an authenticated
+  `WarmSessions` coordinator. It keeps at most six writable `GuestClient`
+  replicas connected across route changes, choosing the visible session first,
+  then input-required/working sessions and recently visited rooms. Hidden
+  sessions are not preconnected; a cold room joins when selected. Only the
+  visible `SessionView`/transcript mounts, so off-screen rooms do not render
+  React trees or poll `agent-state`.
+- The session surface only accepts a link belonging to the current route id.
+  A matching pooled client retains its transcript and receives background
+  frames without another hello/snapshot; changed links re-mint it. Transient
+  socket drops retry in `CollabSocket`, and ended background clients retry
+  with bounded backoff only while the registry still says live. Eviction,
+  deletion, leaving the authenticated hub, logout, and a rejected hub token
+  close peers; logout/401 also clear cached bearer-protected registry records.
 - Browser guests request only the newest 80 transcript entries on join. The
   patched agent host returns a bounded tail snapshot first, leaving the
   composer usable while older pages load on upward scroll or via the button

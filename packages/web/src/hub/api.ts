@@ -267,6 +267,14 @@ export function clearToken(): void {
 	writeStored(TOKEN_KEY, null);
 }
 
+const unauthorizedListeners = new Set<() => void>();
+
+/** Hub token rejection invalidates any warm writable connections. */
+export function onUnauthorized(listener: () => void): () => void {
+	unauthorizedListeners.add(listener);
+	return () => unauthorizedListeners.delete(listener);
+}
+
 export function getDisplayName(): string {
 	return readStored(NAME_KEY)?.trim() || DEFAULT_DISPLAY_NAME;
 }
@@ -290,10 +298,14 @@ async function errorMessage(res: Response): Promise<string> {
 /** Authenticated JSON request against the hub API. */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	const headers = new Headers(init.headers);
-	headers.set("Authorization", `Bearer ${getToken() ?? ""}`);
+	const token = getToken() ?? "";
+	headers.set("Authorization", `Bearer ${token}`);
 	if (init.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 	const res = await fetch(path, { ...init, headers });
-	if (!res.ok) throw new HubApiError(res.status, await errorMessage(res));
+	if (!res.ok) {
+		if (res.status === 401 && token === getToken()) for (const listener of unauthorizedListeners) listener();
+		throw new HubApiError(res.status, await errorMessage(res));
+	}
 	return (await res.json()) as T;
 }
 
