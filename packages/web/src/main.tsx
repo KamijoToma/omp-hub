@@ -9,10 +9,13 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import GuestApp from "./guest/app";
-import { clearToken, getToken } from "./hub/api";
+import { clearToken, getToken, onUnauthorized } from "./hub/api";
 import { HomePage } from "./hub/HomePage";
+import { clientPool } from "./hub/client-pool";
 import "./hub/highlight";
 import { SessionPage } from "./hub/SessionPage";
+import { sessionsStore } from "./hub/sessions-store";
+import { WarmSessions } from "./hub/WarmSessions";
 import { TokenGate } from "./hub/TokenGate";
 import { UsagePage } from "./hub/UsagePage";
 import { useNoticeToasts } from "./hub/notices-store";
@@ -62,31 +65,32 @@ function Shell(): ReactNode {
 
 	const logout = useCallback((): void => {
 		clearToken();
+		clientPool.closeAll();
+		sessionsStore.clear();
 		setToken(null);
 		navigate("/", true);
 	}, []);
 
+	useEffect(() => {
+		if (!token) return;
+		return onUnauthorized(logout);
+	}, [token, logout]);
+
 	if (route.kind === "unknown") return null;
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
-	// Token-authenticated hub pages also watch the hub notice channel for toasts.
-	if (route.kind === "session")
-		return (
-			<>
-				<SessionPage id={route.id} />
-				<NoticeToasts />
-			</>
-		);
-	if (route.kind === "usage")
-		return (
-			<>
-				<UsagePage machineId={route.machineId} />
-				<NoticeToasts />
-			</>
-		);
+	// The connection manager survives route changes but is absent from /join
+	// and the token gate. It never keeps React session surfaces mounted.
 	return (
 		<>
-			<HomePage onLogout={logout} />
+			<WarmSessions currentId={route.kind === "session" ? route.id : null} />
+			{route.kind === "session" ? (
+				<SessionPage id={route.id} />
+			) : route.kind === "usage" ? (
+				<UsagePage machineId={route.machineId} />
+			) : (
+				<HomePage onLogout={logout} />
+			)}
 			<NoticeToasts />
 		</>
 	);

@@ -72,3 +72,17 @@ export function partitionEnded<T extends { id: string; status: SessionStatus }>(
 	for (const row of rows) (isEndedStatus(row.status) ? ended : active).push(row);
 	return { active, ended };
 }
+
+/**
+ * Final rail ordering: active rows first, then the ended ones. Ended rows fold
+ * by default; the session currently on screen never folds away — its row must
+ * not vanish under the viewer, so it is the one ended row kept when folded.
+ */
+export function railRowsOrdered<T extends { id: string; status: SessionStatus }>(
+	rows: readonly T[],
+	showEnded: boolean,
+	currentId: string | undefined,
+): T[] {
+	const { active, ended } = partitionEnded(rows);
+	return [...active, ...(showEnded ? ended : ended.filter(row => row.id === currentId))];
+}

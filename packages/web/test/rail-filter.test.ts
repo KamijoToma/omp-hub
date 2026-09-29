@@ -1,11 +1,12 @@
 /**
  * `rail-filter` — the per-browser ended-session fold behind the rail and
  * quick switcher: the toggle persists to localStorage, `isEndedStatus`
- * classifies terminal records, and `partitionEnded` splits a filtered
- * listing while keeping order.
+ * classifies terminal records, `partitionEnded` splits a filtered
+ * listing while keeping order, and `railRowsOrdered` composes the final
+ * row order (ended fold with the on-screen session exempt).
  */
 import { describe, expect, test } from "bun:test";
-import { isEndedStatus, partitionEnded, setShowEnded } from "../src/hub/rail-filter";
+import { isEndedStatus, partitionEnded, railRowsOrdered, setShowEnded } from "../src/hub/rail-filter";
 import type { SessionStatus } from "../src/hub/api";
 
 // Installed after the module-level load() ran against an absent localStorage —
@@ -54,5 +55,23 @@ describe("rail filter", () => {
 		const whole = partitionEnded([row("x", "live")]);
 		expect(whole.active).toHaveLength(1);
 		expect(whole.ended).toHaveLength(0);
+	});
+
+	test("railRowsOrdered folds ended rows below the active ones, keeping only the on-screen session", () => {
+		const rows = [row("a", "exited"), row("b", "live"), row("c", "exited"), row("d", "starting"), row("e", "failed")];
+
+		// Folded (default): active rows, then exactly the on-screen ended row.
+		const folded = railRowsOrdered(rows, false, "a");
+		expect(folded.map(item => item.id)).toEqual(["b", "d", "a"]);
+
+		// Nothing on screen: every ended row folds.
+		expect(railRowsOrdered(rows, false, undefined).map(item => item.id)).toEqual(["b", "d"]);
+
+		// Unfolded: all ended rows come back, still below the active ones.
+		const unfolded = railRowsOrdered(rows, true, "a");
+		expect(unfolded.map(item => item.id)).toEqual(["b", "d", "a", "c", "e"]);
+
+		// The on-screen row never folds even when it is the only ended one.
+		expect(railRowsOrdered([row("only", "exited")], false, "only").map(item => item.id)).toEqual(["only"]);
 	});
 });

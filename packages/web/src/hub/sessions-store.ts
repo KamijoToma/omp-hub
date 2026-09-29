@@ -46,6 +46,8 @@ export interface SessionsStore {
 	refresh(): void;
 	/** Drop an id from the listing and detail caches (post-delete); emits. */
 	forget(id: string): void;
+	/** Forget bearer-protected records on logout; ignore outstanding fetches. */
+	clear(): void;
 }
 
 export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsStore {
@@ -69,6 +71,7 @@ export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsSt
 	const listeners = new Set<() => void>();
 	let timer: Timer | null = null;
 	let inFlight = false;
+	let generation = 0;
 
 	function emit(): void {
 		version += 1;
@@ -85,17 +88,23 @@ export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsSt
 	async function poll(): Promise<void> {
 		if (inFlight) return;
 		inFlight = true;
+		const requestGeneration = generation;
 		try {
 			const next = await fetchSessions();
+			if (requestGeneration !== generation) return;
 			sessions = next;
 			error = null;
 			for (const record of next) records.set(record.id, record);
 		} catch (err) {
+			if (requestGeneration !== generation) return;
 			// Registry hiccup: keep showing the stale listing.
 			error = errorText(err);
+		} finally {
+			if (requestGeneration === generation) {
+				inFlight = false;
+				emit();
+			}
 		}
-		inFlight = false;
-		emit();
 	}
 
 	function ensureStarted(): void {
@@ -130,13 +139,16 @@ export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsSt
 			return detailErrors.get(id) ?? null;
 		},
 		refreshSession: async id => {
+			const requestGeneration = generation;
 			try {
 				const record = await fetchSession(id);
+				if (requestGeneration !== generation) return null;
 				records.set(id, record);
 				detailErrors.delete(id);
 				emit();
 				return record;
 			} catch (err) {
+				if (requestGeneration !== generation) return null;
 				detailErrors.set(id, errorText(err));
 				emit();
 				return null;
@@ -153,6 +165,15 @@ export function createSessionsStore(opts: SessionsStoreOptions = {}): SessionsSt
 				dropped = true;
 			}
 			if (dropped) emit();
+		},
+		clear() {
+			generation++;
+			inFlight = false;
+			sessions = null;
+			error = null;
+			records.clear();
+			detailErrors.clear();
+			emit();
 		},
 	};
 }

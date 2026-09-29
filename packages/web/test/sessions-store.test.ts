@@ -62,6 +62,25 @@ describe("sessions store", () => {
 		unsubscribe();
 	});
 
+	test("logout clears links and an outstanding response cannot restore them", async () => {
+		const pending = Promise.withResolvers<SessionRecord[]>();
+		const secret = record({ links: { full: "write-credential", view: "", web: "", webView: "" } });
+		const store = createSessionsStore({
+			pollMs: 60_000,
+			fetchSessions: () => pending.promise,
+			fetchSession: async () => secret,
+		});
+		const unsubscribe = store.subscribe(() => {});
+		await store.refreshSession(secret.id);
+		expect(store.record(secret.id)?.links?.full).toBe("write-credential");
+		store.clear();
+		pending.resolve([secret]);
+		await tick();
+		expect(store.getSnapshot().sessions).toBeNull();
+		expect(store.record(secret.id)).toBeNull();
+		unsubscribe();
+	});
+
 	test("polls while subscribed and exposes listing + record cache", async () => {
 		let polls = 0;
 		const store = createSessionsStore({
