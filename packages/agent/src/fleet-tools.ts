@@ -92,16 +92,42 @@ export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
 				if (p.limit !== undefined) query.set("limit", String(p.limit));
 				return assertFetched(await request("GET", `${sessionPath(p.id)}/messages${query.size ? `?${query}` : ""}`)).body;
 			}),
-		tool("fleet_search_messages", "Search worker messages",
-			"Search one namespace worker's active branch, including stored text, tool-call arguments and tool results before message truncation. Use a literal case-insensitive query (1–256 characters) and/or inclusive from / exclusive to ISO-8601 timestamps with timezone. The newest 20 matches (max 50) arrive chronologically; nextCursor fetches older matches. Snippets are short: omit query and set a time window around a hit to inspect nearby messages. fleet_get_messages reads bounded messages from the newest turn backward, not directly by hit id.",
-			type({ id: type.string, "query?": type.string, "from?": type.string, "to?": type.string,
-				"cursor?": type.string, "limit?": type.number }),
+		tool("fleet_search_messages", "Search fleet messages",
+			"Search persisted visible text, tool-call arguments and tool results before truncation. Minimal namespace call: {query:\"git merge main\"}; no preliminary message read or cursor is needed. Add id to search one session; otherwise search your current namespace, optionally narrowed by sessionIds, machineIds or exact session cwd. Do not combine id with these scope filters. query is literal and case-insensitive (1–256 characters); optional from is inclusive and to exclusive, using timezone-qualified timestamps such as 2026-09-30T00:00:00Z. Omit time bounds for all history and cursor for the newest matches; blank time/cursor values are omitted. Arrays roles/toolNames/sources/fields filter with AND between categories and OR within one category. sources: text/toolCall/toolResult/custom. fields: text/toolResult/custom/toolCall.arguments or a dotted argument path such as toolCall.arguments.command (excludes matches only in cwd or documentation). Default limit20, max50. Namespace results are newest-first with explicit partial/coverage; single-session pages are chronological. Reuse nextCursor unchanged with the same query/filters; namespace cursors are not message ids. Read hit evidence with fleet_get_message({id:hit.sessionId,messageId:hit.id,toolCallId:hit.toolCallId}); match.contentCursor reads the original match region, including beyond truncated output.",
+			type({ "id?": type.string, "query?": type.string, "from?": type.string, "to?": type.string,
+				"cursor?": type.string, "limit?": type.number, "sessionIds?": type.string.array(),
+				"machineIds?": type.string.array(), "cwd?": type.string, "roles?": type.string.array(),
+				"toolNames?": type.string.array(), "sources?": type.enumerated("text", "toolCall", "toolResult", "custom").array(),
+				"fields?": type.string.array() }),
 			async p => {
-				const query = new URLSearchParams();
-				for (const key of ["query", "from", "to", "cursor", "limit"] as const) {
-					if (p[key] !== undefined) query.set(key, String(p[key]));
+				if (p.id !== undefined && (typeof p.id !== "string" || !p.id.trim())) throw new Error("fleet: id must be a nonblank session id; omit id for namespace search");
+				if (p.id !== undefined && (p.sessionIds !== undefined || p.machineIds !== undefined || p.cwd !== undefined)) {
+					throw new Error("fleet: do not combine id with sessionIds, machineIds or cwd");
 				}
+				const body: Record<string, unknown> = {};
+				for (const key of ["query", "from", "to", "cursor", "limit", "sessionIds", "machineIds", "cwd", "roles", "toolNames", "sources", "fields"] as const) {
+					const value = p[key];
+					if (value === undefined) continue;
+					if (key === "from" || key === "to" || key === "cursor") {
+						if (typeof value === "string" && !value.trim()) continue;
+						body[key] = typeof value === "string" ? value.trim() : value;
+					} else body[key] = value;
+				}
+				if (p.id === undefined) return assertFetched(await request("POST", "/api/fleet/search", body)).body;
+				const query = new URLSearchParams();
+				for (const [key, value] of Object.entries(body)) query.set(key, Array.isArray(value) ? JSON.stringify(value) : String(value));
 				return assertFetched(await request("GET", `${sessionPath(p.id)}/search?${query}`)).body;
+			}),
+		tool("fleet_get_message", "Read anchored fleet evidence",
+			"Read a search hit by message entry id, always including that anchor. id is the hit's sessionId and messageId is the hit's id. before/after select 0–10 visible neighbors (defaults1/2); tool calls and nonadjacent results are also paired by toolCallId. Optional toolCallId restricts pairing to that anchor's call. Messages remain chronological and bounded; contextTruncated signals omitted context. Optional leafId freezes context at that active branch ancestor; omit it to include results appended since search. To read full visible content, pass the anchor's contentCursor, or match.contentCursor from search to jump near a hit beyond truncation. The content chunk identifies block/argument path and offset; repeat with content.nextCursor until null. Hidden/reasoning/image payloads never leave this interface. A removed anchor/snapshot is a conflict, not a fallback to newer history.",
+			type({ id: type.string, messageId: type.string, "before?": type.number, "after?": type.number,
+				"leafId?": type.string, "toolCallId?": type.string, "contentCursor?": type.string }),
+			async p => {
+				const body: Record<string, unknown> = { messageId: p.messageId };
+				for (const key of ["before", "after", "leafId", "toolCallId", "contentCursor"] as const) {
+					if (p[key] !== undefined) body[key] = p[key];
+				}
+				return assertFetched(await request("POST", `${sessionPath(p.id)}/message-context`, body)).body;
 			}),
 		tool("fleet_get_input", "Read worker input",
 			"List pending select/editor/ask steps, including requestId. Can answer even if no human guest is connected.",

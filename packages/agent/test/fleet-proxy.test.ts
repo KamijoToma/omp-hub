@@ -8,6 +8,9 @@ test("only fleet namespace routes can cross the daemon boundary", () => {
 		["GET", "/api/fleet/sessions/s_worker/messages?cursor=a1&limit=20"],
 		["GET", "/api/fleet/sessions/s_worker/search?query=git+merge&from=2026-09-30T12%3A00%3A00Z&to=2026-10-01T12%3A00%3A00Z&cursor=a1&limit=20"],
 		["GET", "/api/fleet/sessions/s_worker/search?to=2026-09-30T12%3A00%3A00Z"],
+		["GET", "/api/fleet/sessions/s_worker/search?query=merge&fields=%5B%22toolCall.arguments.command%22%5D"],
+		["POST", "/api/fleet/search"],
+		["POST", "/api/fleet/sessions/s_worker/message-context"],
 		["POST", "/api/fleet/sessions"], ["POST", "/api/fleet/notices"],
 		...["claim", "stop", "message", "interrupt", "watch", "input"].map(action => ["POST", `/api/fleet/sessions/s_worker/${action}`]),
 		["POST", "/api/fleet/events/e_123/ack"],
@@ -18,6 +21,10 @@ test("only fleet namespace routes can cross the daemon boundary", () => {
 		["GET", "/api/fleet/sessions/s_worker/search?ownerId=s_other"],
 		["GET", "/api/fleet/sessions/s_worker/search?sessionFile=%2Ftmp%2Fprivate.jsonl"],
 		["GET", "/api/fleet/sessions/s_worker/search?namespaceId=other"],
+		["GET", "/api/fleet/search"],
+		["POST", "/api/fleet/search?namespaceId=other"],
+		["GET", "/api/fleet/sessions/s_worker/message-context"],
+		["POST", "/api/fleet/sessions/s_worker/message-context?messageId=private"],
 		["GET", "/api/fleet/sessions/s_worker/messages?query=private"],
 		["POST", "/api/fleet/sessions/s_worker/search?query=test"],
 		["GET", "/api/fleet/machines?namespaceId=other"],
@@ -52,8 +59,20 @@ test("proxy derives owner from supervisor and removes caller-supplied identities
 		method: "GET", path: "/api/fleet/sessions/s_worker/search?query=merge",
 		body: { ownerId: "s_other", namespaceId: "other", sessionFile: "/private/history.jsonl" },
 	}, deps);
+	await handleFleetRequest({
+		method: "POST", path: "/api/fleet/search",
+		body: { query: "merge", roles: ["assistant"], fields: ["toolCall.arguments.command"],
+			sessionIds: ["s_worker"], ownerId: "s_other", namespaceId: "other", sessionFile: "/private/history.jsonl" },
+	}, deps);
+	await handleFleetRequest({
+		method: "POST", path: "/api/fleet/sessions/s_worker/message-context",
+		body: { messageId: "command", before: 0, after: 0, toolCallId: "tc1", contentCursor: "content",
+			ownerId: "s_other", namespaceId: "other", path: "/private/history.jsonl" },
+	}, deps);
 	expect(calls.map(call => call.body)).toEqual([
 		{ machineId: "m1", cwd: "/work", forkFrom: "s_source" }, { mode: "steer", text: "help" }, null,
+		{ query: "merge", roles: ["assistant"], fields: ["toolCall.arguments.command"], sessionIds: ["s_worker"] },
+		{ messageId: "command", before: 0, after: 0, toolCallId: "tc1", contentCursor: "content" },
 	]);
 	expect(calls.every(call => call.headers.get("X-Fleet-Owner") === "s_actual")).toBe(true);
 	expect(calls.every(call => call.headers.get("authorization") === "Bearer secret")).toBe(true);

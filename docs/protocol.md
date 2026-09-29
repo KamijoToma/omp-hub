@@ -2,6 +2,14 @@
 
 All hub-own messages are JSON. `/*` = MVP freezes these shapes; changes need a version bump.
 
+Revision **0.15.0** — fleet search defaults to the operator's namespace when
+`id` is omitted, with participant/content filters, newest-first global pages,
+opaque snapshot cursors and explicit partial coverage. `fleet_get_message`
+reads an inclusive message anchor, nonadjacent ID-paired tools and bounded
+continuations of complete visible content. Search/context never grants shell
+or arbitrary-file access. New namespace/context/filter operations require
+0.15.0 daemons; plain per-session search keeps its 0.14.0 contract.
+
 Revision **0.14.0** — `fleet_search_messages` searches one namespace worker's
 active-branch transcript by literal text and/or timestamp range (§2–§4).
 Assistant tool-call arguments and persisted tool results are searched before
@@ -556,7 +564,13 @@ lookups.
 { t: "cmd", reqId: string, cmd: "get-subscriptions", profile?: string }
 { t: "cmd", reqId: string, cmd: "read-session-messages", path: string, cursor?: string, pageLimit?: number }
 { t: "cmd", reqId: string, cmd: "search-session-messages", path: string,
-  query?: string, from?: string, to?: string, cursor?: string, pageLimit?: number } // 0.14.0+
+  query?: string, from?: string, to?: string, cursor?: string, pageLimit?: number,
+  roles?: string[], toolNames?: string[], sources?: string[], fields?: string[],
+  snapshotLeafId?: string|null, searchOrder?: "timestamp",
+  searchBefore?: {timestamp:string,sequence:number} } // filters/snapshots: 0.15.0+
+{ t: "cmd", reqId: string, cmd: "read-session-message", path: string, messageId: string,
+  before?: number, after?: number, leafId?: string, toolCallId?: string,
+  contentCursor?: string } // 0.15.0+
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -692,9 +706,12 @@ interface SessionSearchHit {
 - `search-session-messages {path,query?,from?,to?,cursor?,pageLimit?}` (0.14.0+)
   searches the selected active branch of the hub-supplied managed session file
   without modifying it. It uses the same contained, realpath-checked profile
-  stores as `read-session-messages`. A match on stored text beyond the normal
-  2,000-character block projection returns only a bounded snippet, not the
-  entire untruncated output.
+  stores as `read-session-messages`. On 0.15.0+, content filters and hub-owned
+  snapshot/order/boundary fields mirror live `fleet-search-messages`; the hub
+  supplies these fields for stable namespace pages, not arbitrary file access.
+- `read-session-message {path,messageId,before?,after?,leafId?,toolCallId?,contentCursor?}`
+  (0.15.0+) uses the same anchored context/continuation as live
+  `fleet-get-message` (§3), without writing the transcript.
 
 ## 3. HTTP API (`/api/*`)
 
@@ -835,7 +852,9 @@ read/watch.
 | `POST /api/fleet/sessions` | `{machineId,cwd,name?,prompt?,profile?,forkFrom?}` → 202 `{session}`; plain worker automatically inherits the operator's namespace, controller and watch. `forkFrom` is the id of a controlled, live, idle worker in that namespace: it copies the worker's current persisted transcript and artifacts to an independent file, then starts the new worker on the **same** machine, cwd and profile. Supply `machineId`/`cwd` matching the source; an omitted `profile` inherits it. The original keeps running. 403 unclaimed/operator source; 404 out-of-scope source; 409 busy, missing persisted history or terminal source; 400 mismatched machine/cwd/profile. The copy's path is never returned to fleet clients |
 | `POST /api/fleet/sessions/:id/claim`, `/watch`, `/stop` | Claim single-writer control, watch events (including a pending-input snapshot), or terminate an owned worker |
 | `GET /api/fleet/sessions/:id/messages?cursor=&limit=` | `{messages,nextCursor,hasMore,leafId}`; no cursor returns the newest 20 visible active-branch messages by default (limit 1–100, also bounded by payload size), with each page in chronological order. `nextCursor` is the oldest returned id; pass it as an exclusive `cursor` for earlier messages while `hasMore` is true. An empty page echoes the supplied cursor or returns null. `leafId` identifies the current branch tip; a cursor removed by a rewind → 409. Operator and worker daemons must both be ≥0.13.0 when online or the read returns 409. Terminal sessions use the machine's read-only command |
-| `GET /api/fleet/sessions/:id/search?query=&from=&to=&cursor=&limit=` | `fleet_search_messages` → `{hits:[{id,timestamp,role,source,snippet,toolName?}],nextCursor,hasMore,leafId}`. At least a literal case-insensitive `query` (1–256 characters) or one ISO-8601 timezone-qualified bound is required; `from` is inclusive and `to` exclusive, and `from < to` when both are set. Newest 20 hits by default (limit 1–50), returned chronologically; an exclusive `cursor` of the oldest hit pages to earlier matching entries, and a cursor removed by a rewind returns 409. One bounded snippet per visible active-branch entry; text, assistant tool-call string arguments, stored tool results and displayed custom messages are searchable, but hidden/reasoning/image content is not. Invalid filters → 400; out-of-namespace id → 404; operator or online worker daemon <0.14.0 → 409. Terminal sessions use the managed read-only machine command, never a caller-supplied file path |
+| `GET /api/fleet/sessions/:id/search?query=&from=&to=&cursor=&limit=` | Single-session `fleet_search_messages` → `{hits,nextCursor,hasMore,leafId}`. Latest 20 matches by default (limit 1–50), returned chronologically; oldest hit id is the exclusive backward cursor. Blank optional time/cursor fields are omitted. Content filter arrays are JSON-encoded query values (`roles`, `toolNames`, `sources`, `fields`) and require both daemons ≥0.15.0; plain search retains ≥0.14.0. Hits include `sessionId`; 0.15.0 adds sequence/tool correlation/original match locations. Invalid arguments → 400; out-of-namespace id → 404; removed cursor → 409. Terminal history uses only the registered managed file |
+| `POST /api/fleet/search` | Namespace `fleet_search_messages` (omit tool `id`) → `{hits,nextCursor,hasMore,partial,coverage}`. JSON query/filter contract and frozen global pagination below. Requires operator ≥0.15.0; unavailable/older workers remain declared failures, never silently disappear |
+| `POST /api/fleet/sessions/:id/message-context` | `fleet_get_message {id,messageId,before?,after?,leafId?,toolCallId?,contentCursor?}` → `{anchorId,leafId,messages,relatedIds,contextTruncated?,content?}`. Always includes the visible anchor, ID-pairs tools and supports full visible-content continuation. Same-namespace reads do not require claiming control. Both daemons ≥0.15.0; missing/rewound anchor or snapshot → 409 |
 | `GET /api/fleet/sessions/:id/input` | `{pending:[{requestId,kind,title,options?,prefill?}]}` |
 | `POST /api/fleet/sessions/:id/input` | `{requestId,answer}`; first valid answer wins against writable guests, stale request → 409, bad option → 400 |
 | `POST /api/fleet/sessions/:id/message` | `{text,mode:"start"|"steer"|"follow_up"}` → `{ok:true,scheduled:true,operationId}`; scheduling, not completion |
@@ -849,6 +868,110 @@ reasoning payload is neither searched nor returned. Hidden custom entries never
 appear. Text search matches the persisted content before `fleet_get_messages`
 applies its block-size cap; a hit exposes only a nearby bounded excerpt. If the
 daemon did not persist an output, search cannot recover it.
+
+**Fleet search and anchored evidence (0.15.0).**
+
+Namespace search accepts `{query?,from?,to?,cursor?,limit?,sessionIds?,machineIds?,
+cwd?,roles?,toolNames?,sources?,fields?}`. At least a literal case-insensitive
+query (1–256 characters) or timezone-qualified ISO time bound is required.
+`from` is inclusive, `to` exclusive; both require `from < to`. Omitted bounds
+search all retained active-branch history, not just the newest message page.
+Blank optional `from`/`to`/`cursor` values are omitted; nonblank invalid values
+produce actionable errors. Participant arrays allow 1–200 entries; content
+filter arrays allow 1–32 strings of at most 128 characters each, trimmed and
+deduplicated. Categories combine with AND, entries within a category with OR.
+`cwd` matches the registry's exact session working directory, not an inferred
+tool invocation cwd. Explicit out-of-namespace session ids return 404.
+
+`sources` is `text | toolCall | toolResult | custom`. `fields` accepts `text`,
+`toolResult`, `custom`, `toolCall.arguments`, or a dotted argument path such as
+`toolCall.arguments.command` (including descendant leaves). Role, tool, source,
+field and literal matching must all apply to the same eligible content part.
+One first eligible match per visible entry is returned:
+
+```ts
+interface FleetSearchHit {
+  sessionId: string;
+  id: string; // message entry id, not session id
+  timestamp: string; role: string; source: string; snippet: string;
+  sequence: number; // active-branch entry index; optional on legacy 0.14 replies
+  toolName?: string; toolCallId?: string;
+  match?: {
+    blockIndex: number|null; field: string; argumentPath?: (string|number)[];
+    start: number; end: number; // original UTF-16 offsets, before snippet flattening
+    contentCursor: string; // snapshot-bound stream position near the match
+  };
+}
+```
+
+Namespace pages are newest-first by parsed timestamp, lexicographic session id
+and branch sequence (all descending). Invalid stored timestamps are excluded
+only from this timestamp-ordered mode; single-session branch ordering remains
+unchanged. The first request snapshots selected participants and their branch
+leaves; appends and newly registered sessions do not enter continuation pages.
+Reuse the opaque `nextCursor` with the same owner, query/filter conditions and
+limit. ASCII query case, surrounding whitespace, filter order/duplicates and
+equivalent timezone representations are normalized; distinct Unicode literal
+forms are not merged. A membership change, removed leaf, unknown/expired cursor
+or mismatched query returns 409, never a reset to the latest page.
+
+Cursors expire five minutes after the initial page; continuation does not extend
+expiry. Hub restart invalidates them immediately. The in-memory cache retains no
+transcripts and is bounded to 256 cursors and 100,000 participant references;
+capacity eviction makes old tokens unknown (409). A pagination snapshot too
+large to retain returns 503 rather than silently excluding candidates.
+Authorization is rechecked after asynchronous worker replies and before the
+aggregate leaves the hub.
+
+`coverage` is `{totalSessions,searchedSessions,failures:[{sessionId,machineId,
+reason}]}`; reasons are `offline | unsupported | history_unavailable | timeout |
+worker_error`. Searches include registered live and terminal sessions, including
+the operator. Initially failed participants remain failed in their snapshot,
+even if a daemon later reconnects/upgrades; restart the query to include them.
+`partial:true` means incomplete coverage, not a definitive absence of matches.
+Fan-out has at most eight in-flight commands and one overall budget of
+`min(10 seconds, cmdTimeoutMs)`, leaving room for the daemon's 15-second HTTP
+proxy. Queued sessions that cannot be scanned in that budget are reported as
+timeouts. The hub retains only the global top-k hit candidates.
+
+Anchored reads default to one preceding/two following visible messages;
+`before`/`after` accept integers 0–10. `toolCallId` optionally restricts pairing
+to one call belonging to the anchor (including a tool-result anchor). Pairing
+does not depend on adjacency or completion order. `leafId` optionally freezes
+context at that active ancestor; omit it to include results appended after
+search. `contextTruncated` marks the 60,000-character context-row/content budget;
+the anchor is never dropped, and `relatedIds` identifies paired records for
+individual recovery. Each readable message provides a `contentCursor` starting
+its full visible-content stream. Pass it back to the same tool/message, or use
+`match.contentCursor` to read the original hit region directly:
+
+```ts
+content?: {
+  messageId: string; blockIndex: number|null; field: string;
+  argumentPath?: (string|number)[]; toolName?: string; toolCallId?: string;
+  value: unknown; offset: number; nextCursor: string|null;
+}
+```
+
+String chunks are at most 8,000 UTF-16 characters; append chunks at their offsets
+and continue with `content.nextCursor` until null. Argument leaves preserve
+numeric array indices, primitive values and empty containers without serializing
+an entire oversized object. Tool metadata remains available beyond the regular
+12-block preview. Hidden custom entries, reasoning and image payloads never
+appear in this stream or the new context projection. A cursor is bound to its
+message and active ancestor; a mismatch/rewind fails explicitly.
+
+Minimal calls:
+
+```json
+{"query":"git merge main","toolNames":["bash"],"sources":["toolCall"],"fields":["toolCall.arguments.command"]}
+```
+
+Then call `fleet_get_message` with `{id:hit.sessionId,messageId:hit.id,
+toolCallId:hit.toolCallId}`. Add `contentCursor:hit.match.contentCursor` to jump
+near a long-output/argument match. Adding `id` to search selects one session;
+do not combine it with `sessionIds`, `machineIds` or `cwd`. Search evidence is
+not a Git mutation/audit event; forked histories can contain inherited calls.
 
 An admin move first fences new fleet mutations and waits for commands already
 dispatched to the worker to acknowledge before committing membership and
@@ -923,7 +1046,7 @@ parent → child (stdin):
 { t: "fleet-notification", event: FleetEvent } // unsolicited push to operator child
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
      |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt"
-     |"fleet-fork-session"|"fleet-get-messages"|"fleet-search-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
+     |"fleet-fork-session"|"fleet-get-messages"|"fleet-search-messages"|"fleet-get-message"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
@@ -931,6 +1054,9 @@ parent → child (stdin):
   prompt?: string, limit?: object, condition?: object, enabled?: boolean,
   name?: string, dataB64?: string, text?: string,
   cursor?: string, pageLimit?: number, query?: string, from?: string, to?: string, requestId?: string, answer?: string,
+  roles?: string[], toolNames?: string[], sources?: string[], fields?: string[],
+  snapshotLeafId?: string|null, searchOrder?: "timestamp", searchBefore?: {timestamp:string,sequence:number},
+  messageId?: string, before?: number, after?: number, leafId?: string, toolCallId?: string, contentCursor?: string,
   messageMode?: "start"|"steer"|"follow_up", clearQueue?: boolean }
                                             // parameters pass through unvalidated;
                                             // executeCommand owns per-command validation
@@ -951,7 +1077,9 @@ token. Hub rechecks the live operator, namespace and worker membership before
 every response; asynchronous reads recheck after the worker responds. Neither
 guest collab links nor the target's session-file path reach fleet results.
 Fleet-created sessions are plain workers. Child IPC abandons unanswered requests
-after 30 s; hub/daemon command and fetch budgets remain 15 s.
+after 30 s; individual hub/daemon command and fetch budgets remain 15 s.
+Namespace search bounds the entire fan-out to 10 s (or a lower configured command
+timeout), returning explicit partial coverage before the proxy fetch expires.
 
 `fleet-fork-session` flushes a stable idle source, rejects a missing/lazy
 session file or concurrent turn, and returns `{sessionFile}` to the hub only.

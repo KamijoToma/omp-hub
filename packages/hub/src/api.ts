@@ -2,9 +2,10 @@
  * HTTP API (docs/protocol.md §3): machine/session registry for the web UI.
  * Everything except `/api/health` requires `Authorization: Bearer <HUB_TOKEN>`.
  */
-import { newCmdReqId, supportsFleetMessageSearch, supportsFleetNamespace, supportsRecentFleetMessages, versionTriple, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
+import { newCmdReqId, supportsFleetNamespace, supportsRecentFleetMessages, versionTriple, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import { FleetMoveInProgressError, type FleetEvent, type FleetState } from "./fleet-state";
+import { getFleetMessageContext, searchFleetNamespace, searchFleetSession } from "./fleet-search";
 import { log } from "./log";
 import { normalizeProfileName } from "./profiles";
 import { isTerminalStatus, randomId, type SessionRecord, type SessionStore } from "./sessions";
@@ -81,20 +82,6 @@ const MACHINE_SESSION_SEARCH_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions\/sea
 const MAX_SEARCH_PATHS = 200;
 const MAX_SEARCH_QUERY_CHARS = 256;
 
-/** Require a full calendar date, wall-clock time, and an explicit UTC offset. */
-function fleetSearchTimestamp(value: string): number | null {
-	const match = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
-	if (!match) return null;
-	const year = Number(match[1]);
-	const month = Number(match[2]);
-	const day = Number(match[3]);
-	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-	const daysInMonth = month === 2 ? (leap ? 29 : 28) :
-		month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
-	if (month < 1 || month > 12 || day < 1 || day > daysInMonth) return null;
-	const timestamp = Date.parse(value);
-	return Number.isFinite(timestamp) ? timestamp : null;
-}
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -1740,9 +1727,11 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 	if (!owner || owner.superagent !== true || owner.status !== "live" || !ownerScope?.namespaceId ||
 		!ctx.agents.isOnline(owner.machineId)) return json({ error: "fleet operator unavailable" }, 403);
 	const namespaceId = ownerScope.namespaceId;
+	const ownerVersion = ownerScope.membershipVersion;
 	const ownerStillInScope = (): boolean =>
 		owner.status === "live" && ctx.agents.isOnline(owner.machineId) &&
-		ctx.fleet.membership(owner.id).namespaceId === namespaceId;
+		ctx.fleet.membership(owner.id).namespaceId === namespaceId &&
+		ctx.fleet.membership(owner.id).membershipVersion === ownerVersion;
 	const inScope = (record: SessionRecord): boolean => ctx.fleet.membership(record.id).namespaceId === namespaceId;
 	const target = (id: string): SessionRecord | undefined => {
 		const record = ctx.sessions.get(id);
@@ -1751,6 +1740,9 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 	const controlled = (record: SessionRecord): boolean =>
 		record.superagent !== true && ctx.fleet.membership(record.id).controllerId === owner.id;
 	const routeParts = route.slice("/api/fleet/".length).split("/");
+	if (route === "/api/fleet/search" && req.method === "POST") {
+		return searchFleetNamespace(req, ctx, owner, namespaceId, ownerVersion);
+	}
 
 	if (route === "/api/fleet/machines" && req.method === "GET") {
 		const allowed = ctx.fleet.getNamespace(namespaceId)?.machineIds;
@@ -1820,7 +1812,7 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 		return json({ ok: true, controllerId: owner.id });
 	}
 	const reading = (req.method === "GET" && (action === "messages" || action === "search" || action === "input")) ||
-		(action === "watch" && req.method === "POST");
+		((action === "watch" || action === "message-context") && req.method === "POST");
 	if (!reading && !controlled(worker)) return json({ error: "claim this session before managing it" }, 403);
 	const version = ctx.fleet.membership(worker.id).membershipVersion;
 	const stillAllowed = (): boolean => {
@@ -1879,76 +1871,10 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 		return json(result.data);
 	}
 	if (action === "search" && req.method === "GET") {
-		const params = new URL(req.url).searchParams;
-		for (const key of params.keys()) {
-			if (!/^(?:query|from|to|cursor|limit)$/.test(key) || params.getAll(key).length !== 1) {
-				return json({ error: "invalid search parameters" }, 400);
-			}
-		}
-		const rawQuery = params.get("query");
-		const query = rawQuery === null ? undefined : rawQuery.trim();
-		if (query !== undefined && (query.length < 1 || query.length > MAX_SEARCH_QUERY_CHARS)) {
-			return json({ error: "query must be 1–256 characters" }, 400);
-		}
-		const from = params.get("from") ?? undefined;
-		const to = params.get("to") ?? undefined;
-		if (query === undefined && from === undefined && to === undefined) {
-			return json({ error: "query, from, or to is required" }, 400);
-		}
-		const fromMs = from === undefined ? undefined : fleetSearchTimestamp(from);
-		const toMs = to === undefined ? undefined : fleetSearchTimestamp(to);
-		if (fromMs === null) return json({ error: "from must be an ISO-8601 timestamp with timezone" }, 400);
-		if (toMs === null) return json({ error: "to must be an ISO-8601 timestamp with timezone" }, 400);
-		if (fromMs !== undefined && toMs !== undefined && fromMs >= toMs) {
-			return json({ error: "from must be before to" }, 400);
-		}
-		const cursor = params.get("cursor") ?? undefined;
-		if (cursor !== undefined && (cursor.length < 1 || cursor.length > 128)) {
-			return json({ error: "invalid cursor" }, 400);
-		}
-		const rawLimit = params.get("limit");
-		const pageLimit = rawLimit === null ? 20 : Number(rawLimit);
-		if ((rawLimit !== null && !/^[1-9]\d*$/.test(rawLimit)) || !Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 50) {
-			return json({ error: "limit must be between 1 and 50" }, 400);
-		}
-		if (!supportsFleetMessageSearch(ctx.agents.agentVersion(owner.machineId)) ||
-			(ctx.agents.isOnline(worker.machineId) && !supportsFleetMessageSearch(ctx.agents.agentVersion(worker.machineId)))) {
-			return json({ error: "fleet message search requires agent 0.14.0+ on operator and worker machines" }, 409);
-		}
-		const liveWorker = worker.status === "live";
-		if (!liveWorker && (!isTerminalStatus(worker.status) || !worker.sessionFile)) {
-			return json({ error: "session history unavailable" }, 409);
-		}
-		if (!ctx.agents.isOnline(worker.machineId)) return json({ error: "agent offline" }, 502);
-		const result = await ctx.agents.sendCmd(worker.machineId, {
-			reqId: newCmdReqId(), cmd: liveWorker ? "fleet-search-messages" : "search-session-messages",
-			id: liveWorker ? id : undefined,
-			path: liveWorker ? undefined : worker.sessionFile,
-			query, from, to, cursor, pageLimit,
-		});
-		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
-		if (!result.ok) {
-			// Only caller-supplied search arguments are 400; a rejected hub-owned
-			// session file or an unreadable SDK history is a worker failure.
-			const error = result.error;
-			switch (error) {
-				case "query must be between 1 and 256 characters":
-				case "from must be an ISO-8601 timestamp with timezone":
-				case "to must be an ISO-8601 timestamp with timezone":
-				case "query, from, or to is required":
-				case "from must be before to":
-				case "limit must be between 1 and 50":
-				case "cursor must be between 1 and 128 characters":
-					return json({ error }, 400);
-				case "cursor is not on the active branch":
-				case "unknown session":
-				case "session history unavailable":
-					return json({ error }, 409);
-				default:
-					return json({ error }, 502);
-			}
-		}
-		return json(result.data);
+		return searchFleetSession(req, ctx, owner, worker, namespaceId, ownerVersion, version);
+	}
+	if (action === "message-context" && req.method === "POST") {
+		return getFleetMessageContext(req, ctx, owner, worker, namespaceId, ownerVersion, version);
 	}
 	if (action === "input" && req.method === "GET") {
 		const result = await dispatchCmd(id, "fleet-get-input", {}, ctx);

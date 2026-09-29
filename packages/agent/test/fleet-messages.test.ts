@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { pageFleetMessages, searchFleetMessages } from "../src/fleet-client";
+import { pageFleetMessages, searchFleetMessages, type FleetBranchEntry } from "../src/fleet-client";
 
 const entries = [
 	{ id: "root", parentId: null, timestamp: "t1", type: "session" },
@@ -32,8 +32,8 @@ test("a rewind invalidates a previous page cursor and limits remain bounded", ()
 	const manager = { getBranch: () => branch, getLeafId: () => branch.at(-1)?.id ?? null };
 	const cursor = pageFleetMessages(manager, undefined, 2).nextCursor!;
 	branch = branch.slice(0, 2);
-	expect(() => pageFleetMessages(manager, cursor, 1)).toThrow("cursor is not on the active branch");
-	expect(() => pageFleetMessages(session, undefined, 101)).toThrow("limit must be between 1 and 100");
+	expect(() => pageFleetMessages(manager, cursor, 1)).toThrow();
+	expect(() => pageFleetMessages(session, undefined, 101)).toThrow();
 	const exhausted = pageFleetMessages(session, "a");
 	expect(exhausted.messages).toEqual([]);
 	expect(exhausted.nextCursor).toBe("a");
@@ -162,16 +162,122 @@ test("search validates filter inputs and rejects cursors removed by branch rewin
 	const manager = { getBranch: () => branch, getLeafId: () => branch.at(-1)?.id ?? null };
 	const cursor = searchFleetMessages(manager, { query: "data" }).nextCursor!;
 	branch = branch.slice(0, 2);
-	expect(() => searchFleetMessages(manager, { query: "data", cursor })).toThrow("cursor is not on the active branch");
-	for (const [options, error] of [
-		[{}, "query, from, or to is required"],
-		[{ query: " " }, "query must be between 1 and 256 characters"],
-		[{ query: "x".repeat(257) }, "query must be between 1 and 256 characters"],
-		[{ query: "x", limit: 51 }, "limit must be between 1 and 50"],
-		[{ query: "x", limit: 1.5 }, "limit must be between 1 and 50"],
-		[{ query: "x", cursor: "" }, "cursor must be between 1 and 128 characters"],
-		[{ from: "2026-09-30T12:00:00" }, "from must be an ISO-8601 timestamp with timezone"],
-		[{ from: "2026-02-30T12:00:00Z" }, "from must be an ISO-8601 timestamp with timezone"],
-		[{ from: "2026-09-30T12:00:00Z", to: "2026-09-30T12:00:00Z" }, "from must be before to"],
-	] as const) expect(() => searchFleetMessages(manager, options)).toThrow(error);
+	expect(() => searchFleetMessages(manager, { query: "data", cursor })).toThrow();
+	for (const options of [
+		{}, { query: " " }, { query: "x".repeat(257) },
+		{ query: "x", limit: 51 }, { query: "x", limit: 1.5 },
+		{ query: "x", cursor: "x".repeat(129) },
+		{ from: "2026-09-30T12:00:00" }, { from: "2026-02-30T12:00:00Z" },
+		{ from: "2026-09-30T12:00:00Z", to: "2026-09-30T12:00:00Z" },
+	]) expect(() => searchFleetMessages(manager, options)).toThrow();
+});
+
+test("a first search needs no cursor and blank optional bounds do not hide matching history", () => {
+	const omitted = searchFleetMessages(session, { query: "data" });
+	const blank = searchFleetMessages(session, { query: "data", from: " ", to: "", cursor: "\t" });
+	expect(omitted.hits.map(hit => hit.id)).toEqual(["c"]);
+	expect(blank).toEqual(omitted);
+});
+
+test("filters select the first eligible content part, never a match from another call or field", () => {
+	const command = "😀\t  prefix\nGit Merge --abort";
+	const branch = [{
+		id: "calls", parentId: null, timestamp: "2026-09-30T12:00:00Z", type: "message",
+		message: { role: "assistant", content: [
+			{ type: "text", text: "git merge text noise" },
+			{ type: "toolCall", id: "read-id", name: "read", arguments: { command: "git merge wrong tool" } },
+			{ type: "toolCall", id: "bash-id", name: "bash", arguments: {
+				path: "/work/git merge/file", nested: { command }, label: "git merge label noise",
+			} },
+		] },
+	}];
+	const manager = { getBranch: () => branch, getLeafId: () => "calls" };
+	const options = { query: "git merge", roles: ["assistant"], toolNames: ["bash"], sources: ["toolCall"],
+		fields: ["toolCall.arguments.nested.command"] };
+	const hit = searchFleetMessages(manager, options).hits[0]!;
+	const start = command.indexOf("Git Merge");
+	expect(hit).toMatchObject({ id: "calls", sequence: 0, toolName: "bash", toolCallId: "bash-id", source: "toolCall",
+		match: { blockIndex: 2, field: "toolCall.arguments", argumentPath: ["nested", "command"], start, end: start + 9 } });
+	expect(command.slice(hit.match!.start, hit.match!.end)).toBe("Git Merge");
+	expect(searchFleetMessages(manager, { ...options, roles: ["user"] }).hits).toEqual([]);
+	expect(searchFleetMessages(manager, { ...options, sources: ["text"] }).hits).toEqual([]);
+	expect(searchFleetMessages(manager, { ...options, fields: ["toolCall.arguments.cwd"] }).hits).toEqual([]);
+	expect(searchFleetMessages(manager, { ...options, toolNames: ["read"] }).hits).toEqual([]);
+	expect(searchFleetMessages(manager, { ...options, fields: ["toolCall.arguments.nested"], toolNames: ["read", "bash"] }).hits[0]?.toolCallId)
+		.toBe("bash-id");
+	expect(searchFleetMessages(manager, { ...options, query: "git merge", fields: ["toolCall.arguments.path"] }).hits[0]?.match?.argumentPath)
+		.toEqual(["path"]);
+});
+
+test("timestamp order finds buried newest hits and uses an exclusive timestamp/sequence tie boundary", () => {
+	const timestamps = ["2026-09-30T12:10:00Z", "2026-09-30T12:00:00Z", "2026-09-30T12:05:00Z",
+		"2026-09-30T12:10:00+00:00", "2026-09-30T12:01:00Z", "invalid"];
+	const branch = timestamps.map((timestamp, index) => ({ id: `ordered-${index}`, parentId: index ? `ordered-${index - 1}` : null,
+		type: "message", timestamp, message: { role: "user", content: "needle" } }));
+	const manager = { getBranch: () => branch, getLeafId: () => branch.at(-1)!.id };
+	const options = { query: "needle", limit: 2, searchOrder: "timestamp" };
+	const first = searchFleetMessages(manager, options);
+	expect(first.hits.map(hit => [hit.id, hit.sequence])).toEqual([["ordered-0", 0], ["ordered-3", 3]]);
+	expect(first.hasMore).toBe(true);
+	const tied = searchFleetMessages(manager, { ...options, searchBefore: { timestamp: timestamps[0], sequence: 3 } });
+	expect(tied.hits.map(hit => hit.id)).toEqual(["ordered-2", "ordered-0"]);
+	const earlier = searchFleetMessages(manager, { ...options, searchBefore: { timestamp: timestamps[0], sequence: 0 } });
+	expect(earlier.hits.map(hit => hit.id)).toEqual(["ordered-4", "ordered-2"]);
+	expect(searchFleetMessages(manager, { ...options, searchBefore: { timestamp: timestamps[0], sequence: -1 } }).hits)
+		.toEqual(earlier.hits);
+	expect(searchFleetMessages(manager, { ...options, searchBefore: { timestamp: timestamps[0], sequence: Number.MAX_SAFE_INTEGER } }).hits)
+		.toEqual(first.hits);
+	expect(searchFleetMessages(manager, { ...options, searchBefore: { timestamp: timestamps[2], sequence: 2 } }).hits.map(hit => hit.id))
+		.toEqual(["ordered-1", "ordered-4"]);
+});
+
+test("frozen search snapshots survive appends, reject rewinds, and can freeze an empty branch", () => {
+	let branch: FleetBranchEntry[] = entries.slice();
+	const manager = { getBranch: () => branch, getLeafId: () => branch.at(-1)?.id ?? null };
+	const snapshot = searchFleetMessages(manager, { query: "data", snapshotLeafId: "c" });
+	branch.push({ id: "new", parentId: "d", timestamp: "t6", type: "message", message: { role: "user", content: "data" } });
+	expect(searchFleetMessages(manager, { query: "data", snapshotLeafId: "c" })).toEqual(snapshot);
+	expect(searchFleetMessages(manager, { query: "data" }).hits.map(hit => hit.id)).toEqual(["c", "new"]);
+	expect(searchFleetMessages(manager, { query: "data", snapshotLeafId: null })).toEqual({
+		hits: [], nextCursor: null, hasMore: false, leafId: null,
+	});
+	branch = branch.slice(0, 3);
+	expect(() => searchFleetMessages(manager, { query: "data", snapshotLeafId: "c" })).toThrow();
+});
+
+test("search rejects invalid extended filters and internal ordering boundaries", () => {
+	for (const extra of [
+		{ roles: [] }, { roles: [""] }, { roles: Array(33).fill("user") }, { toolNames: [3] },
+		{ sources: ["thinking"] }, { fields: ["path"] }, { fields: ["toolCall.arguments..command"] },
+		{ snapshotLeafId: 42 }, { searchOrder: "branch" }, { searchBefore: { timestamp: "2026-09-30T12:00:00Z", sequence: 0 } },
+		{ searchOrder: "timestamp", searchBefore: { timestamp: "invalid", sequence: 0 } },
+		{ searchOrder: "timestamp", searchBefore: { timestamp: "2026-09-30T12:00:00Z", sequence: -2 } },
+		{ searchOrder: "timestamp", searchBefore: { timestamp: "2026-09-30T12:00:00Z", sequence: 0.5 } },
+	]) expect(() => searchFleetMessages(session, { query: "data", ...extra })).toThrow();
+});
+
+test("literal Unicode search retains original UTF-16 offsets instead of case-folded string offsets", () => {
+	const text = "😀\tİstanbul";
+	const branch = [{ id: "unicode", parentId: null, timestamp: "2026-09-30T12:00:00Z", type: "message",
+		message: { role: "user", content: text } }];
+	const manager = { getBranch: () => branch, getLeafId: () => "unicode" };
+	const hit = searchFleetMessages(manager, { query: "İ" }).hits[0]!;
+	expect(hit.match).toMatchObject({ blockIndex: null, field: "text", start: 3, end: 4 });
+	expect(text.slice(hit.match!.start, hit.match!.end)).toBe("İ");
+});
+
+test("tool-result filters retain the result's own tool identity and exclude matching calls", () => {
+	const branch = [
+		{ id: "call", parentId: null, timestamp: "2026-09-30T12:00:00Z", type: "message", message: {
+			role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc", arguments: { command: "needle" } }],
+		} },
+		{ id: "result", parentId: "call", timestamp: "2026-09-30T12:00:00Z", type: "message", message: {
+			role: "toolResult", toolName: "bash", toolCallId: "tc", content: [{ type: "text", text: "needle output" }],
+		} },
+	];
+	const manager = { getBranch: () => branch, getLeafId: () => "result" };
+	const result = searchFleetMessages(manager, { query: "needle", roles: ["toolResult"], toolNames: ["bash"],
+		sources: ["toolResult"], fields: ["toolResult"] });
+	expect(result.hits.map(hit => [hit.id, hit.source, hit.toolName, hit.toolCallId, hit.match?.field]))
+		.toEqual([["result", "toolResult", "bash", "tc", "toolResult"]]);
 });

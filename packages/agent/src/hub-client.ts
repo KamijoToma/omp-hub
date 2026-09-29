@@ -84,6 +84,25 @@ export interface CmdFrame {
 	level?: string;
 	/** `prompt`: text delivered to the session via `session.prompt()`. */
 	text?: string;
+	/** Fleet history/search parameters; forwarded unchanged to the selected boundary. */
+	query?: string;
+	from?: string;
+	to?: string;
+	cursor?: string;
+	pageLimit?: number;
+	roles?: string[];
+	toolNames?: string[];
+	sources?: string[];
+	fields?: string[];
+	snapshotLeafId?: string | null;
+	searchOrder?: "timestamp";
+	searchBefore?: { timestamp: string; sequence: number };
+	messageId?: string;
+	before?: number;
+	after?: number;
+	leafId?: string;
+	toolCallId?: string;
+	contentCursor?: string;
 }
 
 /** hub → agent machine-level usage request (protocol §2); answered with `usage-res`. */

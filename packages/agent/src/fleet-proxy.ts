@@ -20,17 +20,18 @@ export function isAllowedFleetPath(method: string, rawPath: string): boolean {
 	if (url.search && !(method === "GET" && segments.length === 6 && resource === "sessions" &&
 		(action === "messages" || action === "search"))) return false;
 	if (url.search && [...url.searchParams.keys()].some(key =>
-		action === "search" ? !["query", "from", "to", "cursor", "limit"].includes(key) : key !== "cursor" && key !== "limit")) return false;
+		action === "search" ? !["query", "from", "to", "cursor", "limit", "roles", "toolNames", "sources", "fields"].includes(key)
+			: key !== "cursor" && key !== "limit")) return false;
 	if (method === "GET") {
 		if (segments.length === 4) return resource === "machines" || resource === "sessions" || resource === "events";
 		if (segments.length === 5) return resource === "sessions";
 		return segments.length === 6 && resource === "sessions" && ["messages", "search", "input"].includes(action!);
 	}
 	if (method !== "POST") return false;
-	if (segments.length === 4) return resource === "sessions" || resource === "notices";
+	if (segments.length === 4) return resource === "sessions" || resource === "notices" || resource === "search";
 	if (segments.length !== 6) return false;
 	if (resource === "events") return action === "ack" && !!id && /^[A-Za-z0-9_-]+$/.test(id);
-	return resource === "sessions" && ["claim", "stop", "message", "interrupt", "input", "watch"].includes(action!);
+	return resource === "sessions" && ["claim", "stop", "message", "interrupt", "input", "watch", "message-context"].includes(action!);
 }
 
 /** A session start never carries owner, namespace, or superagent identity from a child. */
@@ -108,6 +109,8 @@ export async function handleFleetRequest(request: FleetProxyRequest, deps: Fleet
 		const keys = pathname.endsWith("/message") ? ["text", "mode"]
 			: pathname.endsWith("/interrupt") ? ["text", "clearQueue"]
 			: pathname.endsWith("/input") ? ["requestId", "answer"]
+			: pathname.endsWith("/message-context") ? ["messageId", "before", "after", "leafId", "toolCallId", "contentCursor"]
+			: pathname === "/api/fleet/search" ? ["query", "from", "to", "cursor", "limit", "sessionIds", "machineIds", "cwd", "roles", "toolNames", "sources", "fields"]
 			: pathname === "/api/fleet/notices" ? ["message", "urgency", "sessionId"] : [];
 		body = Object.fromEntries(keys.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 	} else body = method === "GET" ? undefined : request.body;
