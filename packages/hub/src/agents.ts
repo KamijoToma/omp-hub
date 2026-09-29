@@ -106,7 +106,7 @@ export type SessionCmdName =
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "get-subscriptions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -129,6 +129,8 @@ export interface CmdRequest {
 	cwd?: string;
 	/** `list-sessions` across every omp profile; entries carry `profile` (protocol §2). */
 	allProfiles?: boolean;
+	/** `get-subscriptions`: one isolated omp profile (omitted means default). */
+	profile?: string;
 	/** `search-sessions` candidate session files; omitted searches the machine's registry sessions (protocol §2). */
 	paths?: string[];
 	/** `search-sessions` needle; matched case-insensitively (protocol §2). */
@@ -511,7 +513,7 @@ export class AgentRegistry {
 	 * `{ok:false, error}` when the agent is offline, the write fails, the agent
 	 * disconnects, or the agent stays silent for `cmdTimeoutMs`; never rejects.
 	 */
-	sendCmd(machineId: string, frame: CmdRequest): Promise<CmdResult> {
+	sendCmd(machineId: string, frame: CmdRequest, timeoutMs = this.#cfg.cmdTimeoutMs): Promise<CmdResult> {
 		const conn = this.#connections.get(machineId);
 		if (!conn) return Promise.resolve({ ok: false, error: "agent offline" });
 		const { promise, resolve } = Promise.withResolvers<CmdResult>();
@@ -521,7 +523,7 @@ export class AgentRegistry {
 			timer: setTimeout(() => {
 				this.#pending.delete(frame.reqId);
 				resolve({ ok: false, error: "cmd timeout" });
-			}, this.#cfg.cmdTimeoutMs),
+			}, timeoutMs),
 		};
 		this.#pending.set(frame.reqId, pending);
 		try {

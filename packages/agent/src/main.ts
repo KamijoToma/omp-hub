@@ -97,8 +97,8 @@ function parseArgs(argv: string[]): CliOptions | null {
 /**
  * Route one hub `cmd` and answer with `cmd-result` (§2): frames without `id`
  * are machine-level and answered by the daemon itself; the rest go to their
- * session child. The 15 s timeout belongs to the hub; here every path replies
- * exactly once.
+ * session child. Timeout ownership belongs to the hub (quota commands have
+ * a longer budget); here every path replies exactly once.
  */
 async function handleCmdFrame(supervisor: Supervisor, client: HubClient, frame: CmdFrame): Promise<void> {
 	if (frame.id === undefined) {

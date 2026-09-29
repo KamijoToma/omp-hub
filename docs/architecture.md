@@ -48,6 +48,14 @@ isolation sidesteps all of it and adds crash containment. Evidence:
 `oh-my-pi/packages/coding-agent/test/sdk-async-job-manager-singleton.test.ts`,
 `src/async/job-manager.ts:96-112`, `src/config/settings.ts:288`.
 
+Machine subscription limits come from omp's auth-store `/usage` reports, not the
+transcript-backed `/stats` dashboard. The daemon answers the machine-level
+request without starting a session. It fetches each selected profile in a
+separate short-lived SDK process because profile directories and provider
+registries are resolved at module load; only a bounded, allowlisted projection
+of the reports crosses the hub channel. Historical request statistics remain
+on the existing stats-dashboard relay.
+
 **session-host construction** (per child):
 
 1. `createAgentSession({ cwd, agentDir?, settings: await Settings.loadIsolated({cwd, agentDir}),

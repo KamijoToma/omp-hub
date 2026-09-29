@@ -67,6 +67,7 @@ const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
 /** Cap on the caller's POST body relayed to a machine's stats dashboard. */
 const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
+const MACHINE_SUBSCRIPTIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/subscriptions$/;
 const MACHINE_SESSIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions$/;
 /** Panel-triggered daemon upgrade restart (protocol §3). */
 const MACHINE_RESTART_PATH_RE = /^\/api\/machines\/([^/]+)\/restart-daemon$/;
@@ -131,6 +132,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const machineProfiles = MACHINE_PROFILES_PATH_RE.exec(route);
 	if (machineProfiles && req.method === "GET") {
 		return listMachineProfiles(decodeURIComponent(machineProfiles[1]!), ctx);
+	}
+	const machineSubscriptions = MACHINE_SUBSCRIPTIONS_PATH_RE.exec(route);
+	if (machineSubscriptions && req.method === "GET") {
+		return machineSubscriptionUsage(decodeURIComponent(machineSubscriptions[1]!), req, ctx);
 	}
 	const machineSessions = MACHINE_SESSIONS_PATH_RE.exec(route);
 	if (machineSessions && req.method === "GET") {
@@ -569,6 +574,39 @@ async function usageProxy(machineId: string, rest: string, search: string, req: 
 		status,
 		headers: typeof contentType === "string" ? { "content-type": contentType } : {},
 	});
+}
+
+/** Fetch one profile's live quota from the machine's isolated SDK worker. */
+async function machineSubscriptionUsage(machineId: string, req: Request, ctx: ApiContext): Promise<Response> {
+	if (!ctx.agents.getMachine(machineId)) return json({ error: "machine not found" }, 404);
+	if (!ctx.agents.isOnline(machineId)) return json({ error: "agent offline" }, 502);
+	const params = new URL(req.url).searchParams;
+	const values = params.getAll("profile");
+	if (values.length > 1) return json({ error: "invalid profile name" }, 400);
+	const raw = values[0] ?? "default";
+	if (raw !== "default" && (
+		raw === "all" || !PROFILE_NAME_RE.test(raw) || raw.endsWith(".")
+		|| /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/i.test(raw)
+	)) return json({ error: "invalid profile name" }, 400);
+
+	const result = await ctx.agents.sendCmd(machineId, {
+		reqId: newCmdReqId(),
+		cmd: "get-subscriptions",
+		profile: raw,
+	}, 95_000);
+	if (!result.ok) {
+		const status = result.error.startsWith("unknown machine command") ? 501 : result.error === "profile not found" ? 404
+			: cmdErrorStatus(result.error);
+		const error = status === 501 ? "agent does not support subscription usage" : result.error;
+		return json({ error }, status);
+	}
+	const usage = result.data;
+	if (!usage || typeof usage !== "object" || !("fetchedAt" in usage) || typeof usage.fetchedAt !== "number"
+		|| !("reports" in usage) || !Array.isArray(usage.reports)
+		|| !("unavailable" in usage) || !Array.isArray(usage.unavailable)) {
+		return json({ error: "invalid subscription response" }, 502);
+	}
+	return json(usage);
 }
 
 /**

@@ -345,6 +345,50 @@ export async function restartDaemon(machineId: string): Promise<MachineRecord> {
 	return reply.machine;
 }
 
+/** Live account-level subscription quotas returned by a machine's agent. */
+export interface SubscriptionLimit {
+	id: string;
+	label: string;
+	amount: {
+		unit: string;
+		used?: number;
+		limit?: number;
+		remaining?: number;
+		usedFraction?: number;
+		remainingFraction?: number;
+	};
+	window?: {
+		id: string;
+		label: string;
+		durationMs?: number;
+		resetsAt?: number;
+		resetLabel?: string;
+	};
+	status?: string;
+	notes?: string[];
+}
+
+export interface SubscriptionReport {
+	provider: string;
+	account: string;
+	fetchedAt: number;
+	limits: SubscriptionLimit[];
+	resetCredits?: { availableCount: number; redeemableCount?: number };
+}
+
+export interface SubscriptionUsage {
+	fetchedAt: number;
+	reports: SubscriptionReport[];
+	unavailable: { provider: string; account: string }[];
+}
+
+/** Current quotas for exactly one profile; never aggregate these across profiles. */
+export function getMachineSubscriptions(machineId: string, profile: string): Promise<SubscriptionUsage> {
+	return api<SubscriptionUsage>(
+		`/api/machines/${encodeURIComponent(machineId)}/subscriptions?profile=${encodeURIComponent(profile)}`,
+	);
+}
+
 /** Time ranges the machine's stats dashboard accepts (protocol §3 usage relay). */
 export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 
