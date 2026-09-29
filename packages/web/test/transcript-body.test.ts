@@ -48,6 +48,8 @@ test("body-only hides non-answer output without losing user input or the answer"
 	expect(full).toContain("tr-think-head");
 	expect(full).toContain("private command");
 	expect(full).toContain("tr-usage");
+	// The in-chat switch is gone; the setting lives in the hub settings center.
+	expect(full).not.toContain("tr-mode-switch");
 	setTranscriptMode("body");
 	const body = render(entries);
 	expect(body).toContain("Question");
@@ -60,22 +62,23 @@ test("body-only hides non-answer output without losing user input or the answer"
 	expect(body).not.toContain("tr-turn-model");
 });
 
-test("hidden diagnostics and synthetic prompts do not split one answer or appear as text", () => {
+test("synthetic prompts stay visible inline without splitting one answer", () => {
 	setTranscriptMode("body");
 	const entries: SessionEntry[] = [
 		entry("u", { role: "user", content: "Question", timestamp: 1 }),
 		entry("a1", assistant([{ type: "text", text: "Part one" }], 1000)),
 		{ type: "custom_message", id: "diag", parentId: "a1", timestamp: stamp, customType: "notice", content: "private notice", display: true },
-		entry("auto", { role: "user", content: "hidden synthetic prompt", synthetic: true, timestamp: 2 }),
+		entry("auto", { role: "user", content: "mid-run steering prompt", synthetic: true, timestamp: 2 }),
 		entry("a2", assistant([{ type: "text", text: "Part two" }], 2000)),
 	];
 	const html = render(entries);
 	expect(html).toContain("Part one");
 	expect(html).toContain("Part two");
+	expect(html).toContain("mid-run steering prompt");
+	expect(html).toContain("tr-msg--synthetic");
 	expect(html).toContain("think for ~3.0s · used 0 tools");
 	expect(html.match(/class="tr-footnote"/g)).toHaveLength(1);
 	expect(html).not.toContain("private notice");
-	expect(html).not.toContain("hidden synthetic prompt");
 });
 
 test("tool-only turns and streaming ghosts retain one deduplicated count", () => {

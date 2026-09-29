@@ -10,7 +10,6 @@ import { StatsBar } from "../components/shell/StatsBar";
 import { Toasts } from "../components/shell/Toasts";
 import { Transcript } from "../components/transcript/Transcript";
 import { GuestClient } from "../lib/client";
-import { useTranscriptMode } from "../lib/transcript-mode";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
 import "../components/shell/shell.css";
@@ -123,7 +122,6 @@ interface SessionProps {
 
 function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
-	const transcriptMode = useTranscriptMode();
 	const [railOpen, setRailOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const autoOpenedRef = useRef(false);
@@ -166,7 +164,7 @@ function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 				onToggleRail={() => setRailOpen(open => !open)}
 				onLeave={onLeave}
 			/>
-			{transcriptMode === "full" && <StatsBar snapshot={snap} />}
+			<StatsBar snapshot={snap} />
 			<main className="sh-main">
 				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
 					<div className="sh-transcript">

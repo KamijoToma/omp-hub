@@ -220,7 +220,7 @@ export function SettingsModal({ sessionId, initialSection, notify, onLogout, onC
 							<input type="checkbox" checked={transcriptMode === "body"} onChange={e => setTranscriptMode(e.target.checked ? "body" : "full")} />
 							<span>Only show model answers</span>
 						</label>
-						<p className="hb-card-note">Hide thinking, tool details and transcript metadata. Each answer shows an approximate model-request time and tool count. Applies to /join and subagents too.</p>
+						<p className="hb-card-note">Collapses agent turns to their model text with an approximate model-request time and tool count, hiding thinking, tool details and transcript metadata. Your prompts and the session stats bar stay visible. Applies to /join and subagents too.</p>
 					</section>
 					<section className="hb-modal-section">
 						<h3 className="hb-card-title">Session stats bar</h3>
