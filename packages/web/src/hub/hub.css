@@ -37,8 +37,8 @@
 	border-radius: var(--radius);
 }
 
-/* Single column by default; machine controls and the start form sit beside
- * machine history when there is room for two columns. */
+/* Single column by default; the primary start form sits beside the grouped
+ * workspace and history panels when the New pane has enough width. */
 .hb-grid {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
@@ -93,6 +93,118 @@
 .hb-empty {
 	font-size: 12px;
 	color: var(--fg-faint);
+}
+
+/* The New pane has one primary action surface and one compact context column.
+ * Keep these rules scoped: status cards and Usage share the generic hb-card. */
+.hb-new .hb-grid,
+.hb-new .hb-col {
+	gap: 16px;
+}
+
+.hb-new .hb-new-start {
+	gap: 16px;
+	padding: 20px;
+	border-color: var(--border-strong);
+}
+
+.hb-new-start-head {
+	padding-bottom: 16px;
+	border-bottom: 1px solid var(--border);
+}
+
+.hb-new-kicker {
+	color: var(--accent);
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
+.hb-new-title {
+	margin: 4px 0 0;
+	color: var(--fg);
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.hb-new-start-head .hb-card-note {
+	margin-top: 6px;
+}
+
+.hb-new-card-title {
+	color: var(--fg);
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.hb-new .hb-new-start .hb-form {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.hb-new .hb-new-start .hb-form > * {
+	grid-column: 1 / -1;
+	min-width: 0;
+}
+
+.hb-new .hb-new-start .hb-form > .hb-new-machine-field {
+	grid-column: 1;
+}
+
+.hb-new .hb-new-start .hb-form > .hb-new-profile-field {
+	grid-column: 2;
+}
+
+.hb-new .hb-new-start .hb-submit {
+	justify-self: start;
+}
+
+.hb-new .hb-new-context,
+.hb-new .hb-new-history {
+	padding: 18px;
+}
+
+.hb-new .hb-new-context {
+	gap: 14px;
+}
+
+.hb-new-context-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.hb-new-context-section + .hb-new-context-section {
+	padding-top: 14px;
+	border-top: 1px solid var(--border);
+}
+
+.hb-new-context .hb-machine {
+	padding: 6px 0;
+	background: none;
+	border: 0;
+}
+
+.hb-new .hb-new-namespace-form {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: end;
+	gap: 8px;
+}
+
+.hb-new-namespace-form .sh-field {
+	min-width: 0;
+}
+
+.hb-new-namespace-form .sh-connect-error,
+.hb-new-namespace-form .hb-session-note {
+	grid-column: 1 / -1;
+}
+
+.hb-new .hb-history-filter {
+	margin: 0;
 }
 
 /* ---- machines ---- */
@@ -448,10 +560,29 @@
 }
 
 /* ---- responsive ---- */
-@container hb-new (min-width: 1100px) {
+@container hb-new (min-width: 900px) {
 	.hb-grid {
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+		grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
 		align-items: start;
+	}
+
+	.hb-new-history .hb-history {
+		max-height: min(360px, 50vh);
+	}
+}
+
+@container hb-new (max-width: 700px) {
+	.hb-new .hb-new-start .hb-form {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hb-new .hb-new-start .hb-form > .hb-new-machine-field,
+	.hb-new .hb-new-start .hb-form > .hb-new-profile-field {
+		grid-column: 1;
+	}
+
+	.hb-new .hb-new-namespace-form {
+		grid-template-columns: minmax(0, 1fr);
 	}
 }
 
@@ -470,6 +601,15 @@
 	.hb-card {
 		padding: 12px;
 	}
+	.hb-new .hb-new-start {
+		padding: 16px;
+	}
+
+	.hb-new .hb-new-context,
+	.hb-new .hb-new-history {
+		padding: 14px;
+	}
+
 	/* Touch targets: the vendored 12px buttons are too small for thumbs. */
 	.hb-page .sh-btn,
 	.hb-page .sh-connect-submit {

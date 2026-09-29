@@ -129,13 +129,15 @@ Hub additions:
   `/s/<id>` selects a session in the same `HubFrame`, `/join` is an arbitrary-link
   guest (vendored connect screen), and `/usage/<machineId>` remains separate.
 - Token gate: token in `localStorage["omp-hub.token"]`, sent as `Authorization: Bearer`.
-- New tab: live machine list (`/api/machines`), namespace create/list and
-  selection for a full start form (machine, profile, cwd, name, prompt,
-  tools/superagent), plus per-machine history with resume and message search.
-  The persistent rail owns the hub session list (`/api/sessions` every 2s),
-  status/selection, stop vs delete, copyable attach/view links, and live-session
-  namespace moves through its Manage dialog. Deleting the current row selects
-  the next visible session, falling back to New with no survivors.
+- New tab: the primary Start card comes first, followed by one Workspace card
+  grouping live machines and namespace creation, then machine history. At wide
+  pane widths the Start card sits beside Workspace and History; narrow panes
+  stack them in that order. The full form still selects machine, profile, cwd,
+  name, prompt, tools/superagent and namespace; History retains resume/message
+  search. The persistent rail owns the hub session list (`/api/sessions` every
+  2s), status/selection, stop vs delete, copyable attach/view links, and
+  live-session namespace moves through its Manage dialog. Deleting the current
+  row selects the next visible session, falling back to New with no survivors.
 - Session registry polling is shared by the rail and an authenticated
   `WarmSessions` coordinator. It keeps at most six writable `GuestClient`
   replicas connected across route changes, choosing the visible session first,
