@@ -90,6 +90,23 @@ export function railRowsOrdered<T extends { id: string; status: SessionStatus }>
 }
 
 /**
+ * Fallback session after deleting the one on screen: the newest active
+ * session this browser has not hidden, else the newest ended one, else
+ * `null` (nothing left — the caller goes home). Input order is the hub's
+ * newest-first registry listing, so "first" is "most recent".
+ */
+export function pickFallbackSessionId(
+	deletedId: string,
+	sessions: readonly { id: string; status: SessionStatus }[] | null,
+	hidden: ReadonlySet<string>,
+): string | null {
+	if (sessions === null) return null;
+	const candidates = sessions.filter(row => row.id !== deletedId && !hidden.has(row.id));
+	const { active, ended } = partitionEnded(candidates);
+	return active[0]?.id ?? ended[0]?.id ?? null;
+}
+
+/**
  * Label for the single folded-groups toggle: collapsed counts what a click
  * reveals, expanded says what is shown; `null` when there is nothing to show.
  */

@@ -3,11 +3,13 @@
  * quick switcher: the toggle persists to localStorage, `isEndedStatus`
  * classifies terminal records, `partitionEnded` splits a filtered
  * listing while keeping order, `railRowsOrdered` composes the final
- * row order (ended fold with the on-screen session exempt), and
- * `extrasLabel` renders the single merged ended/hidden toggle label.
+ * row order (ended fold with the on-screen session exempt),
+ * `extrasLabel` renders the single merged ended/hidden toggle label,
+ * and `pickFallbackSessionId` chooses the session that takes over the
+ * page after the on-screen one is deleted.
  */
 import { describe, expect, test } from "bun:test";
-import { extrasLabel, isEndedStatus, partitionEnded, railRowsOrdered, setShowExtras } from "../src/hub/rail-filter";
+import { extrasLabel, isEndedStatus, partitionEnded, pickFallbackSessionId, railRowsOrdered, setShowExtras } from "../src/hub/rail-filter";
 import type { SessionStatus } from "../src/hub/api";
 
 // Installed after the module-level load() ran against an absent localStorage —
@@ -74,6 +76,31 @@ describe("rail filter", () => {
 
 		// The on-screen row never folds even when it is the only ended one.
 		expect(railRowsOrdered([row("only", "exited")], false, "only").map(item => item.id)).toEqual(["only"]);
+	});
+
+	test("pickFallbackSessionId lands on the newest active session after a delete", () => {
+		const rows = [row("gone", "live"), row("a", "live"), row("b", "starting"), row("c", "exited")];
+		expect(pickFallbackSessionId("gone", rows, new Set())).toBe("a");
+	});
+
+	test("pickFallbackSessionId skips hidden sessions and the deleted id", () => {
+		const rows = [row("gone", "live"), row("h", "live"), row("a", "live")];
+		expect(pickFallbackSessionId("gone", rows, new Set(["h"]))).toBe("a");
+
+		// A hidden ended session is not a fallback either.
+		const endedOnly = [row("gone", "live"), row("h", "exited"), row("e", "failed")];
+		expect(pickFallbackSessionId("gone", endedOnly, new Set(["h"]))).toBe("e");
+	});
+
+	test("pickFallbackSessionId falls back to the newest ended session when no active ones remain", () => {
+		const rows = [row("gone", "live"), row("b", "exited"), row("c", "failed")];
+		expect(pickFallbackSessionId("gone", rows, new Set())).toBe("b");
+	});
+
+	test("pickFallbackSessionId returns null when nothing is left or the listing is missing", () => {
+		expect(pickFallbackSessionId("gone", [row("gone", "live")], new Set())).toBeNull();
+		expect(pickFallbackSessionId("gone", [row("h", "live")], new Set(["h"]))).toBeNull();
+		expect(pickFallbackSessionId("gone", null, new Set())).toBeNull();
 	});
 
 	test("extrasLabel merges the ended and hidden counts into one toggle label", () => {
