@@ -405,6 +405,104 @@
 	transform: rotate(90deg);
 }
 
+/* ---- late LSP diagnostics ---- */
+
+.tr-diag {
+	align-self: stretch;
+}
+
+.tr-diag-head {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0;
+	border: none;
+	background: none;
+	cursor: pointer;
+	color: var(--fg-faint);
+	font-family: var(--font-ui);
+	font-size: 12px;
+}
+
+.tr-diag-head:hover {
+	color: var(--fg-muted);
+}
+
+.tr-diag-meta {
+	color: var(--fg-faint);
+}
+
+.tr-diag-err {
+	color: var(--err);
+	font-size: 9px;
+	line-height: 1;
+}
+
+.tr-diag-body {
+	align-self: stretch;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 2px 0;
+	padding: 6px 0 6px 10px;
+	border-left: 2px solid var(--border);
+}
+
+.tr-diag-file {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.tr-diag-path {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.tr-diag-lang {
+	flex: none;
+	padding: 0 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--bg-inset);
+	color: var(--fg-muted);
+	font-family: var(--font-mono);
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.tr-diag-file-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--fg);
+}
+
+.tr-diag-summary {
+	color: var(--fg-muted);
+	font-size: 11px;
+}
+
+.tr-diag-messages {
+	margin: 0;
+	padding-left: 16px;
+	color: var(--fg-muted);
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+.tr-diag-messages li {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 /* ---- dividers & markers ---- */
 
 .tr-divider {
