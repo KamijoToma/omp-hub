@@ -109,8 +109,167 @@ async function fillMessageCounts(rows: readonly SessionListEntry[]): Promise<voi
 			const counted = await countStoredMessages(row.path);
 			if (counted !== null) row.messageCount = counted;
 		}
-	};
+	}
 	await Promise.all(Array.from({ length: Math.min(COUNT_POOL_WIDTH, rows.length) }, worker));
+}
+
+// ---- search-sessions (protocol §2 "Machine commands") ----
+
+/** Upper bound on `search-sessions` candidate files per cmd; the hub enforces it too. */
+export const MAX_SEARCH_FILES = 200;
+/** Upper bound on the `search-sessions` needle length. */
+export const MAX_SEARCH_QUERY_CHARS = 256;
+/** Search scans run at the same width as the message re-counts. */
+const SEARCH_POOL_WIDTH = COUNT_POOL_WIDTH;
+/** One-line match preview length; the window rides the first hit. */
+const SNIPPET_CHARS = 200;
+
+/** One session file's message-text hits; only matching files are reported. */
+export interface SessionSearchHit {
+	/** Absolute session file path, echoed from the request. */
+	path: string;
+	/** Matching user/assistant messages in the file. */
+	count: number;
+	/** Single-line window around the first match. */
+	snippet?: string;
+}
+
+/** `search-sessions` payload: hits for the requested paths that matched. */
+export interface SessionSearchResults {
+	results: SessionSearchHit[];
+}
+
+/**
+ * Session stores live at `<…>/agent/sessions/…` for the default profile and
+ * every named one regardless of config-dir name or XDG overrides, so a request
+ * path is searchable iff it resolves to a `.jsonl` file inside such a store.
+ * Keeps the cmd from becoming an arbitrary-file-read primitive over the
+ * `/agent` channel.
+ */
+async function isSessionFilePath(file: string): Promise<boolean> {
+	if (!file.endsWith(".jsonl")) return false;
+	try {
+		const resolved = await realpath(file);
+		const segments = resolved.split(path.sep);
+		const agentAt = segments.lastIndexOf("agent");
+		return agentAt > 0 && segments[agentAt + 1] === "sessions";
+	} catch {
+		return false;
+	}
+}
+
+/** Concatenated text content of one stored message; non-text blocks are skipped. */
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	let out = "";
+	for (const block of content) {
+		if (typeof block !== "object" || block === null) continue;
+		if (!("type" in block) || block.type !== "text") continue;
+		if (!("text" in block) || typeof block.text !== "string" || block.text === "") continue;
+		out += out === "" ? block.text : `\n${block.text}`;
+	}
+	return out;
+}
+
+/** Single-line preview window centered on the first match. */
+function snippetFor(text: string, needle: string): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	const at = flat.toLowerCase().indexOf(needle);
+	if (flat.length <= SNIPPET_CHARS) return flat;
+	const start = Math.max(0, Math.min(at - 40, flat.length - SNIPPET_CHARS));
+	const cut = flat.slice(start, start + SNIPPET_CHARS);
+	return `${start > 0 ? "…" : ""}${cut}${start + SNIPPET_CHARS < flat.length ? "…" : ""}`;
+}
+
+interface ScanLineSink {
+	count: number;
+	snippet: string | null;
+}
+
+/** Match one already-split chunk of session-file lines against the needle. */
+function scanMessageLines(lines: string[], needle: string, sink: ScanLineSink): void {
+	for (const line of lines) {
+		if (!line.startsWith(MESSAGE_LINE_PREFIX)) continue;
+		let parsed: unknown;
+		try {
+			// Tolerant: a malformed line is skipped, never fails the search.
+			parsed = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null || !("message" in parsed)) continue;
+		const message = parsed.message;
+		if (typeof message !== "object" || message === null) continue;
+		if (!("role" in message) || (message.role !== "user" && message.role !== "assistant")) continue;
+		if (!("content" in message)) continue;
+		const text = messageText(message.content);
+		if (!text.toLowerCase().includes(needle)) continue;
+		sink.count += 1;
+		if (sink.snippet === null) sink.snippet = snippetFor(text, needle);
+	}
+}
+
+/**
+ * Message-text hits for one session file: a streaming line scan like
+ * {@link countStoredMessages}, but parsing `type:"message"` lines and matching
+ * user/assistant text case-insensitively. `null` when the file is unreadable
+ * or matches nothing — both read as "no hit" to the caller.
+ */
+async function searchSessionFile(file: string, needle: string): Promise<SessionSearchHit | null> {
+	try {
+		const decoder = new TextDecoder();
+		const sink: ScanLineSink = { count: 0, snippet: null };
+		let carry = "";
+		for await (const chunk of Bun.file(file).stream()) {
+			const text = carry + decoder.decode(chunk as Uint8Array, { stream: true });
+			const lines = text.split("\n");
+			carry = lines.pop() ?? "";
+			scanMessageLines(lines, needle, sink);
+		}
+		if (carry.startsWith(MESSAGE_LINE_PREFIX)) scanMessageLines([carry], needle, sink);
+		return sink.count > 0 ? { path: file, count: sink.count, ...(sink.snippet !== null ? { snippet: sink.snippet } : {}) } : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * `search-sessions`: case-insensitive prompt/assistant text search over the
+ * requested session files, run `SEARCH_POOL_WIDTH` files at a time to stay
+ * inside the 15 s hub cmd budget. Throws deterministic strings the hub maps to
+ * client errors (`empty query`, `query too long`, `invalid paths`,
+ * `too many paths`); paths outside an omp session store are skipped silently.
+ */
+export async function searchSessionMessages(paths: unknown, query: unknown): Promise<SessionSearchResults> {
+	if (typeof query !== "string" || query.trim() === "") throw new Error("empty query");
+	const needle = query.trim().toLowerCase();
+	if (needle.length > MAX_SEARCH_QUERY_CHARS) throw new Error("query too long");
+	if (!Array.isArray(paths)) throw new Error("invalid paths");
+	const requested: string[] = [];
+	for (const entry of paths) {
+		if (typeof entry !== "string") throw new Error("invalid paths");
+		requested.push(entry);
+	}
+	const unique = [...new Set(requested)].filter(file => file.trim() !== "");
+	if (unique.length > MAX_SEARCH_FILES) throw new Error("too many paths");
+	const searchable: string[] = [];
+	for (const file of unique) {
+		if (await isSessionFilePath(file)) searchable.push(file);
+	}
+	const hits: SessionSearchHit[] = [];
+	let cursor = 0;
+	const worker = async (): Promise<void> => {
+		while (cursor < searchable.length) {
+			const file = searchable[cursor++]!;
+			const hit = await searchSessionFile(file, needle);
+			if (hit !== null) hits.push(hit);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(SEARCH_POOL_WIDTH, searchable.length) }, worker));
+	// Request order, so callers can correlate deterministically.
+	hits.sort((a, b) => unique.indexOf(a.path) - unique.indexOf(b.path));
+	return { results: hits };
 }
 
 /** One resumable session on this machine (subset of the SDK's SessionInfo). */
@@ -155,10 +314,14 @@ export interface MachineCmdFrame {
 	 * `profile`; the 200 cap applies once. `cwd` is ignored in this mode.
 	 */
 	allProfiles?: boolean;
+	/** `search-sessions` candidate session files (absolute paths). */
+	paths?: string[];
+	/** `search-sessions` needle; matched case-insensitively. */
+	query?: string;
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -338,6 +501,13 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 		try {
 			const data = frame.allProfiles ? await listAllProfileSessions() : await listSessions({ cwd: frame.cwd });
 			return { ok: true, data };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "search-sessions") {
+		try {
+			return { ok: true, data: await searchSessionMessages(frame.paths, frame.query) };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
 		}

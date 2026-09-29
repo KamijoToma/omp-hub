@@ -29,6 +29,7 @@ import {
 	postRetry,
 	postSessionPrompt,
 	postShake,
+	searchSessionMessages,
 	setModel,
 	setToken,
 	startSession,
@@ -158,6 +159,21 @@ describe("hub api", () => {
 
 		expect(calls[0].url).toBe("/api/machines/m1/sessions");
 		expect(result).toEqual(listing);
+	});
+
+	test("searchSessionMessages posts query with optional paths and unwraps matches", async () => {
+		setToken("t0k3n");
+		const matches = [{ path: "/store/a.jsonl", count: 2, snippet: "the needle" }];
+		stubFetch(() => json({ ok: true, matches }));
+
+		const withPaths = await searchSessionMessages("m1", "needle", ["/store/a.jsonl", "/store/b.jsonl"]);
+		expect(withPaths).toEqual(matches);
+		expect(calls[0].url).toBe("/api/machines/m1/sessions/search");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ query: "needle", paths: ["/store/a.jsonl", "/store/b.jsonl"] });
+
+		await searchSessionMessages("m1", "needle");
+		expect(JSON.parse(String(calls[1].init?.body))).toEqual({ query: "needle" });
 	});
 
 	test("startSession omits unset optional fields", async () => {
