@@ -1,6 +1,3 @@
-diff --git a/node_modules/@oh-my-pi/pi-coding-agent/.bun-tag-f797b4bd2437d25c b/.bun-tag-f797b4bd2437d25c
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/src/collab/host.ts b/src/collab/host.ts
 index e08341cb812c1d4f9e1defa05f0ec4695b110ca6..06382aebdfc73670e2bcda6e3ff5d875e7f3c83c 100644
 --- a/src/collab/host.ts
