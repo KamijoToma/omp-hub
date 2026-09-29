@@ -8,10 +8,25 @@ executed as-is during that recovery.
 
 | Component | Runs from | Entry | Notes |
 |---|---|---|---|
-| Hub | `/home/skyrain/Projects/omp-hub-prod/packages/hub` (branch `prod`) | `bun src/server.ts` | `PORT=8471`, log `hub-restart.log` (cwd) |
+| Hub | `/home/skyrain/Projects/omp-hub-prod/packages/hub` (branch `prod`) | systemd **user unit** `omp-hub.service` → `omp-hub` binary | `Restart=on-failure` (auto-heals crashes, ~3 s), env from `hub.env` (0600, gitignored), log appended to `hub-restart.log` (cwd) |
 | Agent daemon | `/home/skyrain/Projects/omp-hub-prod/packages/agent` | `bun src/main.ts --hub ws://localhost:8471 --name kfdesktop` | standalone (`nohup`), log `daemon.log` (cwd) |
 | Session children | spawned by the daemon | `session-host.ts --config <json>` | one process per agent session |
 | Public URL | `https://kfdesktop.tail02ef4.ts.net` | `tailscale serve` → `127.0.0.1:8471` | `HUB_PUBLIC_URL` must stay set on the hub |
+
+The hub is a systemd **user unit** (`~/.config/systemd/user/omp-hub.service`,
+`loginctl enable-linger` on): `systemctl --user start|stop|restart|status
+omp-hub`. `Restart=on-failure` + `RestartSec=3` revives a crashed hub in
+seconds — hub SIGTERM/`exit 0` stays stopped, so §A manual restarts still
+work. Secrets live in `packages/hub/hub.env` (`HUB_TOKEN` among them; 0600,
+gitignored) — the unit only references it. Why a compiled binary at all: its
+cmdline no longer contains `bun src/server.ts`, so a test's
+`pkill -f "bun src/server.ts"` cannot kill production again (the 03:30
+incident). The binary is built by `bun --cwd=packages/hub run build:binary`
+after each `packages/web` build; inside the compiled executable `import.meta`
+paths do not exist on disk, so **`WEB_DIST` must be set explicitly** (it lives
+in `hub.env`) and `--watch` (hot reload) is refused. The daemon stays
+source-run: its session-host children are spawned from source paths and its
+omp SDK loads native modules from `node_modules`.
 
 State and identity:
 
@@ -21,13 +36,13 @@ State and identity:
 - Machine id: `~/.omp-hub-agent.json` (stable across daemon restarts).
 - `HUB_TOKEN`: read it from the running hub instead of hardcoding:
   ```bash
-  tr '\0' '\n' </proc/$(pgrep -f 'src/server.ts' | head -1)/environ | grep HUB_TOKEN
+  tr '\0' '\n' </proc/$(pgrep -f 'packages/hub/omp-hub|src/server.ts' | head -1)/environ | grep HUB_TOKEN
   ```
 
 Discovery:
 
 ```bash
-pgrep -af 'src/server\.ts|src/main\.ts --hub|session-host\.ts'   # what is running
+pgrep -af 'packages/hub/omp-hub|src/server\.ts|src/main\.ts --hub|session-host\.ts'   # what is running
 ss -tlnp | grep 8471                                            # who owns the port
 curl -s http://localhost:8471/healthz                           # hub alive
 ```
@@ -35,10 +50,21 @@ curl -s http://localhost:8471/healthz                           # hub alive
 ## A. Restart the hub only (agents keep running)
 
 Safe: children and the daemon survive; the daemon and relay sockets reconnect
-automatically (≤30 s backoff).
+automatically (≤30 s backoff). Afterwards run the §A.1 room probe.
+
+Preferred — systemd manages the process (crashes self-heal via
+`Restart=on-failure`):
 
 ```bash
-HUBPID=$(pgrep -f 'src/server\.ts' | head -1)
+systemctl --user restart omp-hub      # or stop / start / status
+systemctl --user status omp-hub       # + journal notes; stdout/stderr also append hub-restart.log
+```
+
+Manual fallback (same handover semantics; use when editing the unit or when
+systemd itself is the problem):
+
+```bash
+HUBPID=$(pgrep -f 'packages/hub/omp-hub|src/server\.ts' | head -1)
 kill -TERM "$HUBPID"                     # graceful: flushes state, releases port
 for i in $(seq 1 50); do kill -0 "$HUBPID" 2>/dev/null || break; sleep 0.2; done
 
@@ -46,9 +72,54 @@ cd /home/skyrain/Projects/omp-hub-prod/packages/hub
 env PORT=8471 \
     HUB_PUBLIC_URL=https://kfdesktop.tail02ef4.ts.net \
     HUB_TOKEN="$TOKEN" \
+    WEB_DIST=/home/skyrain/Projects/omp-hub-prod/packages/web/dist \
     HUB_RESTART_BIND_WAIT=1 \
-    setsid nohup /home/skyrain/.local/bin/bun src/server.ts >> hub-restart.log 2>&1 < /dev/null &
+    setsid nohup /home/skyrain/Projects/omp-hub-prod/packages/hub/omp-hub >> hub-restart.log 2>&1 < /dev/null &
 ```
+
+Remember to hand the process back afterwards (`systemctl --user start
+omp-hub` after stopping the manual one) so crash self-healing stays armed.
+
+The binary form needs `WEB_DIST` (the compiled executable cannot resolve the
+web dist from `import.meta`) and does not support `--watch`. Fallback to the
+source form (`bun src/server.ts`, same env minus `WEB_DIST`) only if the
+binary is missing; rebuild it first:
+
+```bash
+bun --cwd=packages/web run build                 # dist must exist before the binary runs
+bun --cwd=packages/hub run build:binary          # → packages/hub/omp-hub
+```
+
+**Loading a new binary build takes THIS §A restart (kill + start).** Rebuilding
+`omp-hub` while it runs deletes the inode behind the running process, so
+`POST /api/hub/restart` right after a build cannot exec the on-disk file — the
+hub detects that and re-execs the RUNNING build via `/proc/self/exe` (service
+stays up, log line `re-executed the RUNNING binary via /proc/self/exe`),
+which is a recovery, not an upgrade. Order to remember: **build the web +
+binary, then §A, then verify** — never rely on the API restart alone to pick
+up a fresh build.
+
+`POST /api/hub/restart` (the panel's hub restart) works from the binary too:
+the fresh process re-execs the same binary with the same flags.
+
+### A.2 Automatic hub deploy on prod merges (git hook)
+
+`scripts/prod-deploy-hook.sh` is installed as the shared
+`.git/hooks/reference-transaction` (covers every worktree). When
+`refs/heads/prod` actually moves (any merge/`update-ref` — a no-op update is
+ignored), it builds the web dist + hub binary in the prod worktree and runs
+`systemctl --user restart omp-hub`, which execs the fresh build; it then polls
+`/healthz` and logs the outcome to `packages/hub/hub-deploy.log`. Build
+failures leave the running hub untouched — fix and merge again. The **daemon
+is never restarted** by the hook: when its code changed, use the panel's
+restart-daemon (same-id resume). Deployment is serialized with `flock`;
+overlapping merges just log one deploy. Re-install after cloning:
+
+```bash
+install -m 755 scripts/prod-deploy-hook.sh .git/hooks/reference-transaction
+```
+
+Removing that file disables the automation.
 
 Expected log line: `restored state: N session record(s), M machine(s)`.
 
@@ -105,9 +176,23 @@ Notes:
 
 ## B. Restart the daemon (interrupts session children — follow every step)
 
-A daemon restart stops all session children (graceful `stopAll`, SDK sessions
-flush their `.jsonl`). Running work is preserved by **resuming each child's
-session file** afterwards; the in-flight turn is lost, the history is not.
+**Preferred since protocol 0.9.0: the panel button or the API.** With the hub
+and daemon both on ≥0.9.0 code, a daemon restart for a code update is one
+click — the machine row's "Restart daemon" (or
+`POST /api/machines/:id/restart-daemon`). The daemon stops its children
+(graceful, transcripts flush), respawns itself from disk with the same argv,
+and the hub resumes every session **under its old session id** with fresh
+links — no manual §B.1–B.5 needed. Session ids stay stable, so open
+`/s/<id>` pages recover on their own. Caveats: it updates **code only** — run
+`bun install` in the worktree first when dependencies changed — and mid-turn
+runs abort (the dialog warns). Manual §B below still applies when the daemon
+predates the feature, when the daemon is down, or for a first bootstrap after
+upgrading the hub past the daemon.
+
+A manual daemon restart stops all session children (graceful `stopAll`, SDK
+sessions flush their `.jsonl`). Running work is preserved by **resuming each
+child's session file** afterwards; the in-flight turn is lost, the history is
+not.
 
 Trap: the daemon is normally hosted by `omp __omp_worker_daemon_broker`, which
 **auto-respawns it within ~6 s from its original cwd** (possibly an old
@@ -271,12 +356,13 @@ daemon's heartbeat reports the id; a reported-missing id is marked `exited`
 
 ## D. Cold start (nothing running, e.g. after reboot)
 
-No broker is hosting anything after §B killed it — start both processes
-manually, then resume sessions:
+The hub self-starts on boot: `omp-hub.service` is enabled with linger on
+(`loginctl enable-linger skyrain`) — check `systemctl --user status omp-hub`
+first; it should already be `active` with the registry restored from
+`hub-state.json`. What remains manual:
 
-1. Hub per §A (skip the kill step).
-2. Daemon per §B.3.
-3. Find resumable omp session files under
+1. Daemon per §B.3 (nothing hosts it — start it, it reconnects on its own).
+2. Find resumable omp session files under
    `~/.omp/profiles/<profile>/agent/sessions/<cwd-slug>/*.jsonl`
    (or `GET /api/machines/<id>/sessions` once the daemon is up), then §B.4
    for the ones that should continue running.
