@@ -10,9 +10,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createLogger } from "../src/log";
-import { type SessionReadyPayload, Supervisor } from "../src/supervisor";
+import { type SessionConfig, type SessionReadyPayload, sessionHostCommand, Supervisor } from "../src/supervisor";
 
 const FIXTURE = new URL("./fixtures/profile-probe-child.ts", import.meta.url).pathname;
+
+test("compiled sessions launch a sibling binary; source and fixture sessions launch through Bun", () => {
+	const config: SessionConfig = { id: "s_command", cwd: "/tmp", relayUrl: "ws://127.0.0.1:1", webUrl: "" };
+	const runtime = "/missing/distribution/omp-hub-agent";
+	const payload = JSON.stringify(config);
+	expect(sessionHostCommand(config, { execPath: runtime, compiled: true })).toEqual([
+		"/missing/distribution/omp-hub-agent-session", "--config", payload,
+	]);
+	expect(sessionHostCommand(config, { execPath: runtime, compiled: false })).toEqual([
+		runtime, new URL("../src/session-host.ts", import.meta.url).pathname, "--config", payload,
+	]);
+	expect(sessionHostCommand(config, { execPath: runtime, compiled: true, hostEntry: FIXTURE })).toEqual([
+		runtime, FIXTURE, "--config", payload,
+	]);
+});
 
 let root: string;
 let profilesRoot: string;

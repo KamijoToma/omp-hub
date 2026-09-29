@@ -2354,6 +2354,16 @@
 	min-width: 0;
 }
 
+/* Clickable row timestamp: toggles created↔last-activity for all rows. */
+.hb-nav-meta .hb-nav-time {
+	flex: none;
+	cursor: pointer;
+}
+
+.hb-nav-meta .hb-nav-time:hover {
+	text-decoration: underline;
+}
+
 /* One-line window around the first message-text hit (rail picker rows). */
 .hb-nav-msg {
 	display: block;

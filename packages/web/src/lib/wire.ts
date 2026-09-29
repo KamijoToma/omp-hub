@@ -174,13 +174,25 @@ export interface ThinkingLevelChangeEntry extends EntryBase {
 	thinkingLevel?: string | null;
 }
 
+/**
+ * Payload-free marker the host appends on `/clear` (resetSessionContext). Its
+ * presence ends the pre-clear transcript: rendered as a boundary divider, and
+ * hosts ≥ the boundary-forwarding release deliver it both live and in the
+ * welcome snapshot. Not part of the pinned upstream skeleton (pi-wire ≥ the
+ * same release).
+ */
+export interface ResetBoundaryEntry extends EntryBase {
+	type: "reset_boundary";
+}
+
 export type SessionEntry =
 	| MessageEntry
 	| CustomMessageEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| ModelChangeEntry
-	| ThinkingLevelChangeEntry;
+	| ThinkingLevelChangeEntry
+	| ResetBoundaryEntry;
 
 /** customType of collab guest prompts injected on the host. */
 export const COLLAB_PROMPT_MESSAGE_TYPE = "collab-prompt";

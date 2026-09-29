@@ -180,6 +180,7 @@ function buildTurnGroups(model: {
 			}
 			case "compaction":
 			case "branch_summary":
+			case "reset_boundary":
 				agent = null;
 				groups.push({ kind: "divider", key: `divider-${groups.length}`, entry });
 				break;
@@ -548,6 +549,14 @@ const EntryRow = memo(function EntryRow({
 			return (
 				<div className="tr-divider" title={entry.summary}>
 					<span>branch summary</span>
+				</div>
+			);
+		case "reset_boundary":
+			// `/clear` boundary: payload-free, so no counts — the toast carried
+			// the dropped-message total at clear time.
+			return (
+				<div className="tr-divider" title={entry.timestamp}>
+					<span>context cleared</span>
 				</div>
 			);
 		case "model_change":
