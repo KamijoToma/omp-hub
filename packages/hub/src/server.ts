@@ -302,10 +302,24 @@ export function startHub(overrides: Partial<Config> = {}): Hub {
 					// fresh hub on its first log line (SIGPIPE).
 					const logPath = path.join(path.dirname(core.cfg.stateFile ?? "hub-state.json"), "hub-restart.log");
 					const logFd = openSync(logPath, "a");
-					const child = Bun.spawn(restartSpawnArgv(), {
-						env: { ...process.env, HUB_RESTART_BIND_WAIT: "1" },
-						stdio: ["ignore", logFd, logFd],
-					});
+					const argv = restartSpawnArgv();
+					let child: Bun.Subprocess<"ignore", number, number>;
+					try {
+						child = Bun.spawn(argv, {
+							env: { ...process.env, HUB_RESTART_BIND_WAIT: "1" },
+							stdio: ["ignore", logFd, logFd],
+						});
+					} catch {
+						// The on-disk binary was rebuilt while this process ran:
+						// execPath points at a deleted inode. /proc/self/exe still
+						// resolves the RUNNING build (Linux), so the hub survives —
+						// loading the new build takes the §A restart.
+						child = Bun.spawn(["/proc/self/exe", ...argv.slice(1)], {
+							env: { ...process.env, HUB_RESTART_BIND_WAIT: "1" },
+							stdio: ["ignore", logFd, logFd],
+						});
+						log.warn("re-executed the RUNNING binary via /proc/self/exe — the on-disk build changed since this process started; run the §A restart to load it");
+					}
 					child.unref?.();
 					closeSync(logFd);
 				} catch (err) {
