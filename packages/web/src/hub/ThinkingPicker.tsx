@@ -10,6 +10,7 @@ import { useState } from "react";
 import type { Notice } from "../lib/client";
 import { errorText, setThinking } from "./api";
 import { Modal } from "./Modal";
+import { rememberModelPreset } from "./model-presets";
 import type { AgentStateLoad } from "./use-agent-state";
 import { useAgentState } from "./use-agent-state";
 
@@ -48,6 +49,9 @@ export function ThinkingPickerView({ load, sessionId, notify, onClose }: Thinkin
 		setError(null);
 		void setThinking(sessionId, level).then(
 			result => {
+				// The set applied to the active model: refresh its remembered level.
+				const model = load.state?.model;
+				if (model) rememberModelPreset(model.provider, model.id, level);
 				notify("info", `thinking → ${result.thinkingLevel}`);
 				onClose();
 			},

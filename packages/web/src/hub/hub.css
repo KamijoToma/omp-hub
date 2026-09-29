@@ -1127,6 +1127,66 @@
 	color: var(--accent);
 }
 
+/* ---- remembered model presets (quick-switch chips) ---- */
+.hb-preset-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin: 0 0 8px;
+}
+
+.hb-preset-icon {
+	flex: none;
+	color: var(--fg-faint);
+}
+
+.hb-preset-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	max-width: 100%;
+	padding: 4px 9px;
+	color: var(--fg-muted);
+	background: none;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+}
+
+.hb-preset-chip:hover:not(:disabled) {
+	color: var(--fg);
+	border-color: var(--border-strong);
+}
+
+.hb-preset-chip:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.hb-preset-chip-current {
+	color: var(--accent);
+	background: var(--accent-muted);
+	border-color: var(--accent);
+}
+
+.hb-preset-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+}
+
+.hb-preset-level {
+	flex: none;
+	font: 400 10px / 1.5 var(--font-mono);
+	color: var(--fg-faint);
+}
+
+.hb-preset-mark {
+	flex: none;
+	color: var(--accent);
+}
+
 /* ---- directory picker (start form) ---- */
 .hb-cwd-row {
 	display: flex;
@@ -1630,6 +1690,7 @@
 	}
 
 	.hb-pick-row,
+	.hb-preset-chip,
 	.hb-link-row {
 		min-height: 44px;
 	}
