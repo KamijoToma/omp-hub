@@ -48,6 +48,14 @@ const MCP_REMOVE_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/remove$/;
 const MCP_ENABLED_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/enabled$/;
 const MCP_TEST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/test$/;
 const PROMPT_PATH_RE = /^\/api\/sessions\/([^/]+)\/prompt$/;
+/** Advanced session modes (protocol §3, 0.9.0+). */
+const PREWALK_PATH_RE = /^\/api\/sessions\/([^/]+)\/prewalk$/;
+const PLAN_PATH_RE = /^\/api\/sessions\/([^/]+)\/plan$/;
+const ADVISOR_PATH_RE = /^\/api\/sessions\/([^/]+)\/advisor$/;
+const TIER_PATH_RE = /^\/api\/sessions\/([^/]+)\/tier$/;
+const PAUSE_PATH_RE = /^\/api\/sessions\/([^/]+)\/pause$/;
+const CYCLE_PATH_RE = /^\/api\/sessions\/([^/]+)\/cycle$/;
+const SETTINGS_PATH_RE = /^\/api\/sessions\/([^/]+)\/settings$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
 const MAX_FILENAME_CHARS = 200;
@@ -229,6 +237,37 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	if (prompt && req.method === "POST") {
 		return promptSession(decodeURIComponent(prompt[1]!), req, ctx);
 	}
+	const prewalk = PREWALK_PATH_RE.exec(route);
+	if (prewalk && req.method === "POST") {
+		return sessionPrewalk(decodeURIComponent(prewalk[1]!), req, ctx);
+	}
+	const plan = PLAN_PATH_RE.exec(route);
+	if (plan && req.method === "POST") {
+		return sessionPlan(decodeURIComponent(plan[1]!), req, ctx);
+	}
+	const advisor = ADVISOR_PATH_RE.exec(route);
+	if (advisor && req.method === "POST") {
+		return sessionAdvisor(decodeURIComponent(advisor[1]!), req, ctx);
+	}
+	const tier = TIER_PATH_RE.exec(route);
+	if (tier && req.method === "POST") {
+		return sessionTier(decodeURIComponent(tier[1]!), req, ctx);
+	}
+	const pause = PAUSE_PATH_RE.exec(route);
+	if (pause && req.method === "POST") {
+		return sessionPause(decodeURIComponent(pause[1]!), req, ctx);
+	}
+	const cycle = CYCLE_PATH_RE.exec(route);
+	if (cycle && req.method === "POST") {
+		return sessionCycle(decodeURIComponent(cycle[1]!), req, ctx);
+	}
+	const settings = SETTINGS_PATH_RE.exec(route);
+	if (settings && req.method === "GET") {
+		return sessionSettings(decodeURIComponent(settings[1]!), ctx);
+	}
+	if (settings && req.method === "POST") {
+		return setSessionSetting(decodeURIComponent(settings[1]!), req, ctx);
+	}
 
 	const mcpList = MCP_LIST_PATH_RE.exec(route);
 	if (mcpList && req.method === "GET") {
@@ -306,6 +345,19 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	const tools = Array.isArray(rawTools)
 		? [...new Set(rawTools.map(name => (name as string).trim()))]
 		: undefined;
+	// Startup hand-offs (0.9.0+): `true` = SDK default target, a string = explicit
+	// model/role pattern; anything else is a caller bug (protocol §2 start.prewalk).
+	const handoff = (key: string): boolean | string | undefined | Response => {
+		const raw = body[key];
+		if (raw === undefined) return undefined;
+		if (typeof raw === "boolean") return raw;
+		if (typeof raw === "string" && raw.trim() !== "") return raw;
+		return json({ error: `${key} must be a boolean or a non-empty string` }, 400);
+	};
+	const prewalk = handoff("prewalk");
+	if (prewalk instanceof Response) return prewalk;
+	const planYolo = handoff("planYolo");
+	if (planYolo instanceof Response) return planYolo;
 
 	const record = ctx.sessions.create({
 		machineId,
@@ -328,6 +380,8 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		...(sessionFile === undefined ? {} : { sessionFile }),
 		...(superagent === true ? { superagent: true } : {}),
 		...(tools === undefined ? {} : { tools }),
+		...(prewalk === undefined ? {} : { prewalk }),
+		...(planYolo === undefined ? {} : { planYolo }),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -876,18 +930,186 @@ async function setExtendedContext(id: string, req: Request, ctx: ApiContext): Pr
 	return outcome.ok ? json({ ok: true, extendedContext: pick(outcome.data, "extendedContext") ?? false }) : outcome.response;
 }
 
+const PREWALK_ACTIONS: Record<string, true> = { arm: true, restart: true, state: true };
+
+/**
+ * Arm or inspect the one-shot prewalk hand-off (protocol §2 `prewalk`, 0.9.0+):
+ * `arm` resolves the target and arms, `restart` restores the pre-prewalk model
+ * and re-arms, bare/`state` just reports. The armed projection echoes back.
+ */
+async function sessionPrewalk(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (action !== undefined && !PREWALK_ACTIONS[action]) return json({ error: "action must be arm, restart, or state" }, 400);
+	const target = field(body, "target");
+	if (body["target"] !== undefined && target === undefined) return json({ error: "target must be a non-empty string" }, 400);
+	const level = field(body, "level");
+	if (body["level"] !== undefined && level === undefined) return json({ error: "level must be a non-empty string" }, 400);
+
+	const outcome = await dispatchCmd(id, "prewalk", {
+		...(action === undefined ? {} : { action }),
+		...(target === undefined ? {} : { target }),
+		...(level === undefined ? {} : { level }),
+	}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const extra = action === "arm"
+		? { armed: pick(outcome.data, "armed") }
+		: action === "restart"
+			? { result: pick(outcome.data, "result") }
+			: {};
+	return json({ ok: true, prewalk: pick(outcome.data, "prewalk"), ...extra });
+}
+
+const PLAN_ACTIONS: Record<string, true> = { enable: true, disable: true, status: true };
+
+/** Plan mode toggle/report (protocol §2 `plan`, 0.9.0+); the plan state echoes back. */
+async function sessionPlan(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (action !== undefined && !PLAN_ACTIONS[action]) return json({ error: "action must be enable, disable, or status" }, 400);
+	const planFilePath = field(body, "planFilePath");
+	if (body["planFilePath"] !== undefined && planFilePath === undefined) {
+		return json({ error: "planFilePath must be a non-empty string" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "plan", {
+		...(action === undefined ? {} : { action }),
+		...(planFilePath === undefined ? {} : { planFilePath }),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, plan: pick(outcome.data, "plan") }) : outcome.response;
+}
+
+const ADVISOR_ACTIONS: Record<string, true> = { enable: true, disable: true, status: true };
+
+/**
+ * Second-model advisor toggle (protocol §2 `advisor`, 0.9.0+); the reply
+ * carries the toggle plus the discovered advisor names. Enabling with no
+ * discovered configs fails agent-side → 500 via the default mapping.
+ */
+async function sessionAdvisor(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (action !== undefined && !ADVISOR_ACTIONS[action]) return json({ error: "action must be enable, disable, or status" }, 400);
+
+	const outcome = await dispatchCmd(id, "advisor", action === undefined ? {} : { action }, ctx);
+	if (!outcome.ok) return outcome.response;
+	return json({
+		ok: true,
+		enabled: pick(outcome.data, "enabled"),
+		advisors: Array.isArray(pick(outcome.data, "advisors")) ? pick(outcome.data, "advisors") : [],
+	});
+}
+
+const TIER_FAMILIES: Record<string, readonly string[]> = {
+	openai: ["none", "auto", "default", "flex", "scale", "priority"],
+	anthropic: ["none", "priority"],
+	google: ["none", "flex", "priority"],
+};
+
+const TIER_ACTIONS: Record<string, true> = { set: true, status: true };
+
+/**
+ * Service tiers per provider family (protocol §2 `tier`, 0.9.0+). The family
+ * table is frozen wire knowledge, so the hub rejects unknown families and
+ * off-table tiers before the round trip; "family omitted with no current
+ * model" is agent knowledge and maps to 400 via `reject400`.
+ */
+async function sessionTier(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const action = field(body, "action");
+	if (action !== undefined && !TIER_ACTIONS[action]) return json({ error: "action must be set or status" }, 400);
+	const family = field(body, "family");
+	if (body["family"] !== undefined && (family === undefined || !TIER_FAMILIES[family])) {
+		return json({ error: "family must be openai, anthropic, or google" }, 400);
+	}
+	const tier = field(body, "tier");
+	if (body["tier"] !== undefined && (tier === undefined || (family !== undefined && !TIER_FAMILIES[family]!.includes(tier)))) {
+		return json({ error: "tier is not valid for the family" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "tier", {
+		...(action === undefined ? {} : { action }),
+		...(family === undefined ? {} : { family }),
+		...(tier === undefined ? {} : { tier }),
+	}, ctx, true);
+	return outcome.ok ? json({ ok: true, tiers: pick(outcome.data, "tiers") ?? {} }) : outcome.response;
+}
+
+/**
+ * Freeze/resume the session's agent loop through the SDK pause gate (protocol
+ * §2 `pause`, 0.9.0+); omitted `enabled` toggles on the agent.
+ */
+async function sessionPause(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const enabled = body["enabled"];
+	if (enabled !== undefined && typeof enabled !== "boolean") {
+		return json({ error: "enabled must be a boolean" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "pause", typeof enabled === "boolean" ? { enabled } : {}, ctx);
+	return outcome.ok ? json({ ok: true, paused: pick(outcome.data, "paused") ?? false }) : outcome.response;
+}
+
+const CYCLE_DIRECTIONS: Record<string, true> = { forward: true, backward: true };
+
+/** Cycle through the session's model list (protocol §2 `cycle-model`, 0.9.0+). */
+async function sessionCycle(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const direction = field(body, "direction");
+	if (direction !== undefined && !CYCLE_DIRECTIONS[direction]) {
+		return json({ error: "direction must be forward or backward" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "cycle-model", direction === undefined ? {} : { direction }, ctx);
+	return outcome.ok
+		? json({ ok: true, ...pickRecord(outcome.data, ["switched", "model", "thinkingLevel"]) })
+		: outcome.response;
+}
+
+/** Hub-curated settings allowlist with current values (protocol §2 `get-settings`, 0.9.0+). */
+async function sessionSettings(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "get-settings", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({ ok: true, settings: Array.isArray(data["settings"]) ? data["settings"] : [] });
+}
+
+/**
+ * Session-scoped runtime setting override (protocol §2 `set-setting`, 0.9.0+):
+ * `value` must be present as a key (`null` clears); unknown/disallowed ids and
+ * type-invalid values are agent-reported → 400 via `reject400`.
+ */
+async function setSessionSetting(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const settingId = field(body, "settingId");
+	if (!settingId) return json({ error: "settingId is required" }, 400);
+	if (!("value" in body)) return json({ error: "value is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "set-setting", { settingId, value: body["value"] }, ctx, true);
+	return outcome.ok ? json({ ok: true, setting: pick(outcome.data, "setting") }) : outcome.response;
+}
+
 /**
  * Streams one `cmd` to the owning agent: 404 unknown session, 409 unless `live`,
  * 502 agent offline, 504 agent silent past `cmdTimeoutMs`, 500 anything else.
+ * `reject400` remaps agent-reported failures that default to 500 (caller-input
+ * rejections the protocol pins to 400, e.g. an unknown setting id) to 400.
  */
-async function dispatchCmd(id: string, cmd: CmdName, params: CmdParams, ctx: ApiContext): Promise<CmdOutcome> {
+async function dispatchCmd(id: string, cmd: CmdName, params: CmdParams, ctx: ApiContext, reject400 = false): Promise<CmdOutcome> {
 	const record = ctx.sessions.get(id);
 	if (!record) return { ok: false, response: json({ error: "session not found" }, 404) };
 	if (record.status !== "live") return { ok: false, response: json({ error: `session is ${record.status}` }, 409) };
 	if (!ctx.agents.isOnline(record.machineId)) return { ok: false, response: json({ error: "agent offline" }, 502) };
 
 	const result = await ctx.agents.sendCmd(record.machineId, { id: record.id, reqId: newCmdReqId(), cmd, ...params });
-	if (!result.ok) return { ok: false, response: json({ error: result.error }, cmdErrorStatus(result.error)) };
+	if (!result.ok) return { ok: false, response: json({ error: result.error }, reject400 && cmdErrorStatus(result.error) === 500 ? 400 : cmdErrorStatus(result.error)) };
 	return { ok: true, data: result.data };
 }
 

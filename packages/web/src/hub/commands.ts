@@ -66,6 +66,18 @@ export interface CommandContext {
 	retrySession(): void;
 	/** POST the extended-context switch; `SessionView` reports the resulting state. */
 	setExtendedContext(enabled?: boolean): void;
+	/** POST the prewalk command; `SessionView` reports the armed state. */
+	prewalkSession(request: PrewalkRequest): void;
+	/** POST the plan command; bare requests toggle from the session's current state. */
+	planSession(request: PlanRequest): void;
+	/** POST the advisor toggle from the session's current state; `SessionView` reports it. */
+	toggleAdvisor(): void;
+	/** POST the tier set on the current model's family; `SessionView` reports the tier. */
+	setTier(tier: string): void;
+	/** POST the pause switch (server-side toggle); `SessionView` reports the state. */
+	togglePause(): void;
+	/** POST the model cycle (forward); `SessionView` reports the switched model. */
+	cycleModel(): void;
 	/** Expand the docked todo panel above the composer. */
 	showTodos(): void;
 }
@@ -131,6 +143,44 @@ export function parseExtendedContextArg(args: string): boolean | undefined {
 	if (arg === "on") return true;
 	if (arg === "off") return false;
 	return undefined;
+}
+
+/** Parsed `/prewalk` arguments: arm (optionally with an explicit target) or restart. */
+export interface PrewalkRequest {
+	action: "arm" | "restart";
+	/** Explicit model/role pattern; omitted arms the SDK default (`@smol`). */
+	target?: string;
+}
+
+/**
+ * Parse `/prewalk [target|restart]`: bare arms the default `@smol` role, a
+ * recognized `restart` verb restores the pre-prewalk model and re-arms (TUI
+ * parity), anything else is an explicit model/role pattern — the agent
+ * re-validates whatever the hub forwards.
+ */
+export function parsePrewalkArgs(args: string): PrewalkRequest {
+	const verb = args.trim();
+	if (verb.toLowerCase() === "restart") return { action: "restart" };
+	return verb ? { action: "arm", target: verb } : { action: "arm" };
+}
+
+/** Parsed `/plan` arguments: toggle (bare), force off, or enable with a plan file. */
+export interface PlanRequest {
+	action?: "enable" | "disable";
+	planFilePath?: string;
+}
+
+/**
+ * Parse `/plan [path|off]`: bare toggles (no action — the caller decides from
+ * the session's current plan state), `off` forces disable, any other text
+ * enables with that path as the plan file (SDK default reference path when
+ * the caller drops it).
+ */
+export function parsePlanArgs(args: string): PlanRequest {
+	const text = args.trim();
+	if (!text) return {};
+	if (text.toLowerCase() === "off") return { action: "disable" };
+	return { action: "enable", planFilePath: text };
 }
 
 /** Loop duration units, in milliseconds (oh-my-pi `modes/loop-limit`). */
@@ -272,8 +322,23 @@ export const COMMANDS: readonly CommandSpec[] = [
 		run: (ctx, args) => ctx.setExtendedContext(parseExtendedContextArg(args)),
 	},
 	{
+		name: "prewalk",
+		description: "arm the one-shot prewalk hand-off — [target] or restart",
+		run: (ctx, args) => ctx.prewalkSession(parsePrewalkArgs(args)),
+	},
+	{
+		name: "plan",
+		description: "toggle read-only plan mode — [path] sets the plan file",
+		run: (ctx, args) => ctx.planSession(parsePlanArgs(args)),
+	},
+	{ name: "advisor", description: "toggle the second-model advisor", run: ctx => ctx.toggleAdvisor() },
+	{ name: "fast", description: "priority service tier on the current model's family", run: ctx => ctx.setTier("priority") },
+	{ name: "slow", description: "low-priority (flex) service tier on the current model's family", run: ctx => ctx.setTier("flex") },
+	{ name: "pause", description: "freeze/resume the session's agent loop", run: ctx => ctx.togglePause() },
+	{ name: "cycle", description: "cycle to the next model in the session's list", run: ctx => ctx.cycleModel() },
+	{
 		name: "settings",
-		description: "model, thinking, links, theme, display name",
+		description: "model, thinking, links, theme, display name, advanced settings",
 		run: ctx => ctx.openModal("settings"),
 	},
 	{ name: "collab", description: "collab links — attach, view, web", run: ctx => ctx.openModal("links") },

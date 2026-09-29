@@ -29,24 +29,31 @@ import type { GuestClient } from "../lib/client";
 import { useThemePreference } from "../lib/theme";
 import { useGuestSnapshot } from "../lib/use-guest";
 import type { ToolRenderHost } from "../tool-render";
-import type { MachineSession, SessionRecord } from "./api";
+import type { AgentState, MachineSession, SessionRecord } from "./api";
 import {
 	errorText,
 	formatShakeSummary,
 	getMachineSessions,
+	postAdvisor,
 	postClearContext,
 	postCompact,
+	postCycle,
 	postExtendedContext,
 	postGenerateTitle,
 	postHandoff,
+	postPause,
+	postPlan,
+	postPrewalk,
 	postRename,
 	postRetry,
 	postShake,
+	postTier,
 	startSession,
 	uploadSessionFile,
 } from "./api";
-import type { CommandContext, CompactRequest, ModalKind } from "./commands";
+import type { CommandContext, CompactRequest, ModalKind, PlanRequest, PrewalkRequest } from "./commands";
 import { useSessionRecord } from "./sessions-store";
+import { useAgentState } from "./use-agent-state";
 import {
 	commandQuery,
 	createComposerClient,
@@ -81,6 +88,9 @@ import { TodoPanel, TODO_COLLAPSE_KEY } from "./TodoPanel";
 
 /** Grace period before releasing the dump blob URL (some browsers start late). */
 const BLOB_URL_TTL_MS = 10_000;
+
+/** Cadence for polling `GET …/agent-state` to drive the advanced-mode header chips. */
+const AGENT_STATE_POLL_MS = 5_000;
 
 export interface SessionViewProps {
 	/** Hub-assigned session id (`/s/<id>`), the key for the agent-state API. */
@@ -148,6 +158,18 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	// `record` prop, so transient activity must be read from the store itself.
 	const { record: mirrored } = useSessionRecord(sessionId);
 	const handoffRunning = mirrored?.activity?.handoff === true;
+	// Advanced session modes (protocol §2 AgentState, 0.9.0+) come from the hub
+	// mirror (`GET …/agent-state`), not the collab snapshot: polled on an
+	// interval while the session is live and refreshed after each command.
+	const agentLoad = useAgentState(sessionId);
+	const agentState = agentLoad.state;
+	const agentStateRef = useRef<AgentState | null>(null);
+	agentStateRef.current = agentState;
+	useEffect(() => {
+		if (snap.phase !== "live") return;
+		const timer = setInterval(agentLoad.refresh, AGENT_STATE_POLL_MS);
+		return () => clearInterval(timer);
+	}, [snap.phase, agentLoad.refresh]);
 	// Steering messages (TUI input-controller parity): a prompt submitted while
 	// the host agent streams queues host-side and stays visible here until it
 	// is delivered; an empty-editor Enter aborts so the queue delivers now.
@@ -364,6 +386,103 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		[sessionId, notify],
 	);
 
+	// `/prewalk`, `/plan`, `/advisor`, `/fast`, `/slow`, `/pause`, `/cycle`:
+	// fire the hub command, toast the outcome, and refresh the polled agent
+	// state so the header chips follow immediately.
+	const prewalkSession = useCallback(
+		(request: PrewalkRequest): void => {
+			void postPrewalk(sessionId, request).then(
+				result => {
+					if (request.action === "restart") {
+						notify(
+							result.result === "rejected" ? "warning" : "info",
+							`prewalk restart ${result.result ?? "failed"}`,
+						);
+					} else if (result.armed === false) {
+						notify("warning", "prewalk target matches the active model — nothing to arm");
+					} else if (result.prewalk) {
+						notify("info", `prewalk armed → ${result.prewalk.name}`);
+					} else {
+						notify("info", "prewalk disarmed");
+					}
+					agentLoad.refresh();
+				},
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify, agentLoad.refresh],
+	);
+
+	const planSession = useCallback(
+		(request: PlanRequest): void => {
+			// Bare `/plan` toggles from the last polled plan state; unknown state
+			// defaults to enabling (TUI toggle parity).
+			const enabled = agentStateRef.current?.plan?.enabled === true;
+			const action = request.action ?? (enabled ? "disable" : "enable");
+			void postPlan(sessionId, { action, planFilePath: request.planFilePath }).then(
+				plan => {
+					notify(
+						"info",
+						plan?.enabled
+							? `plan mode on${plan.workflow ? ` (${plan.workflow})` : ""} — read-only until disabled`
+							: "plan mode off",
+					);
+					agentLoad.refresh();
+				},
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify, agentLoad.refresh],
+	);
+
+	const toggleAdvisor = useCallback((): void => {
+		const enabled = agentStateRef.current?.advisor?.enabled === true;
+		void postAdvisor(sessionId, { action: enabled ? "disable" : "enable" }).then(
+			next =>
+				notify(
+					"info",
+					next.enabled ? `advisor on (${next.advisors.join(", ") || "discovered"})` : "advisor off",
+				),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
+	const setTier = useCallback(
+		(tier: string): void => {
+			void postTier(sessionId, { action: "set", tier }).then(
+				tiers => {
+					const applied = Object.entries(tiers)
+						.map(([family, value]) => `${family}=${value}`)
+						.join(", ");
+					notify("info", applied ? `service tier set — ${applied}` : `service tier ${tier} applied`);
+					agentLoad.refresh();
+				},
+				(err: unknown) => notify("error", errorText(err)),
+			);
+		},
+		[sessionId, notify, agentLoad.refresh],
+	);
+
+	const togglePause = useCallback((): void => {
+		void postPause(sessionId, {}).then(
+			paused => notify("info", paused ? "session paused — /pause resumes" : "session resumed"),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
+	const cycleModel = useCallback((): void => {
+		void postCycle(sessionId, { direction: "forward" }).then(
+			result =>
+				notify(
+					result.switched && result.model ? "info" : "warning",
+					result.switched && result.model
+						? `switched to ${result.model.name}${result.thinkingLevel ? ` · ${result.thinkingLevel}` : ""}`
+						: "nothing to cycle to",
+				),
+			(err: unknown) => notify("error", errorText(err)),
+		);
+	}, [sessionId, notify]);
+
 	// `/todo`: the todo board lives in the docked panel (derived from the live
 	// transcript), so the command only guarantees it is expanded.
 	const [todoOpen, setTodoOpen] = useState(() => localStorage.getItem(TODO_COLLAPSE_KEY) !== "1");
@@ -391,6 +510,12 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 		renameSession,
 		generateTitle,
 		setExtendedContext,
+		prewalkSession,
+		planSession,
+		toggleAdvisor,
+		setTier,
+		togglePause,
+		cycleModel,
 		showTodos,
 	};
 	const ctxRef = useRef(ctx);
@@ -594,6 +719,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				onOpenContext={() => setModal("context")}
 				onRename={renameSession}
 				handoffRunning={handoffRunning}
+				prewalkTarget={agentState?.prewalk?.name}
+				planEnabled={agentState?.plan?.enabled === true}
+				advisorEnabled={agentState?.advisor?.enabled === true}
+				paused={agentState?.paused === true}
 			/>
 			<StatsBar snapshot={snap} />
 			<main className="sh-main">
