@@ -4,9 +4,9 @@
  *
  * The supervisor passes the spawn config as `--config <json>`; the test passes
  * the report destination in the unused `prompt` field. The child writes
- * `{ompProfile, piProfile}` there BEFORE emitting `ready` (so the file exists
- * once `ready` resolves), then exits on `{t:"stop"}` / stdin EOF like the real
- * session host. Deliberately imports nothing from src/.
+ * `{ompProfile, piProfile, agentDirEnv}` there BEFORE emitting `ready` (so the
+ * file exists once `ready` resolves), then exits on `{t:"stop"}` / stdin EOF
+ * like the real session host. Deliberately imports nothing from src/.
  */
 
 const configIndex = process.argv.indexOf("--config");
@@ -21,7 +21,11 @@ function write(frame: unknown): void {
 if (reportPath) {
 	void Bun.write(
 		reportPath,
-		JSON.stringify({ ompProfile: process.env.OMP_PROFILE ?? null, piProfile: process.env.PI_PROFILE ?? null }),
+		JSON.stringify({
+			ompProfile: process.env.OMP_PROFILE ?? null,
+			piProfile: process.env.PI_PROFILE ?? null,
+			agentDirEnv: process.env.PI_CODING_AGENT_DIR ?? null,
+		}),
 	).then(() => {
 		write({
 			t: "ready",

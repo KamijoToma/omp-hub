@@ -2,7 +2,10 @@
  * Supervisor profile handling (docs/protocol.md §2 `start.profile`): a valid
  * profile reaches the session child as `OMP_PROFILE`/`PI_PROFILE`; an unknown
  * or syntactically invalid name fails the start through `onError` (the hub's
- * `session-error`) and never spawns a child.
+ * `session-error`) and never spawns a child. An ambient `PI_CODING_AGENT_DIR`
+ * is stripped alongside the profile vars: pi-utils honors a lone override in
+ * default mode, so it would otherwise point "default" sessions at another
+ * profile's agent dir.
  */
 
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -36,9 +39,14 @@ beforeAll(async () => {
 	root = await mkdtemp(path.join(tmpdir(), "omp-hub-supervisor-profile-"));
 	profilesRoot = path.join(root, "profiles");
 	await mkdir(path.join(profilesRoot, "work", "agent"), { recursive: true });
+	// Simulate a daemon launched from a shell inside another profile: the
+	// ambient override must never reach a hub-started child, whatever profile
+	// the web selected.
+	process.env.PI_CODING_AGENT_DIR = path.join(root, "other-profile", "agent");
 });
 
 afterAll(async () => {
+	delete process.env.PI_CODING_AGENT_DIR;
 	await rm(root, { recursive: true, force: true });
 });
 
@@ -73,14 +81,17 @@ test("a valid profile reaches the child as OMP_PROFILE and PI_PROFILE", async ()
 	const report = JSON.parse(await readFile(reportPath, "utf8")) as {
 		ompProfile: string | null;
 		piProfile: string | null;
+		agentDirEnv: string | null;
 	};
-	expect(report).toEqual({ ompProfile: "work", piProfile: "work" });
+	expect(report).toEqual({ ompProfile: "work", piProfile: "work", agentDirEnv: null });
 	await supervisor.stopAll("profile test done");
 });
 
 test("profile \"default\" is the implicit default: the child sees no profile env", async () => {
 	// Even when the daemon itself runs under an ambient OMP_PROFILE, a hub start
-	// selected as "default" must strip it — the web selection wins.
+	// selected as "default" must strip it — the web selection wins. The ambient
+	// PI_CODING_AGENT_DIR from beforeAll must go too: pi-utils honors a lone
+	// override in default mode.
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const supervisor = probeSupervisor(() => {}, payload => ready.resolve(payload));
 	const reportPath = path.join(root, "env-report-default.json");
@@ -97,8 +108,9 @@ test("profile \"default\" is the implicit default: the child sees no profile env
 	const report = JSON.parse(await readFile(reportPath, "utf8")) as {
 		ompProfile: string | null;
 		piProfile: string | null;
+		agentDirEnv: string | null;
 	};
-	expect(report).toEqual({ ompProfile: null, piProfile: null });
+	expect(report).toEqual({ ompProfile: null, piProfile: null, agentDirEnv: null });
 	await supervisor.stopAll("profile test done");
 });
 

@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "bun:test";
-import { defaultProfilesRoot, listProfiles, normalizeProfileName, profileExists } from "../src/profiles";
+import { applyProfileSelection, defaultProfilesRoot, listProfiles, normalizeProfileName, profileExists, stripAmbientProfileEnv } from "../src/profiles";
 
 test("normalizeProfileName mirrors omp --profile validation", () => {
 	expect(normalizeProfileName(undefined)).toBeUndefined();
@@ -69,5 +69,55 @@ test("defaultProfilesRoot honors PI_CONFIG_DIR and defaults to .omp", () => {
 	} finally {
 		if (original === undefined) delete process.env.PI_CONFIG_DIR;
 		else process.env.PI_CONFIG_DIR = original;
+	}
+});
+
+test("applyProfileSelection strips the profile vars and the agent-dir override together", () => {
+	// A lone PI_CODING_AGENT_DIR would hijack default mode (pi-utils honors it
+	// without profile env), so a selection must remove all three or none.
+	const env: Record<string, string | undefined> = {
+		OMP_PROFILE: "glm",
+		PI_PROFILE: "glm",
+		PI_CODING_AGENT_DIR: "/home/x/.omp/profiles/glm/agent",
+		PI_CONFIG_DIR: ".custom",
+		HUB_TOKEN: "t",
+	};
+	applyProfileSelection(env, undefined);
+	expect(env).toEqual({ PI_CONFIG_DIR: ".custom", HUB_TOKEN: "t" });
+
+	applyProfileSelection(env, "work");
+	expect(env).toEqual({
+		PI_CONFIG_DIR: ".custom",
+		HUB_TOKEN: "t",
+		OMP_PROFILE: "work",
+		PI_PROFILE: "work",
+	});
+});
+
+test("stripAmbientProfileEnv removes ambient selection and reports what it removed", () => {
+	const saved = { ...process.env };
+	try {
+		process.env.OMP_PROFILE = "glm";
+		process.env.PI_PROFILE = "glm";
+		process.env.PI_CODING_AGENT_DIR = "/home/x/.omp/profiles/glm/agent";
+
+		const removed = stripAmbientProfileEnv();
+
+		expect(removed).toEqual([
+			"OMP_PROFILE=glm",
+			"PI_PROFILE=glm",
+			"PI_CODING_AGENT_DIR=/home/x/.omp/profiles/glm/agent",
+		]);
+		expect(process.env.OMP_PROFILE).toBeUndefined();
+		expect(process.env.PI_PROFILE).toBeUndefined();
+		expect(process.env.PI_CODING_AGENT_DIR).toBeUndefined();
+
+		// A clean environment strips nothing.
+		expect(stripAmbientProfileEnv()).toEqual([]);
+	} finally {
+		for (const key of ["OMP_PROFILE", "PI_PROFILE", "PI_CODING_AGENT_DIR"] as const) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
 	}
 });

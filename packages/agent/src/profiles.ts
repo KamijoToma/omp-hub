@@ -96,3 +96,53 @@ export async function profileExists(name: string, root: string = defaultProfiles
 		return false;
 	}
 }
+
+/**
+ * Every variable that selects an omp profile for code resolving its state at
+ * module load (pi-utils `dirs.ts`): `OMP_PROFILE` (canonical) and `PI_PROFILE`
+ * (legacy fallback) name the profile, and `PI_CODING_AGENT_DIR` carries the
+ * derived agent dir omp's own `setProfile` exports alongside them. The three
+ * only travel together when the parent writes all of them, so a hub child that
+ * strips just the name vars inherits a stale agent-dir override — and pi-utils
+ * honors a lone override in default mode, silently pointing "default" at
+ * another profile's auth storage (observed as a hub default-profile
+ * subscriptions view reading the wrong account). `PI_CONFIG_DIR` stays: it
+ * renames the config root itself, an install-level setting shared by every
+ * profile.
+ */
+const PROFILE_SELECTION_ENV_KEYS = ["OMP_PROFILE", "PI_PROFILE", "PI_CODING_AGENT_DIR"] as const;
+
+/**
+ * Apply one hub profile selection to a child environment in place: strip every
+ * profile-selecting variable, then export `OMP_PROFILE`/`PI_PROFILE` when a
+ * named profile was chosen. The web selection fully determines the child's omp
+ * profile: ambient daemon-level values never leak into a child started as
+ * "default", and a chosen profile overrides them.
+ */
+export function applyProfileSelection(env: Record<string, string | undefined>, profile: string | undefined): void {
+	for (const key of PROFILE_SELECTION_ENV_KEYS) delete env[key];
+	if (profile) {
+		env.OMP_PROFILE = profile;
+		env.PI_PROFILE = profile;
+	}
+}
+
+/**
+ * Strip ambient profile selection from the running process: the daemon is
+ * profile-neutral and every profile state it touches is selected explicitly
+ * (session starts, subscriptions, usage dashboards). Returns the removed
+ * `KEY=value` pairs for startup diagnostics. Must run before any module that
+ * snapshots omp's directory state — pi-utils resolves the active profile and
+ * agent dir at module load.
+ */
+export function stripAmbientProfileEnv(): string[] {
+	const removed: string[] = [];
+	for (const key of PROFILE_SELECTION_ENV_KEYS) {
+		const value = process.env[key];
+		if (value !== undefined) {
+			delete process.env[key];
+			removed.push(`${key}=${value}`);
+		}
+	}
+	return removed;
+}

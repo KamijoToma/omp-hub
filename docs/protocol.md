@@ -159,7 +159,10 @@ Semantics:
 - `start.profile` names an omp profile (omp `--profile`): the daemon validates the name and
   that the profile exists on the machine, exports `OMP_PROFILE`/`PI_PROFILE` on the session
   child, and reports any failure as `session-error` before spawning. Omitted (or `"default"`)
-  means the default profile.
+  means the default profile. The child never inherits ambient `OMP_PROFILE`/`PI_PROFILE`/
+  `PI_CODING_AGENT_DIR`: the daemon strips all three before exporting the selection, since
+  pi-utils honors a lone `PI_CODING_AGENT_DIR` in default mode and would silently point a
+  "default" child at another profile's agent directory.
 - `start.sessionFile` resumes an existing omp session file instead of minting a new one
   (CLI `--resume` semantics: history, model, and thinking level come back from the file).
   The agent refuses a `start` whose `sessionFile` already belongs to a starting/live child
@@ -934,7 +937,8 @@ reconciliation, not falsely reported as worker completion.
 Spawn config is argv: `bun session-host.ts --config <json>` with
 `{ id, cwd, name?, prompt?, profile?, sessionFile?, superagent?, relayUrl, webUrl, agentDir? }`. A validated `profile`
 rides the config verbatim; the supervisor exports `OMP_PROFILE`/`PI_PROFILE` on the child
-(and clears any ambient daemon-level profile variables for default sessions), so the SDK
+(and clears ambient `OMP_PROFILE`/`PI_PROFILE`/`PI_CODING_AGENT_DIR` for every child — a
+lone agent-dir override would hijack default mode), so the SDK
 resolves the profile's agent directory from the first module load. `sessionFile` resumes
 that omp session file (`SessionManager.open` with `throwIfMissing`) instead of minting a new
 session; the recorded header cwd is adopted when the directory is still enterable.
