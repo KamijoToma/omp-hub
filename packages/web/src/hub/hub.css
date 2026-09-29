@@ -2083,8 +2083,10 @@
 
 /* ---- session frame: persistent rail + surface column ----
  * The frame outlives session switches (only the keyed surface remounts);
- * the rail is the two-state session drawer: a 44px always-visible icon
- * strip with live status dots, expanding to the full 280px picker. */
+ * the rail is the two-state session drawer: an always-visible collapsed icon
+ * strip with live status dots, expanding to the full picker. Widths come from
+ * the per-browser drag-resize preference (rail-width.ts) applied inline; the
+ * edge handle below is the resizer affordance. */
 .hb-frame {
 	display: flex;
 	height: 100%;
@@ -2105,7 +2107,7 @@
 }
 
 .hb-rail {
-	width: 44px;
+	position: relative;
 	flex: none;
 	min-height: 0;
 	display: flex;
@@ -2116,8 +2118,48 @@
 	transition: width 150ms ease-out;
 }
 
-.hb-rail-open {
-	width: 280px;
+/* Drag-to-resize edge: a fat invisible hit strip over the rail's right border,
+ * lit by a hairline on hover/drag. It covers only padding/margin gutters, so
+ * no row control loses clickable area; the collapsed strip's scrollbar shares
+ * the edge and stays reachable outside the 6px strip. */
+.hb-rail-resize {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 6px;
+	height: 100%;
+	z-index: 30;
+	cursor: col-resize;
+	touch-action: none;
+	outline: none;
+}
+
+.hb-rail-resize::before {
+	content: "";
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 1px;
+	height: 100%;
+	background: transparent;
+}
+
+.hb-rail-resize:hover::before,
+.hb-rail-resize:focus-visible::before,
+.hb-rail-resize-active::before {
+	background: var(--accent);
+}
+
+/* Mid-drag: the rail must track the pointer 1:1 (no width easing)… */
+.hb-rail-dragging {
+	transition: none;
+}
+
+/* …and the rest of the page must not select text or flash the cursor. */
+body.hb-rail-resizing {
+	cursor: col-resize;
+	user-select: none;
+	-webkit-user-select: none;
 }
 
 .hb-rail-toggle {
