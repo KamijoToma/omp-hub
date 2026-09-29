@@ -13,6 +13,8 @@ import type { ReactNode } from "react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtDuration, fmtTokens } from "../../lib/format";
+import { setTranscriptMode, useTranscriptMode } from "../../lib/transcript-mode";
+import { summarizeTurn } from "../../lib/turn-summary";
 import { fmtUsageCost, outputTokensPerSecond, usageDetail } from "../../lib/usage";
 import type { ToolRenderHost } from "../../tool-render";
 import { Markdown } from "./Markdown";
@@ -104,8 +106,9 @@ function buildTurnGroups(model: {
 	streamDone: boolean;
 	activeTools: ReadonlyMap<string, ActiveTool>;
 	working: boolean;
+	bodyOnly: boolean;
 }): TurnGroup[] {
-	const { entries, stream, streamDone, activeTools, working } = model;
+	const { entries, stream, streamDone, activeTools, working, bodyOnly } = model;
 
 	// Active tools not already represented as toolCall blocks in the stream ghost.
 	const streamIds = new Set<string>();
@@ -144,6 +147,7 @@ function buildTurnGroups(model: {
 					if (agent === null) agent = openAgent();
 					agent.entries.push(entry);
 				} else if (msg.role === "user") {
+					if (bodyOnly && msg.synthetic === true) break;
 					if (msg.synthetic === true && agent !== null) {
 						// System-injected prompt (steering / auto-continue) mid-run:
 						// an inline row inside the running turn, not a new bubble.
@@ -172,7 +176,7 @@ function buildTurnGroups(model: {
 						from: collabGuestName(entry),
 						synthetic: false,
 					});
-				} else if (entry.display) {
+				} else if (entry.display && !bodyOnly) {
 					agent = null;
 					groups.push({ kind: "custom", key: `custom-${groups.length}`, entry });
 				}
@@ -182,11 +186,12 @@ function buildTurnGroups(model: {
 			case "branch_summary":
 			case "reset_boundary":
 				agent = null;
-				groups.push({ kind: "divider", key: `divider-${groups.length}`, entry });
+				if (!bodyOnly) groups.push({ kind: "divider", key: `divider-${groups.length}`, entry });
 				break;
 			case "model_change":
 			case "thinking_level_change":
 				// Mid-run setting changes ride along inside the open agent turn.
+				if (bodyOnly) break;
 				if (agent !== null) agent.entries.push(entry);
 				else groups.push({ kind: "marker", key: `marker-${groups.length}`, entry });
 				break;
@@ -198,15 +203,14 @@ function buildTurnGroups(model: {
 	// The live tail — stream ghost, active tools, "thinking…" — extends the
 	// trailing agent turn, or opens one when the transcript ends on something else.
 	if (stream !== null || tailTools.length > 0 || working) {
-		const last = groups.at(-1);
-		const turn = last !== undefined && last.kind === "agent" ? last : openAgent();
+		const turn = agent ?? openAgent();
 		if (stream !== null) {
 			turn.ghost = stream;
 			turn.ghostPending = !streamDone;
 		}
 		turn.tailTools = tailTools;
 		turn.shimmer = stream === null && tailTools.length === 0 && working;
-		turn.live = (stream !== null && !streamDone) || working;
+		turn.live = (stream !== null && !streamDone) || tailTools.length > 0 || working;
 	}
 
 	return groups;
@@ -577,6 +581,18 @@ const EntryRow = memo(function EntryRow({
 	}
 }, entryRowEqual);
 
+/** Only model-authored text survives the body-only view, including partial streams. */
+function BodyText({ message }: { message: AssistantMessage }): ReactNode {
+	const blocks: ReactNode[] = [];
+	for (let i = 0; i < message.content.length; i++) {
+		const block = message.content[i];
+		if (block?.type === "text" && block.text.trim().length > 0) {
+			blocks.push(<Markdown key={i} text={block.text} />);
+		}
+	}
+	return blocks.length > 0 ? <Msg kind="assistant">{blocks}</Msg> : null;
+}
+
 /** Renders one clustered turn: cards for user/agent turns, bare rows for meta. */
 function TurnGroupView({
 	group,
@@ -584,12 +600,16 @@ function TurnGroupView({
 	active,
 	host,
 	rewind,
+	bodyOnly,
+	partialHistory,
 }: {
 	group: TurnGroup;
 	results: ReadonlyMap<string, ToolResultMessage>;
 	active: ReadonlyMap<string, ActiveTool>;
 	host?: ToolRenderHost;
 	rewind?: TranscriptRewind;
+	bodyOnly: boolean;
+	partialHistory: boolean;
 }): ReactNode {
 	const entryRow = (entry: SessionEntry): ReactNode => (
 		<EntryRow
@@ -603,7 +623,7 @@ function TurnGroupView({
 	);
 	switch (group.kind) {
 		case "user": {
-			const clock = fmtClock(group.entry.timestamp);
+			const clock = bodyOnly ? null : fmtClock(group.entry.timestamp);
 			return (
 				<div
 					className={`tr-turn tr-turn--user${group.synthetic ? " tr-turn--synthetic" : ""}`}
@@ -621,7 +641,30 @@ function TurnGroupView({
 			);
 		}
 		case "agent": {
-			// Header model chip: provider prefix stripped (`anthropic/x` → `x`).
+			if (bodyOnly) {
+				const summary = summarizeTurn(group.entries, group.ghost, group.ghostPending, group.tailTools);
+				const last = group.entries.at(-1);
+				const rewindTarget = last === undefined ? undefined : rewind?.targets.get(last.id);
+				return (
+					<div className={`tr-turn tr-turn--agent tr-turn--body${group.live ? " tr-turn--live" : ""}`}>
+						{group.entries.map(entry =>
+							entry.type === "message" && entry.message.role === "assistant"
+								? <BodyText key={entry.id} message={entry.message} />
+								: null,
+						)}
+						{group.ghost !== null && <BodyText message={group.ghost} />}
+						<div className="tr-footnote" title="Approximate sum of whole model requests, not exclusive thinking time; tool execution is excluded.">
+							{group.live ? "working…" : summary.modelMs === null ? "think time unavailable" : `think for ~${fmtDuration(summary.modelMs)}`}
+							{" · "}used {summary.tools} tool{summary.tools === 1 ? "" : "s"}
+							{summary.failure !== null && ` · ${summary.failure}`}
+							{partialHistory && " · partial history"}
+						</div>
+						{rewindTarget !== undefined && rewind?.onRewind !== undefined && (
+							<RewindButton onRewind={() => rewind.onRewind(rewindTarget)} />
+						)}
+					</div>
+				);
+			}
 			const rawModel = agentModel(group);
 			const model =
 				rawModel === null
@@ -693,13 +736,18 @@ function TurnGroupView({
 	}
 }
 
+const EMPTY_RESULTS: ReadonlyMap<string, ToolResultMessage> = new Map();
+
 export function Transcript(props: TranscriptProps): ReactNode {
 	const {
 		entries, stream, streamDone, activeTools, working, compact, host, rewind,
 		hasMoreHistory, historyLoading, historyError, onLoadOlder,
 	} = props;
+	const mode = useTranscriptMode();
+	const bodyOnly = mode === "body";
 
 	const results = useMemo(() => {
+		if (bodyOnly) return EMPTY_RESULTS;
 		const map = new Map<string, ToolResultMessage>();
 		for (const entry of entries) {
 			if (entry.type === "message" && entry.message.role === "toolResult") {
@@ -707,11 +755,11 @@ export function Transcript(props: TranscriptProps): ReactNode {
 			}
 		}
 		return map;
-	}, [entries]);
+	}, [entries, bodyOnly]);
 
 	const groups = useMemo(
-		() => buildTurnGroups({ entries, stream, streamDone, activeTools, working }),
-		[entries, stream, streamDone, activeTools, working],
+		() => buildTurnGroups({ entries, stream, streamDone, activeTools, working, bodyOnly }),
+		[entries, stream, streamDone, activeTools, working, bodyOnly],
 	);
 
 	const rootRef = useRef<HTMLDivElement | null>(null);
@@ -741,7 +789,7 @@ export function Transcript(props: TranscriptProps): ReactNode {
 	useEffect(() => {
 		const el = rootRef.current;
 		if (el !== null && lockRef.current) el.scrollTop = el.scrollHeight;
-	}, [entries, stream, activeTools, working]);
+	}, [entries, stream, activeTools, working, mode]);
 
 	return (
 		<div
@@ -755,6 +803,17 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				}
 			}}
 		>
+			<div className="tr-mode-bar">
+				<button
+					type="button"
+					className="tr-mode-switch"
+					aria-label="only show model answers"
+					aria-pressed={bodyOnly}
+					onClick={() => setTranscriptMode(bodyOnly ? "full" : "body")}
+				>
+					{bodyOnly ? "Only answers" : "Full transcript"}
+				</button>
+			</div>
 			{hasMoreHistory && (
 				<button type="button" className="tr-history" disabled={historyLoading} onClick={requestOlder}>
 					{historyLoading ? "loading older messages…" : historyError ?? "load older messages"}
@@ -765,6 +824,8 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				<TurnGroupView
 					key={group.key}
 					group={group}
+					bodyOnly={bodyOnly}
+					partialHistory={bodyOnly && hasMoreHistory === true && group === groups[0] && group.kind === "agent"}
 					results={results}
 					active={activeTools}
 					host={host}

@@ -154,6 +154,17 @@ Hub additions:
   settings stay tied to the current live session. The dialog becomes a
   scrollable bottom sheet on phones; the unauthenticated `/join` page has no
   hub-settings entry.
+- The transcript's browser-local `omp.transcript-mode` defaults to `full`.
+  Its sticky switch works on hub sessions, `/join`, and subagent transcripts;
+  the authenticated settings center exposes the same choice. `body` keeps
+  user prompts and model text, hiding reasoning, tool details, transcript
+  metadata and the session stats strip without changing collab data. One
+  footnote per agent turn counts distinct tool-call ids and sums host-reported
+  **whole model request** durations (approximate, not exclusive thinking time
+  and excluding tool execution). Missing timing remains unknown; incomplete
+  history is marked until older entries load. Errors retain a short status,
+  and the full view remains one tap away.
+
 - `HubAlerts` stays mounted across authenticated routes and consumes the shared
   sessions-store poll; session rail and dialog notification toggles subscribe
   to the same browser-local preference. Home/usage and session status cards
