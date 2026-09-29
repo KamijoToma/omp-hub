@@ -139,7 +139,10 @@ Semantics:
   it; `session-exit`/`-error` clears the field. Older agents never send it, so `activity` stays
   absent — consumers must treat it as optional (and `handoff` too: absent clears the bit).
 - Missing 2 consecutive heartbeats ⇒ hub marks the agent offline (sessions → `exited`,
-  reason `"agent lost"`). `ping` must be answered with `pong`; it does not replace `hb`.
+  reason `"agent lost"`) and closes the socket with **1001** — a live daemon treats that as
+  transient and reconnects. Only protocol violations and the same-machineId replacement
+  (`"agent replaced"`, `"re-hello"`, …) close with **4000**, which the agent treats as fatal
+  and does NOT reconnect from. `ping` must be answered with `pong`; it does not replace `hb`.
 - `hb.sessions` doubles as the upgrade-restart reconcile (0.6.0+): records restored from the
   state snapshot (§3) that this connection's heartbeat no longer reports — or reports
   `exited`/`failed` — flip to that terminal state (`"agent heartbeat: no such child"` /
