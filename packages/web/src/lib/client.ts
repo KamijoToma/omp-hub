@@ -48,6 +48,9 @@ export interface GuestSnapshot {
 	endedReason: string | null;
 	header: SessionHeader | null;
 	entries: readonly SessionEntry[];
+	hasMoreHistory: boolean;
+	historyLoading: boolean;
+	historyError: string | null;
 	state: SessionState | null;
 	agents: readonly AgentSnapshot[];
 	/** Keyed by `payload.progress.id`. */
@@ -74,6 +77,8 @@ const TRANSCRIPT_TIMEOUT_MS = 10_000;
 const WELCOME_TIMEOUT_MS = 30_000;
 /** Mirrors the TUI guest's SNAPSHOT_PROGRESS_TIMEOUT_MS: every snapshot chunk must make progress. */
 const SNAPSHOT_PROGRESS_TIMEOUT_MS = 30_000;
+const HISTORY_PAGE_SIZE = 80;
+const HISTORY_TIMEOUT_MS = 10_000;
 
 /**
  * One fetch-transcript round trip.
@@ -96,6 +101,7 @@ export class GuestClient {
 	readonly #writeToken: string | undefined;
 	readonly #listeners = new Set<() => void>();
 	readonly #pendingTranscripts = new Map<number, PendingTranscript>();
+	#pendingHistory: { reqId: number; beforeId: string; timer: Timer } | null = null;
 	#reqSeq = 0;
 	#noticeSeq = 0;
 	#everConnected = false;
@@ -107,6 +113,8 @@ export class GuestClient {
 	#endedReason: string | null = null;
 	#header: SessionHeader | null = null;
 	#entries: readonly SessionEntry[] = [];
+	#hasMoreHistory = false;
+	#historyError: string | null = null;
 	#state: SessionState | null = null;
 	#agents: readonly AgentSnapshot[] = [];
 	#progress: ReadonlyMap<string, SubagentProgressPayload> = new Map();
@@ -155,6 +163,7 @@ export class GuestClient {
 	close(): void {
 		this.#clearWelcomeTimer();
 		this.#clearSnapshotProgressTimer();
+		this.#cancelHistoryRequest();
 		this.#socket.close();
 	}
 
@@ -211,6 +220,23 @@ export class GuestClient {
 		this.#socket.send({ t: "fetch-transcript", reqId, agentId, fromByte });
 		return promise;
 	}
+	/** Request one older page without blocking live frames or the composer. */
+	loadOlder(): void {
+		if (this.#phase !== "live" || !this.#hasMoreHistory || this.#pendingHistory) return;
+		const beforeId = this.#entries[0]?.id;
+		if (!beforeId) return;
+		const reqId = ++this.#reqSeq;
+		this.#historyError = null;
+		const timer = setTimeout(() => {
+			if (this.#pendingHistory?.reqId !== reqId) return;
+			this.#pendingHistory = null;
+			this.#historyError = "History request timed out. Retry to load older messages.";
+			this.#commit();
+		}, HISTORY_TIMEOUT_MS);
+		this.#pendingHistory = { reqId, beforeId, timer };
+		this.#socket.send({ t: "fetch-history", reqId, beforeId, limit: HISTORY_PAGE_SIZE });
+		this.#commit();
+	}
 
 	/** Test seam: apply a synthetic host frame through the real apply path. */
 	applyFrameForTest(frame: HostFrame): void {
@@ -228,6 +254,7 @@ export class GuestClient {
 		const index = this.#entries.findIndex(entry => entry.id === entryId);
 		if (index < 0) return;
 		this.#entries = this.#entries.slice(0, index);
+		if (index === 0) this.#hasMoreHistory = false;
 		this.#stream = null;
 		this.#streamDone = false;
 		this.#activeTools = new Map();
@@ -236,7 +263,7 @@ export class GuestClient {
 	}
 
 	#handleOpen(): void {
-		this.#socket.send({ t: "hello", proto: COLLAB_PROTO, name: this.#name, writeToken: this.#writeToken });
+		this.#socket.send({ t: "hello", proto: COLLAB_PROTO, name: this.#name, writeToken: this.#writeToken, recentEntries: HISTORY_PAGE_SIZE });
 		this.#phase = this.#everConnected ? "reconnecting" : "waiting";
 		this.#everConnected = true;
 		this.#commit();
@@ -244,6 +271,7 @@ export class GuestClient {
 
 	#handleClose(reason: string, willReconnect: boolean): void {
 		this.#clearSnapshotProgressTimer();
+		this.#cancelHistoryRequest();
 		if (this.#phase === "ended") return;
 		if (willReconnect) {
 			this.#phase = "reconnecting";
@@ -257,6 +285,7 @@ export class GuestClient {
 		if (this.#phase === "ended") return;
 		this.#clearWelcomeTimer();
 		this.#clearSnapshotProgressTimer();
+		this.#cancelHistoryRequest();
 		this.#phase = "ended";
 		this.#endedReason = reason;
 		for (const [, pending] of this.#pendingTranscripts) {
@@ -291,6 +320,12 @@ export class GuestClient {
 		}
 	}
 
+	#cancelHistoryRequest(): void {
+		if (!this.#pendingHistory) return;
+		clearTimeout(this.#pendingHistory.timer);
+		this.#pendingHistory = null;
+	}
+
 	/** Surfaces apply failures instead of letting the socket's recv chain swallow them. */
 	#applyFrameSafe(frame: HostFrame): void {
 		try {
@@ -313,6 +348,9 @@ export class GuestClient {
 				// supersedes any partially-streamed snapshot from the prior session.
 				this.#header = frame.header;
 				this.#entries = [];
+				this.#cancelHistoryRequest();
+				this.#hasMoreHistory = frame.hasMoreHistory === true;
+				this.#historyError = null;
 				this.#state = frame.state;
 				this.#agents = [...frame.agents];
 				this.#stream = null;
@@ -396,6 +434,18 @@ export class GuestClient {
 							? { kind: "error", message: frame.error }
 							: { kind: "rows", text: frame.text, newSize: frame.newSize },
 					);
+				}
+				break;
+			}
+			case "history": {
+				const pending = this.#pendingHistory;
+				if (!pending || pending.reqId !== frame.reqId) break;
+				this.#cancelHistoryRequest();
+				if (frame.error) {
+					this.#historyError = frame.error;
+				} else if (this.#entries[0]?.id === pending.beforeId) {
+					this.#entries = [...frame.entries, ...this.#entries];
+					this.#hasMoreHistory = frame.hasMore;
 				}
 				break;
 			}
@@ -523,6 +573,9 @@ export class GuestClient {
 			endedReason: this.#endedReason,
 			header: this.#header,
 			entries: this.#entries,
+			hasMoreHistory: this.#hasMoreHistory,
+			historyLoading: this.#pendingHistory !== null,
+			historyError: this.#historyError,
 			state: this.#state,
 			agents: this.#agents,
 			progress: this.#progress,

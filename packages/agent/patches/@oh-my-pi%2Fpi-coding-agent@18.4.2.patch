@@ -1,0 +1,180 @@
+diff --git a/node_modules/@oh-my-pi/pi-coding-agent/.bun-tag-f797b4bd2437d25c b/.bun-tag-f797b4bd2437d25c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/src/collab/host.ts b/src/collab/host.ts
+index e08341cb812c1d4f9e1defa05f0ec4695b110ca6..06382aebdfc73670e2bcda6e3ff5d875e7f3c83c 100644
+--- a/src/collab/host.ts
++++ b/src/collab/host.ts
+@@ -128,6 +128,8 @@ const TRANSCRIPT_ENTRY_TOO_LARGE_ERROR = `transcript entry exceeds transcript fe
+  * and the seal step care about — not UTF-16 code units (#11433).
+  */
+ const SNAPSHOT_CHUNK_BYTES = 512 * 1024;
++/** Browser paging is opt-in; legacy terminal guests still receive full snapshots. */
++const MAX_HISTORY_ENTRIES = 80;
+ const MAX_PENDING_UI_REQUESTS = 64;
+ /**
+  * Outcome of {@link CollabHost.requestGuestUi}. `answered` carries the guest's
+@@ -675,7 +677,7 @@ export class CollabHost {
+ 		if (!this.#guestTrafficAllowed()) return;
+ 		switch (frame.t) {
+ 			case "hello":
+-				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer);
++				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer, frame.recentEntries);
+ 				break;
+ 			case "prompt":
+ 				if (this.#rejectWhileStarting("prompting", fromPeer)) break;
+@@ -692,6 +694,9 @@ export class CollabHost {
+ 			case "fetch-transcript":
+ 				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
+ 				break;
++			case "fetch-history":
++				this.#handleFetchHistory(frame.reqId, frame.beforeId, frame.limit, fromPeer);
++				break;
+ 			default:
+ 				logger.debug("collab host ignoring unexpected frame", { type: frame.t, fromPeer });
+ 		}
+@@ -724,7 +729,7 @@ export class CollabHost {
+ 		return true;
+ 	}
+ 
+-	#handleHello(name: string, proto: number, writeToken: string | undefined, fromPeer: number): void {
++	#handleHello(name: string, proto: number, writeToken: string | undefined, fromPeer: number, recentEntries?: number): void {
+ 		if (this.#ctx.session.isSessionTransitioning) {
+ 			this.#send({ t: "error", message: "Session transition in progress; join again when it completes" }, fromPeer);
+ 			return;
+@@ -740,38 +745,38 @@ export class CollabHost {
+ 		const canWrite = this.#verifyWriteToken(writeToken);
+ 		this.#peers.set(fromPeer, { name: cleanName, canWrite });
+ 
+-		// Enqueue the snapshot synchronously so live traffic cannot overtake it;
+-		// materialize its chunks only as the transport drains.
+-		// `copyForReplication` rather than the default `structuredClone`: a payload
+-		// the engine cannot clone is exactly what the shrinker below exists to
+-		// bound, so letting the copy throw here would abort the chunk train before
+-		// the bound ever runs (issue #11433).
+-		const snapshot = this.#ctx.sessionManager.snapshotForReplication(copyForReplication);
+-		// `null` means the snapshot is not serializable as-is (a non-JSON leaf
+-		// such as `BigInt`, or a `toJSON` that throws — depth and cycles are
+-		// already bounded by `copyForReplication` above); treat it as over the
+-		// threshold so images are stripped before the chunker has to fall back
+-		// to placeholders.
+-		const snapshotBytes = replicationByteLength(snapshot);
+-		if (snapshotBytes === null || snapshotBytes > WELCOME_IMAGE_STRIP_THRESHOLD) {
+-			let stripped = 0;
+-			for (const entry of snapshot.entries) {
+-				if (entry.type === "message") stripped += stripImagesFromMessage(entry.message);
++		// An opted-in browser copies only a bounded tail. Old session files may
++		// lack entry IDs; keep their full snapshot because paging needs a cursor.
++		// Legacy omp join guests also retain the original full snapshot path.
++		const recent = Number.isInteger(recentEntries) && recentEntries! > 0;
++		const all = recent ? this.#ctx.sessionManager.getEntries().filter(isWireSessionEntry) : null;
++		const page = all && all.every(entry => typeof entry.id === "string" && entry.id.length > 0)
++			? this.#historyPage(all, all.length, Math.min(recentEntries!, MAX_HISTORY_ENTRIES))
++			: null;
++		const snapshot = page ? null : this.#ctx.sessionManager.snapshotForReplication(copyForReplication);
++		if (snapshot) {
++			const snapshotBytes = replicationByteLength(snapshot);
++			if (snapshotBytes === null || snapshotBytes > WELCOME_IMAGE_STRIP_THRESHOLD) {
++				let stripped = 0;
++				for (const entry of snapshot.entries) {
++					if (entry.type === "message") stripped += stripImagesFromMessage(entry.message);
++				}
++				logger.info("collab welcome exceeded size threshold; stripped images", { stripped });
+ 			}
+-			logger.info("collab welcome exceeded size threshold; stripped images", { stripped });
+ 		}
+-		const entries = snapshot.entries.filter(isWireSessionEntry);
++		const entries = page?.entries ?? snapshot!.entries.filter(isWireSessionEntry);
+ 		const socket = this.#socket;
+ 		if (!socket) return;
+ 		this.#send(
+ 			{
+ 				t: "welcome",
+ 				proto: COLLAB_PROTO,
+-				header: snapshot.header,
++				header: snapshot?.header ?? copyForReplication(this.#ctx.sessionManager.getHeader()!),
+ 				state: this.#buildState(),
+ 				agents: this.#snapshotAgents(),
+ 				entryCount: entries.length,
+ 				readOnly: canWrite ? undefined : true,
++				hasMoreHistory: page?.hasMore,
+ 			},
+ 			fromPeer,
+ 		);
+@@ -790,6 +795,42 @@ export class CollabHost {
+ 		this.#scheduleStateBroadcast();
+ 	}
+ 
++	/** Copy/shrink only the requested tail; bound a history reply to one relay-sized frame. */
++	#historyPage(
++		all: (StoredSessionEntry & WireSessionEntry)[],
++		before: number,
++		limit: number,
++	): { entries: ReplicatedEntry[]; hasMore: boolean } {
++		const entries: ReplicatedEntry[] = [];
++		let bytes = 0;
++		let cursor = before;
++		while (cursor > 0 && entries.length < limit) {
++			const entry = shrinkReplicatedEntry(copyForReplication(all[cursor - 1]!));
++			const size = replicationByteLength(entry) ?? 0;
++			if (entries.length > 0 && bytes + size > SNAPSHOT_CHUNK_BYTES) break;
++			entries.push(entry);
++			bytes += size;
++			cursor--;
++		}
++		entries.reverse();
++		return { entries, hasMore: cursor > 0 };
++	}
++
++	#handleFetchHistory(reqId: number, beforeId: string, limit: number, fromPeer: number): void {
++		if (!this.#peers.has(fromPeer)) return;
++		if (!Number.isSafeInteger(reqId) || typeof beforeId !== "string" || !Number.isInteger(limit) || limit < 1) {
++			this.#send({ t: "history", reqId, entries: [], hasMore: false, error: "invalid history request" }, fromPeer);
++			return;
++		}
++		const all = this.#ctx.sessionManager.getEntries().filter(isWireSessionEntry);
++		const before = all.findIndex(entry => entry.id === beforeId);
++		if (before < 0) {
++			this.#send({ t: "history", reqId, entries: [], hasMore: false, error: "history cursor is no longer available; rejoin to resync" }, fromPeer);
++			return;
++		}
++		this.#send({ t: "history", reqId, ...this.#historyPage(all, before, Math.min(limit, MAX_HISTORY_ENTRIES)) }, fromPeer);
++	}
++
+ 	/**
+ 	 * Slice {@link entries} into byte-bounded `snapshot-chunk` frames.
+ 	 * Each entry is first run through
+diff --git a/src/collab/protocol.ts b/src/collab/protocol.ts
+index db6a24a902ed5760e72ebdda0d032063309d654f..a8ea008e2cea38d08d962d50cbe41dd33ea03571 100644
+--- a/src/collab/protocol.ts
++++ b/src/collab/protocol.ts
+@@ -52,8 +52,10 @@ export type { CollabSessionState };
+  * that serialize into those shapes.
+  */
+ export type CollabFrame =
+-	// guest -> host (hello/abort/agent-cmd/fetch-transcript/ui-response are taken verbatim from the wire grammar)
+-	| Exclude<GuestFrame, { t: "prompt" }>
++	// Existing wire grammar plus opt-in browser history paging.
++	| Exclude<GuestFrame, { t: "prompt" | "hello" }>
++	| { t: "hello"; proto: number; name: string; writeToken?: string; recentEntries?: number }
++	| { t: "fetch-history"; reqId: number; beforeId: string; limit: number }
+ 	| { t: "prompt"; text: string; images?: ImageContent[] }
+ 	// host -> guest
+ 	| {
+@@ -71,6 +73,8 @@ export type CollabFrame =
+ 			entryCount: number;
+ 			/** True when this peer joined through a read-only (view) link. */
+ 			readOnly?: boolean;
++			/** Present only for guests requesting a recent-only snapshot. */
++			hasMoreHistory?: boolean;
+ 	  }
+ 	/**
+ 	 * Targeted snapshot fragment delivered after `welcome`. Splits a large
+@@ -92,6 +96,7 @@ export type CollabFrame =
+ 	| { t: "ui-request-end"; reqId: number }
+ 	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
+ 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
++	| { t: "history"; reqId: number; entries: SessionEntry[]; hasMore: boolean; error?: string }
+ 	| { t: "bye"; reason: string }
+ 	| { t: "error"; message: string };
+ 

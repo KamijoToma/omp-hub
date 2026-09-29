@@ -121,6 +121,12 @@ Hub additions:
   `GuestClient(link, displayName)`, render the vendored session leaves
   (HeaderBar/Transcript/AgentsPanel/Composer/AgentDrawer/Banners/Toasts) through a thin
   `SessionView` glue (~40 lines, mirroring upstream `Session` in `app.tsx`).
+- Browser guests request only the newest 80 transcript entries on join. The
+  patched agent host returns a bounded tail snapshot first, leaving the
+  composer usable while older pages load on upward scroll or via the button
+  at the top. Live entries continue arriving independently. The `/join` and
+  hub session pages share this behavior; `omp join` still receives the full
+  snapshot. Older agents send their usual full snapshot until upgraded.
 - Display name: profile name input on the token gate, stored
   `localStorage["omp-hub.name"]`, default `"guest"`.
 

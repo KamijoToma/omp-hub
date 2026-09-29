@@ -10,7 +10,7 @@ import { stripSystemNotice } from "../../lib/system-notice";
 import { LateDiagnostics } from "./LateDiagnostics";
 import { ChevronRight, History } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtDuration, fmtTokens } from "../../lib/format";
 import { fmtUsageCost, outputTokensPerSecond, usageDetail } from "../../lib/usage";
@@ -31,6 +31,10 @@ export interface TranscriptProps {
 	streamDone: boolean;
 	activeTools: ReadonlyMap<string, ActiveTool>;
 	working: boolean;
+	hasMoreHistory?: boolean;
+	historyLoading?: boolean;
+	historyError?: string | null;
+	onLoadOlder?: () => void;
 	compact?: boolean; // dense variant for the agent drawer
 	/** Sub-session drill-down capabilities forwarded to tool renderers. */
 	host?: ToolRenderHost;
@@ -681,7 +685,10 @@ function TurnGroupView({
 }
 
 export function Transcript(props: TranscriptProps): ReactNode {
-	const { entries, stream, streamDone, activeTools, working, compact, host, rewind } = props;
+	const {
+		entries, stream, streamDone, activeTools, working, compact, host, rewind,
+		hasMoreHistory, historyLoading, historyError, onLoadOlder,
+	} = props;
 
 	const results = useMemo(() => {
 		const map = new Map<string, ToolResultMessage>();
@@ -700,6 +707,26 @@ export function Transcript(props: TranscriptProps): ReactNode {
 
 	const rootRef = useRef<HTMLDivElement | null>(null);
 	const lockRef = useRef(true);
+	const anchorRef = useRef<{ firstId: string; height: number; top: number } | null>(null);
+	const requestOlder = (): void => {
+		const el = rootRef.current;
+		if (!el || !entries[0] || !hasMoreHistory || historyLoading || !onLoadOlder) return;
+		anchorRef.current = { firstId: entries[0].id, height: el.scrollHeight, top: el.scrollTop };
+		lockRef.current = false;
+		onLoadOlder();
+	};
+
+	useLayoutEffect(() => {
+		const anchor = anchorRef.current;
+		const el = rootRef.current;
+		if (!anchor || !el) return;
+		if (entries[0]?.id !== anchor.firstId) {
+			el.scrollTop = anchor.top + el.scrollHeight - anchor.height;
+			anchorRef.current = null;
+		} else if (!historyLoading) {
+			anchorRef.current = null;
+		}
+	}, [entries, historyLoading]);
 
 	// Follow the tail while bottom-locked; releasing/re-arming happens in onScroll.
 	useEffect(() => {
@@ -715,9 +742,15 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				const el = rootRef.current;
 				if (el !== null) {
 					lockRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 40;
+					if (el.scrollTop <= 120 && !historyError) requestOlder();
 				}
 			}}
 		>
+			{hasMoreHistory && (
+				<button type="button" className="tr-history" disabled={historyLoading} onClick={requestOlder}>
+					{historyLoading ? "loading older messages…" : historyError ?? "load older messages"}
+				</button>
+			)}
 			{groups.length === 0 && <div className="tr-empty">no activity yet</div>}
 			{groups.map(group => (
 				<TurnGroupView
