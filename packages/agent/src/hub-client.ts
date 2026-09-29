@@ -312,6 +312,11 @@ export class HubClient {
 				tmpdir: tmpdir(),
 			});
 			this.#startHeartbeat();
+			// First hb right away instead of waiting out the heartbeat interval:
+			// the hub's registry reconcile (and a daemon-restart same-id replay,
+			// §2 `restart-daemon`) keys off it, so reconnects recover in
+			// milliseconds instead of ≤15 s.
+			this.#sendNow({ t: "hb", ts: Date.now(), sessions: this.#options.sessions() });
 			const queued = this.#pending;
 			this.#pending = [];
 			for (const frame of queued) this.send(frame);

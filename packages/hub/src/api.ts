@@ -58,6 +58,8 @@ const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
 const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
 const MACHINE_SESSIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions$/;
+/** Panel-triggered daemon upgrade restart (protocol §3). */
+const MACHINE_RESTART_PATH_RE = /^\/api\/machines\/([^/]+)\/restart-daemon$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -118,6 +120,10 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	const machineSessions = MACHINE_SESSIONS_PATH_RE.exec(route);
 	if (machineSessions && req.method === "GET") {
 		return listMachineSessions(decodeURIComponent(machineSessions[1]!), ctx);
+	}
+	const machineRestart = MACHINE_RESTART_PATH_RE.exec(route);
+	if (machineRestart && req.method === "POST") {
+		return restartMachineDaemon(decodeURIComponent(machineRestart[1]!), ctx);
 	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
@@ -481,6 +487,23 @@ async function listMachineSessions(machineId: string, ctx: ApiContext): Promise<
 	});
 	if (!result.ok) return json({ error: result.error }, cmdErrorStatus(result.error));
 	return json({ ok: true, listing: result.data });
+}
+
+/**
+ * `POST /api/machines/:id/restart-daemon` (protocol §3): panel-triggered daemon
+ * upgrade. The hub arms a same-id resume plan; the fresh daemon's first
+ * heartbeat replays it (`AgentRegistry.restartDaemon`). 404 unknown machine,
+ * 409 already restarting, 502 offline, 400/504 for agent-reported refusals.
+ */
+async function restartMachineDaemon(machineId: string, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	const result = await ctx.agents.restartDaemon(machineId);
+	if (!result.ok) {
+		const status = result.error === "daemon restart already in progress" ? 409 : cmdErrorStatus(result.error);
+		return json({ error: result.error }, status);
+	}
+	return json({ ok: true, machine: ctx.agents.getMachine(machineId) });
 }
 
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
@@ -1021,6 +1044,10 @@ function cmdErrorStatus(error: string): number {
 		case "cmd timeout":
 			return 504;
 		default:
+			// A machine command an older daemon does not know (protocol §2: unknown
+			// cmds answer `ok:false` with this exact prefix) — caller asked for a
+			// capability the agent lacks, not a hub fault.
+			if (error.startsWith("unknown machine command")) return 400;
 			// `mcp-*` writer/test failures (protocol §2): the config writer's own
 			// message tells the caller which — duplicate add, missing remove,
 			// name/config validation, and the enable/disable not-found guard.

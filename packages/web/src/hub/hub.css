@@ -143,6 +143,42 @@
 	text-overflow: ellipsis;
 }
 
+.hb-machine-restart {
+	flex: none;
+}
+
+.hb-machine-note {
+	flex: none;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--fg-muted);
+	white-space: nowrap;
+}
+
+.hb-restart-note {
+	margin: 0 0 10px;
+	font-size: 13px;
+	line-height: 1.55;
+	color: var(--fg);
+}
+
+.hb-restart-warning {
+	margin: 0 0 10px;
+	padding: 8px 10px;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--warn, #b45309);
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-restart-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 14px;
+}
+
 /* ---- start form ---- */
 .hb-form {
 	display: flex;
