@@ -33,6 +33,8 @@ import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/t
 import type { cfgExtendedContext as CfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
+import { createFleetClient } from "./fleet-client";
+import { buildFleetTools } from "./fleet-tools";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
 import type { LoopConditionConfig, LoopStatus } from "./session-loop";
@@ -45,6 +47,8 @@ interface HostConfig {
 	prompt?: string;
 	/** Resume this omp session file instead of minting a new session. */
 	sessionFile?: string;
+	/** 0.8.0: fleet-operator session — registers the fleet tools and may issue `fleet-req`. */
+	superagent?: boolean;
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -54,7 +58,7 @@ type ReadyFrame = { t: "ready"; sessionFile: string; pid: number; links: Session
 
 /** Parent → child `cmd` frame (protocol §4). Known parameters are documented
  * here; unknown ones pass through untouched (executeCommand validates). */
-type CommandFrame = {
+export type CommandFrame = {
 	t: "cmd";
 	reqId: string;
 	cmd: string;
@@ -105,6 +109,8 @@ type CommandFrame = {
 	command?: string;
 	/** `mcp-add` stdio command arguments. */
 	args?: string[];
+	/** `prompt`: text delivered to the session via `session.prompt()`. */
+	text?: string;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -739,7 +745,7 @@ async function mcpTestPayload(
 }
 
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
+export async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
 			return agentState(session, deps, loop.status());
@@ -921,6 +927,15 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// SDK throws bubble (they carry good messages); reply is the post-op state.
 			return { goal: goalState(session) };
 		}
+		case "prompt": {
+			// 0.8.0 `prompt {text}`: a new user turn from outside the collab
+			// channel. Blank (whitespace-only) text is a caller bug, rejected
+			// before the SDK ever sees it.
+			const text = typeof frame.text === "string" ? frame.text : "";
+			if (text.trim() === "") throw new Error("prompt requires non-blank text");
+			const accepted = await session.prompt(text);
+			return { accepted };
+		}
 		case "upload-file":
 			return writeHubUpload(frame.name, frame.dataB64);
 		case "mcp-list":
@@ -1090,6 +1105,7 @@ function parseConfig(argv: string[]): HostConfig {
 		relayUrl: config.relayUrl as string,
 		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
 		agentDir: optional("agentDir"),
+		superagent: config.superagent === true,
 	};
 }
 
@@ -1110,6 +1126,12 @@ async function run(): Promise<void> {
 
 	const decoder = new TextDecoder();
 	let stdinBuffer = "";
+	// 0.8.0 fleet IPC: a superagent session proxies hub calls to the parent via
+	// `fleet-req`; the parent's `fleet-res` frames correlate by reqId. Created
+	// before the stdin handler is installed so early replies are never dropped.
+	const fleetClient =
+		config.superagent === true ? createFleetClient(line => rawStdoutWrite(`${line}\n`), log) : undefined;
+
 	// Commands are answered only once the session exists (`ready`); earlier frames
 	// get a plain `{ok:false}` rather than silence — the parent waits on exactly
 	// one `cmd-result` per request.
@@ -1125,10 +1147,13 @@ async function run(): Promise<void> {
 			log.warn(`ignoring non-JSON stdin line: ${line}`);
 			return;
 		}
-		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown };
+		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown } | { t: "fleet-res" };
 		switch (frame.t) {
 			case "stop":
 				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
+				return;
+			case "fleet-res":
+				fleetClient?.handleFrame(frame);
 				return;
 			case "cmd": {
 				// Pass every parameter through: per-command validation lives in
@@ -1228,6 +1253,9 @@ async function run(): Promise<void> {
 		hasUI: false,
 		interactivePrompts: true,
 		autoApprove: true,
+		// 0.8.0: superagent sessions register the fleet tools (hub calls proxied
+		// through the parent); plain sessions see none of them.
+		...(fleetClient ? { customTools: buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) } : {}),
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));

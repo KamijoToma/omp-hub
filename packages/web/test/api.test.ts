@@ -9,6 +9,7 @@ import {
 	getMachineSessions,
 	getMachines,
 	getMcpServers,
+	getNotices,
 	HubApiError,
 	listMachineDirectories,
 	formatShakeSummary,
@@ -25,10 +26,12 @@ import {
 	postMcpTest,
 	postRename,
 	postRetry,
+	postSessionPrompt,
 	postShake,
 	setModel,
 	setToken,
 	startSession,
+	type Notice,
 } from "../src/hub/api";
 import type { GoalModeState, SessionRecord, ShakeResult } from "../src/hub/api";
 
@@ -617,5 +620,66 @@ describe("hub api", () => {
 
 		expect(err).toBeInstanceOf(HubApiError);
 		expect((err as HubApiError).message).toContain("already exists");
+	});
+
+	test("startSession forwards superagent:true in the POST body", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", superagent: true });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			superagent: true,
+		});
+	});
+
+	test("startSession omits superagent when unset or false", async () => {
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", superagent: false });
+
+		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
+	test("postSessionPrompt posts the text and resolves acceptance", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, accepted: true }));
+
+		const accepted = await postSessionPrompt("s1", "run the smoke test");
+
+		expect(accepted).toBe(true);
+		expect(calls[0].url).toBe("/api/sessions/s1/prompt");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ text: "run the smoke test" });
+	});
+
+	test("postSessionPrompt surfaces error statuses as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "text is required" }, 400));
+
+		const err = await postSessionPrompt("s1", "   ").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(400);
+		expect((err as HubApiError).message).toBe("text is required");
+	});
+
+	test("getNotices unwraps the notices listing", async () => {
+		setToken("t0k3n");
+		const notices: Notice[] = [
+			{ id: "n_0a0a0a0a0a", message: "deploy done", urgency: "urgent", sessionId: "s1", createdAt: 12 },
+			{ id: "n_0b0b0b0b0b", message: "hello", urgency: "info", createdAt: 10 },
+		];
+		stubFetch(() => json({ notices }));
+
+		const result = await getNotices();
+
+		expect(calls[0].url).toBe("/api/notices");
+		expect(result).toEqual(notices);
 	});
 });

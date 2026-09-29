@@ -36,6 +36,8 @@ export interface StartFrame {
 	profile?: string;
 	/** Existing omp session file to reopen instead of starting a blank session. */
 	sessionFile?: string;
+	/** 0.8.0: fleet-operator session — the child registers the fleet tools and may issue `fleet-req`. */
+	superagent?: boolean;
 	relayUrl: string;
 	webUrl: string;
 }
@@ -71,6 +73,8 @@ export interface CmdFrame {
 	/** `set-model`: persist a non-default role assignment (default true). */
 	persist?: boolean;
 	level?: string;
+	/** `prompt`: text delivered to the session via `session.prompt()`. */
+	text?: string;
 }
 
 /** hub → agent machine-level usage request (protocol §2); answered with `usage-res`. */

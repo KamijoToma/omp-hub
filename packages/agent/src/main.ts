@@ -7,6 +7,7 @@
  */
 
 import { hostname } from "node:os";
+import { handleFleetRequest, hubHttpBase } from "./fleet-proxy";
 import { type CmdFrame, HubClient, type UsageReqFrame } from "./hub-client";
 import { createLogger, errorMessage } from "./log";
 import { handleMachineCmd } from "./machine-cmds";
@@ -170,6 +171,16 @@ async function main(): Promise<void> {
 			onActivity: (id, activity) => client.send({ t: "session-activity", id, ...activity }),
 		},
 		log,
+		// 0.8.0 fleet proxy: superagent children reach the hub API through here,
+		// whitelisted and token-attached by the daemon (protocol §4).
+		{
+			fleet: req =>
+				handleFleetRequest(req, {
+					hubBase: hubHttpBase(options.hub),
+					token: options.token,
+					log: message => log.info(message),
+				}),
+		},
 	);
 
 	const client = new HubClient({
@@ -195,6 +206,7 @@ async function main(): Promise<void> {
 					prompt: frame.prompt,
 					profile: frame.profile,
 					sessionFile: frame.sessionFile,
+					superagent: frame.superagent === true ? true : undefined,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})

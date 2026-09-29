@@ -51,6 +51,8 @@ export type AgentCommand =
 			prompt?: string;
 			/** Resume an existing omp session file instead of minting a new one. */
 			sessionFile?: string;
+			/** Fleet-operator session (protocol §2): the child registers the fleet tools. */
+			superagent?: boolean;
 			relayUrl: string;
 			webUrl: string;
 	  }
@@ -82,7 +84,8 @@ export type SessionCmdName =
 	| "mcp-add"
 	| "mcp-remove"
 	| "mcp-set-enabled"
-	| "mcp-test";
+	| "mcp-test"
+	| "prompt";
 
 /** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
 export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
@@ -153,6 +156,8 @@ export interface CmdRequest {
 	condition?: CmdLoopCondition;
 	/** `set-extended-context` target state; omitted toggles (contract §1). */
 	enabled?: boolean;
+	/** `prompt` message text delivered to the session (protocol §2). */
+	text?: string;
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */

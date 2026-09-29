@@ -31,6 +31,8 @@ export interface SessionRecord {
 	name: string;
 	/** Named omp profile the session runs under; absent means the default profile. */
 	profile?: string;
+	/** Fleet-operator session (protocol §4 fleet-req); set at start, never minted by the fleet itself. */
+	superagent?: true;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -49,6 +51,8 @@ export interface CreateSessionInput {
 	cwd: string;
 	name?: string;
 	profile?: string;
+	/** Marks the started session a fleet operator (protocol §2 `start.superagent`). */
+	superagent?: true;
 }
 
 export interface SessionReadyInput {
@@ -89,6 +93,7 @@ export class SessionStore {
 			cwd: input.cwd,
 			name: input.name?.trim() || path.basename(input.cwd) || input.cwd,
 			...(input.profile ? { profile: input.profile } : {}),
+			...(input.superagent ? { superagent: true as const } : {}),
 			status: "starting",
 			startedAt: Date.now(),
 		};

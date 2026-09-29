@@ -22,6 +22,8 @@ export interface SessionRecord {
 	name: string;
 	/** Named omp profile the session runs under; absent means the default profile. */
 	profile?: string;
+	/** Fleet-operator session (protocol §2 `start.superagent`, §4 fleet-req); set at start. */
+	superagent?: true;
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -53,6 +55,8 @@ export interface StartSessionRequest {
 	profile?: string;
 	/** Resume an existing omp session file instead of minting a new one. */
 	sessionFile?: string;
+	/** Start a fleet-operator session (protocol §2 `start.superagent`). */
+	superagent?: boolean;
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -333,6 +337,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.prompt) body.prompt = input.prompt;
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
+	if (input.superagent) body.superagent = true;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -849,6 +854,38 @@ export async function getMachineSessions(machineId: string): Promise<SessionList
 		`/api/machines/${encodeURIComponent(machineId)}/sessions`,
 	);
 	return reply.listing;
+}
+
+/**
+ * One agent-facing notification recorded on the hub (protocol §3 `Notice`,
+ * 0.8.0+): in-memory only — a hub restart drops them.
+ */
+export interface Notice {
+	id: string;
+	message: string;
+	urgency: "info" | "warn" | "urgent";
+	sessionId?: string;
+	createdAt: number;
+}
+
+/**
+ * Deliver a text message to a live session (protocol §3 `POST
+ * /api/sessions/:id/prompt`): a new turn when idle, queued as
+ * steering/follow-up while one streams. Resolves whether the session accepted
+ * it; the hub answers 400 (blank text), 404 (unknown session), 409 (not live),
+ * 502 (agent offline), 504 (cmd timed out) — all {@link HubApiError}.
+ */
+export async function postSessionPrompt(id: string, text: string): Promise<boolean> {
+	const reply = await api<{ ok: true; accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
+		method: "POST",
+		body: JSON.stringify({ text }),
+	});
+	return reply.accepted;
+}
+
+/** Recent hub notices, newest first (protocol §3 `GET /api/notices`, 0.8.0+). */
+export async function getNotices(): Promise<Notice[]> {
+	return (await api<{ notices: Notice[] }>("/api/notices")).notices;
 }
 
 /** Human-readable message for an unknown thrown value. */
