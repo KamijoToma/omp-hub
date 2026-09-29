@@ -12,12 +12,12 @@
  * live without opening the drawer. `SessionSwitcherModal` (the `/sessions`
  * slash command and Ctrl+K dialog) shares the picker body.
  */
-import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, Trash2 } from "lucide-react";
+import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
 import type { SessionRecord, SessionStatus } from "./api";
-import { deleteSession, errorText, postRename } from "./api";
+import { deleteSession, errorText, postGenerateTitle, postRename } from "./api";
 import { hideSession, partitionHidden, showSession, useHiddenSessions } from "./hidden-sessions";
 import { Modal } from "./Modal";
 import { sessionsStore, useSessions } from "./sessions-store";
@@ -95,6 +95,26 @@ function RenameSessionModal({ session, onRenamed, onClose }: RenameSessionModalP
 		);
 	}, [name, session.id, session.name, onRenamed, onClose]);
 
+	// Bare-`/rename` parity: ask the agent for a conversation-derived title.
+	// The endpoint applies the title right away (the agent pins it as a user
+	// rename and the registry label follows), so the rail refreshes too; the
+	// input is prefilled so the user can tweak the name before confirming.
+	const generate = useCallback((): void => {
+		setBusy(true);
+		setError(null);
+		postGenerateTitle(session.id).then(
+			applied => {
+				setName(applied);
+				setBusy(false);
+				onRenamed();
+			},
+			(err: unknown) => {
+				setBusy(false);
+				setError(errorText(err));
+			},
+		);
+	}, [session.id, onRenamed]);
+
 	return (
 		<Modal title="Rename session" onClose={onClose}>
 			<form
@@ -104,17 +124,28 @@ function RenameSessionModal({ session, onRenamed, onClose }: RenameSessionModalP
 					submit();
 				}}
 			>
-				<input
-					className="sh-input"
-					type="text"
-					value={name}
-					onChange={e => setName(e.target.value)}
-					placeholder="session name"
-					spellCheck={false}
-					autoComplete="off"
-					autoFocus
-					disabled={busy}
-				/>
+				<div className="hb-rename-row">
+					<input
+						className="sh-input"
+						type="text"
+						value={name}
+						onChange={e => setName(e.target.value)}
+						placeholder="session name"
+						spellCheck={false}
+						autoComplete="off"
+						autoFocus
+						disabled={busy}
+					/>
+					<button
+						type="button"
+						className="sh-btn sh-btn-icon"
+						onClick={generate}
+						title="generate a title from the conversation (/rename)"
+						disabled={busy}
+					>
+						<Sparkles size={13} aria-hidden="true" />
+					</button>
+				</div>
 				{error && (
 					<p className="hb-session-error" role="alert">
 						{error}
@@ -383,6 +414,11 @@ function RailRow({ session, current, onSwitch }: { session: SessionRecord; curre
 					{label}
 				</span>
 				<span className={`hb-rail-dot hb-rail-dot-${dot}`} aria-label={DOT_LABEL[dot]} />
+				{session.superagent === true && (
+					<span className="hb-nav-badge hb-nav-badge-super" title="fleet operator">
+						super
+					</span>
+				)}
 			</button>
 		</li>
 	);

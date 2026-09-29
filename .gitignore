@@ -10,3 +10,6 @@ dist
 *.key
 *.p12
 *.pfx
+.codegraph/
+.omp/
+hub-state.json

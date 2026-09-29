@@ -17,6 +17,8 @@ export interface MachineRecord {
 	sessionCount: number;
 	/** Agent-reported temp directory (`hello.tmpdir`); absent from pre-0.3.0 agents. */
 	tmpdir?: string;
+	/** Daemon upgrade restart in flight (protocol §2 `restart-daemon`); absent otherwise. */
+	restarting?: true;
 }
 
 export interface AgentSocketData {
@@ -49,8 +51,14 @@ export type AgentCommand =
 			cwd: string;
 			name?: string;
 			prompt?: string;
+			/** Named omp profile for the session; omitted means the default profile. */
+			profile?: string;
 			/** Resume an existing omp session file instead of minting a new one. */
 			sessionFile?: string;
+			/** Fleet-operator session (protocol §2): the child registers the fleet tools. */
+			superagent?: boolean;
+			/** Callable-tool whitelist (protocol §2 `start.tools`); omitted means the default set. */
+			tools?: string[];
 			relayUrl: string;
 			webUrl: string;
 	  }
@@ -77,10 +85,16 @@ export type SessionCmdName =
 	| "clear-context"
 	| "rename"
 	| "generate-title"
-	| "upload-file";
+	| "upload-file"
+	| "mcp-list"
+	| "mcp-add"
+	| "mcp-remove"
+	| "mcp-set-enabled"
+	| "mcp-test"
+	| "prompt";
 
-/** Machine-level commands the daemon answers itself (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions";
+/** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -107,6 +121,18 @@ export interface CmdRequest {
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
 	dataB64?: string;
+	/** `mcp-add`/`mcp-remove` config scope; omitted means `"project"` (protocol §2). */
+	scope?: string;
+	/** `mcp-add` remote server URL (http/sse transport). */
+	url?: string;
+	/** `mcp-add` remote transport; omitted means `"http"`. */
+	transport?: string;
+	/** `mcp-add` bearer token folded into the config's Authorization header. */
+	token?: string;
+	/** `mcp-add` stdio command (exclusive with `url`). */
+	command?: string;
+	/** `mcp-add` stdio command arguments. */
+	args?: string[];
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"` (protocol §2). */
@@ -136,6 +162,8 @@ export interface CmdRequest {
 	condition?: CmdLoopCondition;
 	/** `set-extended-context` target state; omitted toggles (contract §1). */
 	enabled?: boolean;
+	/** `prompt` message text delivered to the session (protocol §2). */
+	text?: string;
 }
 
 /** Settlement of one `sendCmd`; failures travel through `error`, the promise never rejects. */
@@ -150,6 +178,15 @@ export function newCmdReqId(): string {
 const HB_TIMEOUT_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
 const PING_INTERVAL_MS = 30_000;
+
+/**
+ * How long a daemon-restart flag may outlive its socket: `restartingSince`
+ * until the disconnect that converts it into a `resumePlan`, the plan until
+ * the fresh daemon's reconciling heartbeat. Generous against slow child stops
+ * (the 12 s stopAll grace) plus reconnect backoff; a daemon that needs longer
+ * is not coming back on its own.
+ */
+const RESTART_FLAG_TTL_MS = 90_000;
 
 type Frame = Record<string, unknown>;
 
@@ -184,6 +221,20 @@ interface MachineState {
 	connected: boolean;
 	/** Reported by `hello`; null until then and for pre-0.3.0 agents. */
 	tmpdir: string | null;
+	/**
+	 * Daemon upgrade restart accepted and the socket still up (protocol §2
+	 * `restart-daemon`). Cleared when the socket drops (converting to
+	 * `resumePlan`) or by the watchdog TTL — the daemon may have died before
+	 * processing the request.
+	 */
+	restartingSince?: number;
+	/**
+	 * Armed by the disconnect that followed an accepted restart: the session ids
+	 * that were alive at that moment. The reconnected daemon's first heartbeat
+	 * reconciles against this plan and re-issues same-id starts for children
+	 * that are gone; the watchdog TTL covers a daemon that never comes back.
+	 */
+	resumePlan?: { at: number; ids: string[] };
 }
 
 /** Tolerant `hb.sessions` parse: a malformed payload reads as "not reported". */
@@ -391,9 +442,26 @@ export class AgentRegistry {
 		this.#connections.delete(machineId);
 		this.#failPending(machineId, "agent disconnected");
 		const machine = this.#machines.get(machineId);
+		// An accepted daemon restart ends in this disconnect: convert the flag
+		// into a resume plan snapshot of exactly the sessions alive right now
+		// (children that already exited via `stop` keep their own terminal state).
+		const upgrading = machine?.restartingSince !== undefined;
+		if (machine && upgrading) {
+			machine.restartingSince = undefined;
+			machine.resumePlan = {
+				at: Date.now(),
+				ids: this.#sessions
+					.list()
+					.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
+					.map(record => record.id),
+			};
+		}
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(machineId, "agent disconnected");
-		log.info(`machine ${machineId}: agent disconnected (${exited.length} session(s) exited)`);
+		const exited = this.#sessions.exitSessionsFor(machineId, upgrading ? "daemon upgrade" : "agent disconnected");
+		log.info(
+			`machine ${machineId}: agent disconnected (${exited.length} session(s) exited)` +
+				(upgrading ? `; ${machine?.resumePlan?.ids.length ?? 0} queued for same-id resume` : ""),
+		);
 	}
 
 	/** Sends one command frame; false when the agent is offline or the write fails. */
@@ -481,6 +549,32 @@ export class AgentRegistry {
 		return this.#record(this.#machines.get(machineId));
 	}
 
+	/**
+	 * Panel-triggered daemon upgrade restart (protocol §2 `restart-daemon`):
+	 * arms the restart flag and sends the machine command. The daemon acks
+	 * first, then stops its children and self-respawns; the disconnect converts
+	 * the flag into a resume plan that the fresh daemon's first heartbeat
+	 * replays ({@link #resumePlannedSessions}). A mid-command disconnect still
+	 * counts as accepted — the daemon may be restarting after all — while a
+	 * definitive refusal (old daemon, timeout) clears the flag.
+	 */
+	async restartDaemon(machineId: string): Promise<CmdResult> {
+		const machine = this.#machines.get(machineId);
+		if (!machine) return { ok: false, error: "machine not found" };
+		if (machine.restartingSince !== undefined || machine.resumePlan) {
+			return { ok: false, error: "daemon restart already in progress" };
+		}
+		if (!this.isOnline(machineId)) return { ok: false, error: "agent offline" };
+		machine.restartingSince = Date.now();
+		const result = await this.sendCmd(machineId, { reqId: newCmdReqId(), cmd: "restart-daemon" });
+		if (!result.ok && result.error !== "agent disconnected") {
+			machine.restartingSince = undefined;
+			return result;
+		}
+		log.info(`machine ${machineId}: daemon restart accepted — waiting for the fresh daemon to reconnect`);
+		return { ok: true, data: { restarting: true } };
+	}
+
 	/** Version reported by `hello` ("test" in tests, "unknown" for pre-0.2.0 agents); null when offline. */
 	agentVersion(machineId: string): string | null {
 		return this.#connections.get(machineId)?.version ?? null;
@@ -555,9 +649,19 @@ export class AgentRegistry {
 	#reconcileSessions(conn: Connection, reported: unknown): void {
 		const statuses = parseHbSessions(reported);
 		if (statuses === null) return;
+		// Daemon-restart recovery runs before the retire pass: same-id resumes
+		// mint fresh `starting` records this same heartbeat must not retire.
+		const machine = this.#machines.get(conn.machineId);
+		const plan = machine?.resumePlan;
+		let exempt: Set<string> | null = null;
+		if (machine && plan) {
+			machine.resumePlan = undefined;
+			exempt = this.#resumePlannedSessions(conn, plan, statuses);
+		}
 		for (const record of this.#sessions.list()) {
 			if (record.machineId !== conn.machineId || isTerminalStatus(record.status)) continue;
 			if (record.startedAt >= conn.connectedAt) continue;
+			if (exempt?.has(record.id)) continue;
 			const status = statuses.get(record.id);
 			if (status === undefined) {
 				this.#sessions.markExited(record.id, "agent heartbeat: no such child");
@@ -569,6 +673,50 @@ export class AgentRegistry {
 		}
 	}
 
+	/**
+	 * Replays an armed daemon-restart resume plan: re-issues same-id `start`s
+	 * for sessions that were alive at the disconnect but whose children the
+	 * fresh daemon does not report. A child the daemon still has (its restart
+	 * frame was lost, the socket merely blipped) is left entirely alone — its
+	 * record stays terminal for a manual resume rather than getting corrupted
+	 * by a duplicate start.
+	 */
+	#resumePlannedSessions(
+		conn: Connection,
+		plan: { at: number; ids: string[] },
+		statuses: Map<string, SessionStatus>,
+	): Set<string> {
+		const reissued = new Set<string>();
+		for (const id of plan.ids) {
+			const record = this.#sessions.get(id);
+			if (!record?.sessionFile) continue;
+			if (statuses.get(id) !== undefined) continue;
+			const fresh = this.#sessions.reissue(id);
+			if (!fresh?.sessionFile) continue;
+			const sent = this.send(conn.machineId, {
+				t: "start",
+				id: fresh.id,
+				cwd: fresh.cwd,
+				...(fresh.name ? { name: fresh.name } : {}),
+				...(fresh.profile ? { profile: fresh.profile } : {}),
+				...(fresh.sessionFile ? { sessionFile: fresh.sessionFile } : {}),
+				...(fresh.tools ? { tools: fresh.tools } : {}),
+				...(fresh.superagent ? { superagent: true } : {}),
+				relayUrl: conn.ws.data.wsBase,
+				webUrl: conn.ws.data.httpBase,
+			});
+			if (sent) {
+				reissued.add(fresh.id);
+			} else {
+				this.#sessions.markFailed(fresh.id, "daemon restart: agent offline");
+			}
+		}
+		if (reissued.size > 0) {
+			log.info(`machine ${conn.machineId}: daemon restart resumed ${reissued.size}/${plan.ids.length} session(s) under their old ids`);
+		}
+		return reissued;
+	}
+
 	#record(machine: MachineState | undefined): MachineRecord | undefined {
 		if (!machine) return undefined;
 		return {
@@ -578,6 +726,7 @@ export class AgentRegistry {
 			connectedAt: machine.connectedAt,
 			sessionCount: this.#sessions.countActiveFor(machine.machineId),
 			tmpdir: machine.tmpdir ?? undefined,
+			...(machine.restartingSince !== undefined || machine.resumePlan ? { restarting: true as const } : {}),
 		};
 	}
 
@@ -639,6 +788,16 @@ export class AgentRegistry {
 			log.warn(`machine ${conn.machineId}: no heartbeat for ${Math.round(silence / 1000)}s — marking offline`);
 			this.#offline(conn, "agent lost");
 		}
+		for (const machine of this.#machines.values()) {
+			if (machine.restartingSince !== undefined && now - machine.restartingSince > RESTART_FLAG_TTL_MS) {
+				machine.restartingSince = undefined;
+				log.warn(`machine ${machine.machineId}: daemon restart flag expired without a disconnect — the daemon never restarted`);
+			}
+			if (machine.resumePlan && now - machine.resumePlan.at > RESTART_FLAG_TTL_MS) {
+				machine.resumePlan = undefined;
+				log.warn(`machine ${machine.machineId}: daemon restart resume plan expired — the fresh daemon never reconnected`);
+			}
+		}
 	}
 
 	#pingAll(): void {
@@ -658,13 +817,29 @@ export class AgentRegistry {
 		this.#connections.delete(conn.machineId);
 		this.#failPending(conn.machineId, "agent offline");
 		const machine = this.#machines.get(conn.machineId);
+		// Same conversion as {@link handleClose}: a silent daemon death during an
+		// accepted restart still owes the fresh daemon its resume plan.
+		const upgrading = machine?.restartingSince !== undefined;
+		if (machine && upgrading) {
+			machine.restartingSince = undefined;
+			machine.resumePlan = {
+				at: Date.now(),
+				ids: this.#sessions
+					.list()
+					.filter(record => record.machineId === conn.machineId && !isTerminalStatus(record.status))
+					.map(record => record.id),
+			};
+		}
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(conn.machineId, reason);
+		const exited = this.#sessions.exitSessionsFor(conn.machineId, upgrading ? "daemon upgrade" : reason);
 		try {
 			conn.ws.close(4000, reason);
 		} catch {
 			// Already closing.
 		}
-		log.warn(`machine ${conn.machineId}: offline (${reason}); ${exited.length} session(s) exited`);
+		log.warn(
+			`machine ${conn.machineId}: offline (${reason}); ${exited.length} session(s) exited` +
+				(upgrading ? `; ${machine?.resumePlan?.ids.length ?? 0} queued for same-id resume` : ""),
+		);
 	}
 }

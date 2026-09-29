@@ -36,6 +36,10 @@ export interface StartFrame {
 	profile?: string;
 	/** Existing omp session file to reopen instead of starting a blank session. */
 	sessionFile?: string;
+	/** 0.8.0: fleet-operator session — the child registers the fleet tools and may issue `fleet-req`. */
+	superagent?: boolean;
+	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
+	tools?: string[];
 	relayUrl: string;
 	webUrl: string;
 }
@@ -71,6 +75,8 @@ export interface CmdFrame {
 	/** `set-model`: persist a non-default role assignment (default true). */
 	persist?: boolean;
 	level?: string;
+	/** `prompt`: text delivered to the session via `session.prompt()`. */
+	text?: string;
 }
 
 /** hub → agent machine-level usage request (protocol §2); answered with `usage-res`. */
@@ -308,6 +314,11 @@ export class HubClient {
 				tmpdir: tmpdir(),
 			});
 			this.#startHeartbeat();
+			// First hb right away instead of waiting out the heartbeat interval:
+			// the hub's registry reconcile (and a daemon-restart same-id replay,
+			// §2 `restart-daemon`) keys off it, so reconnects recover in
+			// milliseconds instead of ≤15 s.
+			this.#sendNow({ t: "hb", ts: Date.now(), sessions: this.#options.sessions() });
 			const queued = this.#pending;
 			this.#pending = [];
 			for (const frame of queued) this.send(frame);

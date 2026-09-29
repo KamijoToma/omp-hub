@@ -77,22 +77,17 @@ or by attaching a real omp client (`omp join "<link>"`) to a live session.
 
 ## Quick start (local development, single machine)
 
-Prereqs: Bun ≥ 1.3.14, Rust/Cargo and the native build toolchain, an omp auth store (`~/.omp`)
-with a working provider (or provider API keys in the environment), and the source checkout of
-the compatible omp SDK. The agent resolves SDK imports from a sibling `../oh-my-pi` checkout;
-it is not a standalone npm package. From the `omp-hub` repository root, if you do not already
-have that checkout:
+Prereqs: Bun ≥ 1.3.14 and an omp auth store (`~/.omp`) with a working provider (or provider API
+keys in the environment). The agent consumes the omp SDK as npm packages pinned to the upstream
+release tag (`18.4.2` = tag `v18.4.2`); the pin pulls prebuilt native binaries — no source
+checkout or Rust toolchain. From the `omp-hub` repository root:
 
 ```bash
-git clone https://github.com/KamijoToma/oh-my-pi.git ../oh-my-pi
-git -C ../oh-my-pi checkout 7ae76f8e4daca0c8f409f61bcd514260cd522365
-bun --cwd=../oh-my-pi install --frozen-lockfile
-bun --cwd=../oh-my-pi run build:native
+bun --cwd=packages/agent install --frozen-lockfile
 mkdir -p /tmp/omp-hub-demo
 ```
 
-This SDK revision is the one used for local verification. See [the agent README](packages/agent/README.md)
-for the source mapping and deployment constraints.
+See [the agent README](packages/agent/README.md) for the SDK pin policy and deployment constraints.
 
 ```bash
 # 1. hub demo (installs locked web deps, builds UI, serves relay + API + web on :8080)
@@ -110,8 +105,7 @@ copy the **full** collab link from the session page and run `omp join "<paste fu
 Keep full links private: they grant write access to the session.
 
 For type checking, run `bun install --frozen-lockfile && bun run typecheck` in each of
-`packages/web`, `packages/hub`, and `packages/agent`. The agent check needs the sibling
-`oh-my-pi` checkout and its installed dependencies. `bun run build` in `packages/web`
+`packages/web`, `packages/hub`, and `packages/agent`. `bun run build` in `packages/web`
 rebuilds the static UI without starting the hub.
 
 ### Incremental demo updates

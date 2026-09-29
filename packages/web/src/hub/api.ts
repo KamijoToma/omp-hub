@@ -22,6 +22,10 @@ export interface SessionRecord {
 	name: string;
 	/** Named omp profile the session runs under; absent means the default profile. */
 	profile?: string;
+	/** Fleet-operator session (protocol §2 `start.superagent`, §4 fleet-req); set at start. */
+	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
+	tools?: string[];
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -42,6 +46,8 @@ export interface MachineRecord {
 	sessionCount: number;
 	/** Agent-reported temp directory (`os.tmpdir()`); missing from pre-0.3.0 agents. */
 	tmpdir?: string;
+	/** Daemon upgrade restart in flight; sessions resume under their old ids when it lands. */
+	restarting?: true;
 }
 
 export interface StartSessionRequest {
@@ -53,6 +59,10 @@ export interface StartSessionRequest {
 	profile?: string;
 	/** Resume an existing omp session file instead of minting a new one. */
 	sessionFile?: string;
+	/** Start a fleet-operator session (protocol §2 `start.superagent`). */
+	superagent?: boolean;
+	/** Restrict the session to exactly these tools (protocol §2 `start.tools`); omitted means the default set. */
+	tools?: string[];
 }
 
 /** One model the session can switch to (docs/protocol.md §2 `AgentState`). */
@@ -95,6 +105,8 @@ export interface AgentState {
 	goal: GoalModeState | null;
 	/** Loop-controller status; null when the loop is disabled. */
 	loop: LoopStatus | null;
+	/** Top-level callable tools, sorted (0.9.0+ agents only); reflects a `start.tools` whitelist. */
+	tools?: string[];
 }
 
 /** The session's tracked goal object (agent `get-state.goal.goal`). */
@@ -248,6 +260,20 @@ export async function getMachines(): Promise<MachineRecord[]> {
 	return (await api<{ machines: MachineRecord[] }>("/api/machines")).machines;
 }
 
+/**
+ * Panel-triggered daemon upgrade restart (protocol §3). Resolves with the
+ * machine once the daemon accepted the restart; the fresh daemon reconnects on
+ * its own and the hub resumes the machine's sessions under their old ids.
+ * Throws {@link HubApiError} on 404/409/502/504.
+ */
+export async function restartDaemon(machineId: string): Promise<MachineRecord> {
+	const reply = await api<{ ok: true; machine: MachineRecord }>(
+		`/api/machines/${encodeURIComponent(machineId)}/restart-daemon`,
+		{ method: "POST" },
+	);
+	return reply.machine;
+}
+
 /** Time ranges the machine's stats dashboard accepts (protocol §3 usage relay). */
 export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 
@@ -333,6 +359,8 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.prompt) body.prompt = input.prompt;
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
+	if (input.superagent) body.superagent = true;
+	if (input.tools?.length) body.tools = input.tools;
 	const reply = await api<{ session: SessionRecord }>("/api/sessions", { method: "POST", body: JSON.stringify(body) });
 	return reply.session;
 }
@@ -678,6 +706,103 @@ export async function postGenerateTitle(id: string): Promise<string> {
 	return reply.name;
 }
 
+/** One configured MCP server on a listing (protocol §2 `mcp-list`): redacted config truth plus the live join. */
+export interface McpServerInfo {
+	name: string;
+	/** Config scope; extension-discovered servers are not listed. */
+	scope: "user" | "project";
+	/** stdio, http, or sse. */
+	type: string;
+	/** Config flag folded with the user-level disabled-servers list. */
+	enabled: boolean;
+	/** A same-name entry in the other scope shadows this row at load time. */
+	shadowed?: true;
+	/** Redacted: stdio command, or the remote URL without query/userinfo. */
+	location: string | null;
+	/** Env var count — values never leave the agent machine. */
+	envCount: number;
+	args?: string[];
+	/** Live section (enabled, non-shadowed, manager-connected rows only). */
+	health?: "connected" | "connecting" | "disconnected";
+	implementationName?: string;
+	implementationVersion?: string;
+	instructions?: string;
+	tools?: Array<{ name: string; description?: string }>;
+	toolsCount?: number;
+	resourcesCount?: number;
+	promptsCount?: number;
+}
+
+/** The session's configured MCP servers: config truth joined with the live session's view. */
+export async function getMcpServers(id: string): Promise<McpServerInfo[]> {
+	const reply = await api<{ ok: true; servers: McpServerInfo[] }>(`/api/sessions/${encodeURIComponent(id)}/mcp`);
+	return reply.servers;
+}
+
+/** Add request: stdio (`command`+`args`) or remote (`url`+`transport`, `token` → Authorization header). */
+export interface McpAddRequest {
+	name: string;
+	scope?: "user" | "project";
+	url?: string;
+	transport?: "http" | "sse";
+	token?: string;
+	command?: string;
+	args?: string[];
+}
+
+/** Adds a server to the session's project (default) or user `mcp.json`; applies to new sessions. */
+export async function postMcpAdd(id: string, request: McpAddRequest): Promise<{ name: string; scope: string }> {
+	const reply = await api<{ ok: true; name: string; scope: string }>(`/api/sessions/${encodeURIComponent(id)}/mcp/add`, {
+		method: "POST",
+		body: JSON.stringify(request),
+	});
+	return { name: reply.name, scope: reply.scope };
+}
+
+/** Removes a server from the given scope's config file; applies to new sessions. */
+export async function postMcpRemove(id: string, name: string, scope: "user" | "project"): Promise<void> {
+	await api<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/mcp/remove`, {
+		method: "POST",
+		body: JSON.stringify({ name, scope }),
+	});
+}
+
+/**
+ * Enable/disable result; `where` names the file that changed — the project or
+ * user config entry, or the user-level disabled-servers list for servers with
+ * no writable config entry.
+ */
+export interface McpEnabledResult {
+	name: string;
+	enabled: boolean;
+	where: "project" | "user" | "disabled-list";
+}
+
+/** Enables or disables a server (TUI `/mcp enable|disable` semantics); applies to new sessions. */
+export async function postMcpEnabled(id: string, name: string, enabled: boolean): Promise<McpEnabledResult> {
+	const reply = await api<{ ok: true } & McpEnabledResult>(`/api/sessions/${encodeURIComponent(id)}/mcp/enabled`, {
+		method: "POST",
+		body: JSON.stringify({ name, enabled }),
+	});
+	return { name: reply.name, enabled: reply.enabled, where: reply.where };
+}
+
+/** Result of a one-shot test connection to a configured server; the live session is untouched. */
+export interface McpTestResult {
+	name: string;
+	count: number;
+	tools: Array<{ name: string; description?: string }>;
+}
+
+/** Opens one temporary connection to a configured, enabled server and lists its tools. */
+export async function postMcpTest(id: string, name: string): Promise<McpTestResult> {
+	const reply = await api<{ ok: true } & McpTestResult>(`/api/sessions/${encodeURIComponent(id)}/mcp/test`, {
+		method: "POST",
+		body: JSON.stringify({ name }),
+	});
+	return { name: reply.name, count: reply.count, tools: reply.tools };
+}
+
 /** One browsable child directory of a machine listing (protocol §2 `DirListing`). */
 export interface DirEntry {
 	name: string;
@@ -752,6 +877,38 @@ export async function getMachineSessions(machineId: string): Promise<SessionList
 		`/api/machines/${encodeURIComponent(machineId)}/sessions`,
 	);
 	return reply.listing;
+}
+
+/**
+ * One agent-facing notification recorded on the hub (protocol §3 `Notice`,
+ * 0.8.0+): in-memory only — a hub restart drops them.
+ */
+export interface Notice {
+	id: string;
+	message: string;
+	urgency: "info" | "warn" | "urgent";
+	sessionId?: string;
+	createdAt: number;
+}
+
+/**
+ * Deliver a text message to a live session (protocol §3 `POST
+ * /api/sessions/:id/prompt`): a new turn when idle, queued as
+ * steering/follow-up while one streams. Resolves whether the session accepted
+ * it; the hub answers 400 (blank text), 404 (unknown session), 409 (not live),
+ * 502 (agent offline), 504 (cmd timed out) — all {@link HubApiError}.
+ */
+export async function postSessionPrompt(id: string, text: string): Promise<boolean> {
+	const reply = await api<{ ok: true; accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
+		method: "POST",
+		body: JSON.stringify({ text }),
+	});
+	return reply.accepted;
+}
+
+/** Recent hub notices, newest first (protocol §3 `GET /api/notices`, 0.8.0+). */
+export async function getNotices(): Promise<Notice[]> {
+	return (await api<{ notices: Notice[] }>("/api/notices")).notices;
 }
 
 /** Human-readable message for an unknown thrown value. */

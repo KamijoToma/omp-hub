@@ -16,6 +16,7 @@ import { AgentRegistry as AgentsRegistry } from "./agents";
 import { handleApi } from "./api";
 import { derivePublicBase, loadConfig, tlsConfigured, type Config } from "./config";
 import { log } from "./log";
+import { NoticeStore } from "./notices";
 import { CollabRelay, type RelayRoom, type RelaySocket, type RelaySocketData } from "./relay";
 import type { SessionRecord } from "./sessions";
 import { SessionStore } from "./sessions";
@@ -112,6 +113,7 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 	const cfg: Config = { ...loadConfig(), ...overrides };
 	if (!cfg.token.trim()) throw new Error("HUB_TOKEN is required before starting the hub");
 	const sessions = new SessionStore();
+	const notices = new NoticeStore();
 	const relay = new CollabRelay();
 	const agents = new AgentsRegistry(cfg, sessions);
 
@@ -145,7 +147,7 @@ export function buildHub(overrides: Partial<Config> = {}, opts: { restoreState?:
 				return relay.handleUpgrade(req, srv);
 			}
 			if (pathname === "/api" || pathname.startsWith("/api/")) {
-				return handleApi(req, { cfg, sessions, agents, restart: core.onRestart ?? undefined });
+				return handleApi(req, { cfg, sessions, agents, notices, restart: core.onRestart ?? undefined });
 			}
 			return serveStatic(req, cfg);
 		},

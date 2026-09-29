@@ -206,6 +206,7 @@ describe("composer routing", () => {
 			"extended-context",
 			"settings",
 			"collab",
+			"mcp",
 			"theme",
 			"dump",
 			"leave",

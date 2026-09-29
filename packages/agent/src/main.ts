@@ -7,6 +7,8 @@
  */
 
 import { hostname } from "node:os";
+import { performDaemonRestart, restartFailure } from "./daemon-restart";
+import { handleFleetRequest, hubHttpBase } from "./fleet-proxy";
 import { type CmdFrame, HubClient, type UsageReqFrame } from "./hub-client";
 import { createLogger, errorMessage } from "./log";
 import { handleMachineCmd } from "./machine-cmds";
@@ -170,7 +172,41 @@ async function main(): Promise<void> {
 			onActivity: (id, activity) => client.send({ t: "session-activity", id, ...activity }),
 		},
 		log,
+		// 0.8.0 fleet proxy: superagent children reach the hub API through here,
+		// whitelisted and token-attached by the daemon (protocol §4).
+		{
+			fleet: req =>
+				handleFleetRequest(req, {
+					hubBase: hubHttpBase(options.hub),
+					token: options.token,
+					log: message => log.info(message),
+				}),
+		},
 	);
+
+	// Set while a panel-requested daemon restart is in flight: starts are
+	// refused so the hub's same-id replay never fights the handover.
+	let restarting = false;
+
+	/** Panel-triggered daemon upgrade (§2 `restart-daemon`). Acks first — the
+	 * stopAll grace can approach the hub's 15 s cmd budget — then hands off to
+	 * the stop → respawn → exit sequence. */
+	const restartDaemonCmd = (frame: CmdFrame): void => {
+		if (restarting) {
+			client.send({ t: "cmd-result", reqId: frame.reqId, ok: false, error: "daemon restart already in progress" });
+			return;
+		}
+		restarting = true;
+		client.send({ t: "cmd-result", reqId: frame.reqId, ok: true, data: { restarting: true } });
+		void performDaemonRestart({ supervisor, log, stopDashboards: stopProfileDashboards }).catch(err => {
+			// Children are already stopped; stay alive so the operator can retry.
+			// The hub's restart flag expires via its own watchdog TTL, and this
+			// late answer is informational: the ack already settled the request.
+			restarting = false;
+			log.error(restartFailure(err));
+			client.send({ t: "cmd-result", reqId: frame.reqId, ok: false, error: restartFailure(err) });
+		});
+	};
 
 	const client = new HubClient({
 		url: options.hub,
@@ -181,6 +217,12 @@ async function main(): Promise<void> {
 		sessions: () => supervisor.status(),
 		onWelcome: frame => log.info(`hub welcome: relay=${frame.relayUrl} web=${frame.webUrl}`),
 		onStart: frame => {
+			if (restarting) {
+				const error = "daemon is restarting";
+				log.warn(`rejecting start for ${frame.id}: ${error}`);
+				client.send({ t: "session-error", id: frame.id, error });
+				return;
+			}
 			if (supervisor.liveCount >= options.maxSessions) {
 				const error = `max sessions reached (${options.maxSessions})`;
 				log.warn(`rejecting start for ${frame.id}: ${error}`);
@@ -195,13 +237,21 @@ async function main(): Promise<void> {
 					prompt: frame.prompt,
 					profile: frame.profile,
 					sessionFile: frame.sessionFile,
+					superagent: frame.superagent === true ? true : undefined,
+					tools: frame.tools,
 					relayUrl: frame.relayUrl,
 					webUrl: frame.webUrl,
 				})
 				.catch(err => client.send({ t: "session-error", id: frame.id, error: errorMessage(err) }));
 		},
 		onStop: frame => void supervisor.stop(frame.id, frame.reason ?? "hub stop"),
-		onCmd: frame => void handleCmdFrame(supervisor, client, frame),
+		onCmd: frame => {
+			if (frame.id === undefined && frame.cmd === "restart-daemon") {
+				restartDaemonCmd(frame);
+				return;
+			}
+			void handleCmdFrame(supervisor, client, frame);
+		},
 		onUsage: frame => {
 			void handleUsageFrame(client, usageProxy, frame).catch(err =>
 				client.send({ t: "usage-res", reqId: frame.reqId, ok: false, error: errorMessage(err) }),

@@ -59,7 +59,7 @@ The hub and agent also expose `bun run start` (same entry points as `dev`). Hub 
 ## Important Files
 
 - `packages/hub/src/server.ts` routes `/healthz`, `/agent`, `/r/*`, `/api/*`, then static; `config.ts` reads `PORT`, `HOST`, `HUB_TOKEN`, `HUB_PUBLIC_URL`, TLS and dist settings; `agents.ts`, `sessions.ts`, and `relay.ts` own live state.
-- `packages/agent/src/main.ts`, `hub-client.ts`, `supervisor.ts`, `session-host.ts`, and `ui-stub.ts` trace daemon-to-session behavior.
+- `packages/agent/src/main.ts`, `hub-client.ts`, `supervisor.ts`, `session-host.ts`, and `ui-bridge.ts` (collab UI bridging over the `ui-stub.ts` deny fallback) trace daemon-to-session behavior.
 - `packages/web/src/main.tsx`, `hub/SessionView.tsx`, `hub/commands.ts`, `lib/client.ts`, `lib/socket.ts`, `lib/wire.ts`, and `lib/codec.ts` trace browser routing, control, wire, and crypto.
 - `docs/protocol.md` is the wire contract; `docs/architecture.md` explains isolation/security; `docs/e2e.md` records manual verification, not an automated suite.
 

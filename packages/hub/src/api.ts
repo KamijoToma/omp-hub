@@ -6,11 +6,13 @@ import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLim
 import { derivePublicBase, type Config } from "./config";
 import { normalizeProfileName } from "./profiles";
 import type { SessionStore } from "./sessions";
+import type { NoticeStore } from "./notices";
 
 export interface ApiContext {
 	readonly cfg: Config;
 	readonly sessions: SessionStore;
 	readonly agents: AgentRegistry;
+	readonly notices: NoticeStore;
 	/** Set by the bound hub; absent in library/tests. Invoked before the reply returns. */
 	readonly restart?: () => void;
 }
@@ -39,6 +41,13 @@ const CLEAR_CONTEXT_PATH_RE = /^\/api\/sessions\/([^/]+)\/clear-context$/;
 const RENAME_PATH_RE = /^\/api\/sessions\/([^/]+)\/rename$/;
 const TITLE_PATH_RE = /^\/api\/sessions\/([^/]+)\/title$/;
 const FILES_PATH_RE = /^\/api\/sessions\/([^/]+)\/files$/;
+/** MCP management (protocol §2 `mcp-*`): one GET listing plus four POST verbs. */
+const MCP_LIST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp$/;
+const MCP_ADD_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/add$/;
+const MCP_REMOVE_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/remove$/;
+const MCP_ENABLED_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/enabled$/;
+const MCP_TEST_PATH_RE = /^\/api\/sessions\/([^/]+)\/mcp\/test$/;
+const PROMPT_PATH_RE = /^\/api\/sessions\/([^/]+)\/prompt$/;
 /** Cap on one upload's raw bytes — the cmd round trip must stay inside the 15 s budget. */
 const MAX_UPLOAD_BODY_BYTES = 15 * 1024 * 1024;
 const MAX_FILENAME_CHARS = 200;
@@ -49,6 +58,8 @@ const USAGE_PROXY_PATH_RE = /^\/api\/machines\/([^/]+)\/usage(\/.+)$/;
 const MAX_USAGE_BODY_BYTES = 1024 * 1024;
 const MACHINE_PROFILES_PATH_RE = /^\/api\/machines\/([^/]+)\/profiles$/;
 const MACHINE_SESSIONS_PATH_RE = /^\/api\/machines\/([^/]+)\/sessions$/;
+/** Panel-triggered daemon upgrade restart (protocol §3). */
+const MACHINE_RESTART_PATH_RE = /^\/api\/machines\/([^/]+)\/restart-daemon$/;
 
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -110,11 +121,21 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	if (machineSessions && req.method === "GET") {
 		return listMachineSessions(decodeURIComponent(machineSessions[1]!), ctx);
 	}
+	const machineRestart = MACHINE_RESTART_PATH_RE.exec(route);
+	if (machineRestart && req.method === "POST") {
+		return restartMachineDaemon(decodeURIComponent(machineRestart[1]!), ctx);
+	}
 	if (req.method === "GET" && route === "/api/sessions") {
 		return json({ sessions: ctx.sessions.list() });
 	}
 	if (req.method === "POST" && route === "/api/sessions") {
 		return createSession(req, ctx);
+	}
+	if (req.method === "POST" && route === "/api/notices") {
+		return createNotice(req, ctx);
+	}
+	if (req.method === "GET" && route === "/api/notices") {
+		return json({ notices: ctx.notices.list() });
 	}
 
 	const single = SESSION_PATH_RE.exec(route);
@@ -204,6 +225,31 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
 	if (files && req.method === "POST") {
 		return uploadSessionFile(decodeURIComponent(files[1]!), req, ctx);
 	}
+	const prompt = PROMPT_PATH_RE.exec(route);
+	if (prompt && req.method === "POST") {
+		return promptSession(decodeURIComponent(prompt[1]!), req, ctx);
+	}
+
+	const mcpList = MCP_LIST_PATH_RE.exec(route);
+	if (mcpList && req.method === "GET") {
+		return listMcpServers(decodeURIComponent(mcpList[1]!), ctx);
+	}
+	const mcpAdd = MCP_ADD_PATH_RE.exec(route);
+	if (mcpAdd && req.method === "POST") {
+		return addMcpServer(decodeURIComponent(mcpAdd[1]!), req, ctx);
+	}
+	const mcpRemove = MCP_REMOVE_PATH_RE.exec(route);
+	if (mcpRemove && req.method === "POST") {
+		return removeMcpServer(decodeURIComponent(mcpRemove[1]!), req, ctx);
+	}
+	const mcpEnabled = MCP_ENABLED_PATH_RE.exec(route);
+	if (mcpEnabled && req.method === "POST") {
+		return setMcpServerEnabled(decodeURIComponent(mcpEnabled[1]!), req, ctx);
+	}
+	const mcpTest = MCP_TEST_PATH_RE.exec(route);
+	if (mcpTest && req.method === "POST") {
+		return testMcpServer(decodeURIComponent(mcpTest[1]!), req, ctx);
+	}
 
 	return json({ error: "not found" }, 404);
 }
@@ -239,12 +285,36 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 	}
 	const sessionFile = typeof rawSessionFile === "string" ? rawSessionFile.trim() : undefined;
 
+	// Fleet-operator opt-in must be exactly the boolean `true`; anything else is
+	// a caller bug worth surfacing, not a falsy default.
+	const superagent = body["superagent"];
+	if (superagent !== undefined && typeof superagent !== "boolean") {
+		return json({ error: "superagent must be a boolean" }, 400);
+	}
+
+	// Tool whitelist (protocol §2 `start.tools`): a non-empty array of non-empty
+	// strings. Trimmed + deduped (first-seen order) so the record and the start
+	// frame carry one canonical form.
+	const rawTools = body["tools"];
+	if (rawTools !== undefined) {
+		const malformed =
+			!Array.isArray(rawTools) ||
+			rawTools.length === 0 ||
+			rawTools.some(name => typeof name !== "string" || name.trim() === "");
+		if (malformed) return json({ error: "tools must be a non-empty array of non-empty strings" }, 400);
+	}
+	const tools = Array.isArray(rawTools)
+		? [...new Set(rawTools.map(name => (name as string).trim()))]
+		: undefined;
+
 	const record = ctx.sessions.create({
 		machineId,
 		machineName: machine.name,
 		cwd,
 		name: field(body, "name"),
 		profile,
+		...(superagent === true ? { superagent: true as const } : {}),
+		...(tools === undefined ? {} : { tools }),
 	});
 	const prompt = field(body, "prompt");
 	const base = derivePublicBase(req, ctx.cfg);
@@ -256,6 +326,8 @@ async function createSession(req: Request, ctx: ApiContext): Promise<Response> {
 		...(prompt === undefined ? {} : { prompt }),
 		...(profile === undefined ? {} : { profile }),
 		...(sessionFile === undefined ? {} : { sessionFile }),
+		...(superagent === true ? { superagent: true } : {}),
+		...(tools === undefined ? {} : { tools }),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -434,6 +506,23 @@ async function listMachineSessions(machineId: string, ctx: ApiContext): Promise<
 	return json({ ok: true, listing: result.data });
 }
 
+/**
+ * `POST /api/machines/:id/restart-daemon` (protocol §3): panel-triggered daemon
+ * upgrade. The hub arms a same-id resume plan; the fresh daemon's first
+ * heartbeat replays it (`AgentRegistry.restartDaemon`). 404 unknown machine,
+ * 409 already restarting, 502 offline, 400/504 for agent-reported refusals.
+ */
+async function restartMachineDaemon(machineId: string, ctx: ApiContext): Promise<Response> {
+	const machine = ctx.agents.getMachine(machineId);
+	if (!machine) return json({ error: "machine not found" }, 404);
+	const result = await ctx.agents.restartDaemon(machineId);
+	if (!result.ok) {
+		const status = result.error === "daemon restart already in progress" ? 409 : cmdErrorStatus(result.error);
+		return json({ error: result.error }, status);
+	}
+	return json({ ok: true, machine: ctx.agents.getMachine(machineId) });
+}
+
 async function agentState(id: string, ctx: ApiContext): Promise<Response> {
 	const outcome = await dispatchCmd(id, "get-state", {}, ctx);
 	return outcome.ok ? json({ ok: true, state: outcome.data }) : outcome.response;
@@ -493,6 +582,36 @@ async function setThinking(id: string, req: Request, ctx: ApiContext): Promise<R
 
 	const outcome = await dispatchCmd(id, "set-thinking", { level }, ctx);
 	return outcome.ok ? json({ ok: true, thinkingLevel: pick(outcome.data, "thinkingLevel") }) : outcome.response;
+}
+
+/**
+ * `prompt {text}` (protocol §2): deliver text to a live session as a new turn or
+ * queued steering. The reply only confirms the dispatch; the turn itself streams
+ * through the normal session channel.
+ */
+async function promptSession(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const text = field(body, "text");
+	if (!text || text.trim() === "") return json({ error: "text is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "prompt", { text }, ctx);
+	return outcome.ok ? json({ ok: true, accepted: pick(outcome.data, "accepted") ?? true }) : outcome.response;
+}
+
+/**
+ * Notices (protocol §3, 0.8.0+): agents post human-facing notifications; web
+ * clients poll the listing. Validation failures are caller bugs → 400.
+ */
+async function createNotice(req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	try {
+		const notice = ctx.notices.add({ message: body["message"], urgency: body["urgency"], sessionId: body["sessionId"] });
+		return json({ ok: true, notice });
+	} catch (err) {
+		return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+	}
 }
 
 /**
@@ -797,6 +916,127 @@ async function uploadSessionFile(id: string, req: Request, ctx: ApiContext): Pro
 	return json({ ok: true, path, bytes: typeof written === "number" ? written : bytes.byteLength });
 }
 
+/**
+ * MCP server listing for the web `/mcp` modal (agent `mcp-list`, protocol §2):
+ * config rows for the user and project `mcp.json` files, redacted (URL query
+ * and userinfo stripped, env values as `envCount` only), joined with the
+ * session's live manager view (health, catalogs) where it has the server.
+ * Config edits apply to new sessions; `health` shows what the live session
+ * actually loaded.
+ */
+async function listMcpServers(id: string, ctx: ApiContext): Promise<Response> {
+	const outcome = await dispatchCmd(id, "mcp-list", {}, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({ ok: true, servers: Array.isArray(data["servers"]) ? data["servers"] : [] });
+}
+
+/** Validated `mcp-add` frame: stdio (`command`+`args`) or remote (`url`+`transport`, `token`), project default. */
+async function addMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	if (name.length > 100) return json({ error: "name is too long (max 100 characters)" }, 400);
+	const scope = field(body, "scope");
+	if (scope !== undefined && scope !== "project" && scope !== "user") {
+		return json({ error: "scope must be project or user" }, 400);
+	}
+	const url = field(body, "url");
+	const command = field(body, "command");
+	if ((url === undefined) === (command === undefined)) {
+		return json({ error: "exactly one of url or command is required" }, 400);
+	}
+	const transport = field(body, "transport");
+	if (transport !== undefined && transport !== "http" && transport !== "sse") {
+		return json({ error: "transport must be http or sse" }, 400);
+	}
+	const token = field(body, "token");
+	if (token !== undefined && token.trim() === "") return json({ error: "token must be a non-empty string" }, 400);
+	if (token !== undefined && url === undefined) return json({ error: "token requires url" }, 400);
+	const args = body["args"];
+	if (args !== undefined && (!Array.isArray(args) || args.some(entry => typeof entry !== "string"))) {
+		return json({ error: "args must be an array of strings" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "mcp-add", {
+		name: name.trim(),
+		...(scope === undefined ? {} : { scope }),
+		...(url === undefined ? {} : { url: url.trim() }),
+		...(command === undefined ? {} : { command: command.trim() }),
+		...(transport === undefined ? {} : { transport }),
+		...(token === undefined ? {} : { token }),
+		...(Array.isArray(args) && args.length > 0 ? { args } : {}),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "scope"]) }) : outcome.response;
+}
+
+/** Remove one configured server (agent `mcp-remove`); the agent errors when absent. */
+async function removeMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	const scope = field(body, "scope");
+	if (scope !== undefined && scope !== "project" && scope !== "user") {
+		return json({ error: "scope must be project or user" }, 400);
+	}
+
+	const outcome = await dispatchCmd(id, "mcp-remove", {
+		name: name.trim(),
+		...(scope === undefined ? {} : { scope }),
+	}, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "scope"]) }) : outcome.response;
+}
+
+/**
+ * Enable or disable a configured server (agent `mcp-set-enabled`, TUI
+ * `/mcp enable|disable` semantics): the project entry wins, else the user
+ * entry, else the user-level disabled-servers list. `where` in the reply
+ * names the file that changed.
+ */
+async function setMcpServerEnabled(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+	const enabled = body["enabled"];
+	if (typeof enabled !== "boolean") return json({ error: "enabled must be a boolean" }, 400);
+
+	const outcome = await dispatchCmd(id, "mcp-set-enabled", { name: name.trim(), enabled }, ctx);
+	return outcome.ok ? json({ ok: true, ...pickRecord(outcome.data, ["name", "enabled", "where"]) }) : outcome.response;
+}
+
+/**
+ * One temporary connection to a configured, enabled server (agent `mcp-test`):
+ * the reply carries the tool catalog, bounded by the agent. Connect failures
+ * surface as `cmd-result` errors; the live session is untouched.
+ */
+async function testMcpServer(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+	const body = await jsonBody(req);
+	if (body === null) return json({ error: "invalid json body" }, 400);
+	const name = field(body, "name");
+	if (!name || name.trim() === "") return json({ error: "name is required" }, 400);
+
+	const outcome = await dispatchCmd(id, "mcp-test", { name: name.trim() }, ctx);
+	if (!outcome.ok) return outcome.response;
+	const data = outcome.data as Record<string, unknown>;
+	return json({
+		ok: true,
+		name: pick(data, "name") ?? name.trim(),
+		count: typeof pick(data, "count") === "number" ? pick(data, "count") : 0,
+		tools: Array.isArray(data["tools"]) ? data["tools"] : [],
+	});
+}
+
+/** Named fields of the agent's `data` payload; malformed payloads degrade to undefined fields. */
+function pickRecord(data: unknown, keys: readonly string[]): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	if (data === null || typeof data !== "object") return out;
+	for (const key of keys) out[key] = (data as Record<string, unknown>)[key];
+	return out;
+}
+
 /** HTTP status for an agent-reported failure (protocol §3 session-command rows). */
 function cmdErrorStatus(error: string): number {
 	// `retry` state conflicts (contract §1): nothing left to replay, or a turn
@@ -821,6 +1061,16 @@ function cmdErrorStatus(error: string): number {
 		case "cmd timeout":
 			return 504;
 		default:
+			// A machine command an older daemon does not know (protocol §2: unknown
+			// cmds answer `ok:false` with this exact prefix) — caller asked for a
+			// capability the agent lacks, not a hub fault.
+			if (error.startsWith("unknown machine command")) return 400;
+			// `mcp-*` writer/test failures (protocol §2): the config writer's own
+			// message tells the caller which — duplicate add, missing remove,
+			// name/config validation, and the enable/disable not-found guard.
+			if (error.includes("already exists")) return 409;
+			if (error.includes("not found in") || error.includes("not found or disabled")) return 404;
+			if (error.startsWith("Server name") || error.startsWith("Invalid server config")) return 400;
 			return 500;
 	}
 }

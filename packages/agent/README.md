@@ -49,5 +49,6 @@ against a mock SDK.
 | `src/supervisor.ts` | child process registry, JSONL IPC, SIGKILL escalation |
 | `src/session-host.ts` | per-session child: SDK session + collab host |
 | `src/collab-ctx.ts` | stub `InteractiveModeContext` over the real session |
-| `src/ui-stub.ts` | default-deny `ExtensionUIContext` |
+| `src/ui-bridge.ts` | collab UI bridge: `ask`/`select`/`editor` dialogs ↔ writable guests (protocol §7) |
+| `src/ui-stub.ts` | default-deny `ExtensionUIContext` the bridge falls back to |
 | `src/machine-id.ts` | stable machine id (`~/.omp-hub-agent.json`) |

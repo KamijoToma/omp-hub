@@ -18,6 +18,7 @@ interface SessionJson {
 	cwd: string;
 	name: string;
 	profile?: string;
+	tools?: string[];
 	status: string;
 	startedAt: number;
 	exitedAt?: number;
@@ -535,6 +536,52 @@ describe("hub api", () => {
 		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
 	});
 
+	test("start.tools is forwarded to the agent and echoed on the record", async () => {
+		const { agent } = await connectAgent("m-tools", "tools-machine");
+		const tools = ["bash", "read", "edit", "write"];
+
+		const session = await startSession("m-tools", "/srv/pious", { tools });
+		expect(session.tools).toEqual(tools);
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect(start).toMatchObject({ id: session.id, tools });
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("start.tools absent keeps the field off the frame", async () => {
+		const { agent } = await connectAgent("m-tools-def", "tools-default-machine");
+
+		const session = await startSession("m-tools-def", "/srv/default-tools");
+		expect(session.tools).toBeUndefined();
+		const start = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "start frame");
+		expect("tools" in start).toBe(false);
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
+	test("malformed tools is rejected with 400 before any record exists", async () => {
+		await connectAgent("m-tools-bad", "tools-bad-machine");
+
+		for (const bad of [[], ["bash", ""], ["bash", "   "], ["bash", 3], "bash"]) {
+			const response = await api("/api/sessions", {
+				method: "POST",
+				body: JSON.stringify({ machineId: "m-tools-bad", cwd: "/srv/x", tools: bad }),
+			});
+			expect(response.status).toBe(400);
+		}
+		// No record survived the rejected starts.
+		const listing = (await (await api("/api/sessions")).json()) as { sessions: SessionJson[] };
+		expect(listing.sessions.filter((s) => s.machineId === "m-tools-bad")).toEqual([]);
+	});
+
+	test("start.tools entries are trimmed and deduped to one canonical form", async () => {
+		const { agent } = await connectAgent("m-tools-can", "tools-can-machine");
+
+		const session = await startSession("m-tools-can", "/srv/canonical", {
+			tools: [" bash ", "bash", "read"],
+		});
+		expect(session.tools).toEqual(["bash", "read"]);
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, code: 0, reason: "done" }));
+	});
+
 	test("an invalid profile name is rejected with 400 before any record exists", async () => {
 		await connectAgent("m-prof-bad", "prof-bad-machine");
 
@@ -708,5 +755,140 @@ describe("hub api", () => {
 		const seen = await answerUsageReq(agent);
 		expect((await pending).status).toBe(200);
 		expect(seen).toEqual({ path: "/api/stats?range=24h", profile: undefined });
+	});
+
+	test("MCP management endpoints dispatch mcp-* cmds and map agent errors", async () => {
+		const { agent } = await connectAgent("m-mcpapi", "mcpapi-machine");
+		const session = await startSession("m-mcpapi", "/srv/mcpapi");
+		agent.ws.send(
+			JSON.stringify({ t: "session-ready", id: session.id, links: { full: "a", view: "b", web: "c", webView: "d" } }),
+		);
+		await waitForStatus(session.id, "live");
+
+		const MCP_CMD_BY_PATH: Record<string, string> = {
+			"/mcp": "mcp-list",
+			"/mcp/add": "mcp-add",
+			"/mcp/remove": "mcp-remove",
+			"/mcp/enabled": "mcp-set-enabled",
+			"/mcp/test": "mcp-test",
+		};
+
+		/** One cmd round trip: fire the request, poll frames for the dispatch, answer it. */
+		const call = async (
+			method: "GET" | "POST",
+			path: string,
+			opts: { body?: Record<string, unknown>; data?: unknown; fail?: { error: string } } = {},
+		): Promise<{ status: number; json: Record<string, unknown>; cmd: Record<string, unknown> }> => {
+			const wanted = MCP_CMD_BY_PATH[path]!;
+			const seenFrames = agent.frames.length;
+			const pending = api(`/api/sessions/${session.id}${path}`, {
+				method,
+				...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
+			});
+			const deadline = Date.now() + 4_000;
+			let cmd: Record<string, unknown> | undefined;
+			for (;;) {
+				cmd = agent.frames
+					.slice(seenFrames)
+					.find((frame) => frame.t === "cmd" && frame.cmd === wanted) as Record<string, unknown> | undefined;
+				if (cmd !== undefined || Date.now() > deadline) break;
+				await yieldLoop();
+			}
+			if (cmd === undefined) throw new Error(`timeout waiting for ${wanted}`);
+			agent.ws.send(
+				JSON.stringify(
+					opts.fail === undefined
+						? { t: "cmd-result", reqId: cmd.reqId, ok: true, data: opts.data ?? { name: cmd.name } }
+						: { t: "cmd-result", reqId: cmd.reqId, ok: false, error: opts.fail.error },
+				),
+			);
+			const response = await pending;
+			return { status: response.status, json: (await response.json()) as Record<string, unknown>, cmd };
+		};
+
+		// GET listing: the agent's rows ride verbatim.
+		const list = await call("GET", "/mcp", { data: { servers: [{ name: "ctx7", scope: "project", enabled: true }] } });
+		expect(list.status).toBe(200);
+		expect(list.json).toEqual({ ok: true, servers: [{ name: "ctx7", scope: "project", enabled: true }] });
+
+		// POST add: frame carries the validated fields; reply is the agent's.
+		const add = await call("POST", "/mcp/add", {
+			body: { name: "ctx7", url: "https://mcp.example.dev/api", transport: "sse", token: "shh" },
+			data: { name: "ctx7", scope: "user" },
+		});
+		expect(add.status).toBe(200);
+		expect(add.json).toEqual({ ok: true, name: "ctx7", scope: "user" });
+		expect(add.cmd).toMatchObject({
+			cmd: "mcp-add",
+			name: "ctx7",
+			url: "https://mcp.example.dev/api",
+			transport: "sse",
+			token: "shh",
+		});
+
+		// add validation: each is refused before any cmd leaves the hub.
+		for (const body of [
+			{},
+			{ name: "" },
+			{ name: "x" },
+			{ name: "x", url: "https://a.dev", command: "bun" },
+			{ name: "x", url: "https://a.dev", scope: "global" },
+			{ name: "x", url: "https://a.dev", transport: "ws" },
+			{ name: "x", url: "https://a.dev", token: " " },
+			{ name: "x", token: "t" },
+			{ name: "x", url: "https://a.dev", args: [1] },
+		]) {
+			const bad = await api(`/api/sessions/${session.id}/mcp/add`, { method: "POST", body: JSON.stringify(body) });
+			expect(bad.status).toBe(400);
+		}
+		await yieldLoop();
+		expect(agent.frames.filter((frame) => frame.t === "cmd" && frame.cmd === "mcp-add")).toHaveLength(1);
+
+		// Agent-reported failures map by the writer's message.
+		const duplicate = await call("POST", "/mcp/add", {
+			body: { name: "ctx7", command: "bun" },
+			fail: { error: 'Server "ctx7" already exists in /home/u/.omp/agent/mcp.json' },
+		});
+		expect(duplicate.status).toBe(409);
+		const missing = await call("POST", "/mcp/remove", {
+			body: { name: "gone" },
+			fail: { error: 'Server "gone" not found in /home/u/.omp/agent/mcp.json' },
+		});
+		expect(missing.status).toBe(404);
+		const untestable = await call("POST", "/mcp/test", {
+			body: { name: "ghost" },
+			fail: { error: 'server "ghost" not found or disabled (see mcp-list)' },
+		});
+		expect(untestable.status).toBe(404);
+
+		// enable/disable round trip with the touched-file report.
+		const enabled = await call("POST", "/mcp/enabled", {
+			body: { name: "ctx7", enabled: false },
+			data: { name: "ctx7", enabled: false, where: "project" },
+		});
+		expect(enabled.status).toBe(200);
+		expect(enabled.json).toEqual({ ok: true, name: "ctx7", enabled: false, where: "project" });
+		const badEnabled = await api(`/api/sessions/${session.id}/mcp/enabled`, {
+			method: "POST",
+			body: JSON.stringify({ name: "ctx7", enabled: "yes" }),
+		});
+		expect(badEnabled.status).toBe(400);
+
+		// test carries the bounded catalog.
+		const tested = await call("POST", "/mcp/test", {
+			body: { name: "ctx7" },
+			data: { name: "ctx7", count: 1, tools: [{ name: "resolve" }] },
+		});
+		expect(tested.status).toBe(200);
+		expect(tested.json).toEqual({ ok: true, name: "ctx7", count: 1, tools: [{ name: "resolve" }] });
+
+		// Not live → every MCP route refuses before dispatch.
+		agent.ws.send(JSON.stringify({ t: "session-exit", id: session.id, reason: "done" }));
+		await waitForStatus(session.id, "exited");
+		expect((await api(`/api/sessions/${session.id}/mcp`)).status).toBe(409);
+		expect(
+			(await api(`/api/sessions/${session.id}/mcp/add`, { method: "POST", body: JSON.stringify({ name: "x", command: "bun" }) }))
+				.status,
+		).toBe(409);
 	});
 });

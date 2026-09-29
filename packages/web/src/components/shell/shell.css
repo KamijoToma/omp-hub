@@ -768,15 +768,13 @@
 /* ---- toasts ---- */
 .sh-toasts {
 	position: fixed;
+	top: 12px;
 	right: 12px;
-	left: 12px;
-	bottom: 12px;
 	z-index: 60;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
 	max-width: 320px;
-	margin-left: auto;
 }
 
 .sh-toast {

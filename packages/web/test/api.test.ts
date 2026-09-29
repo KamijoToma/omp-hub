@@ -8,6 +8,8 @@ import {
 	deleteSession,
 	getMachineSessions,
 	getMachines,
+	getMcpServers,
+	getNotices,
 	HubApiError,
 	listMachineDirectories,
 	formatShakeSummary,
@@ -18,12 +20,18 @@ import {
 	postGoal,
 	postHandoff,
 	postLoop,
+	postMcpAdd,
+	postMcpEnabled,
+	postMcpRemove,
+	postMcpTest,
 	postRename,
 	postRetry,
+	postSessionPrompt,
 	postShake,
 	setModel,
 	setToken,
 	startSession,
+	type Notice,
 } from "../src/hub/api";
 import type { GoalModeState, SessionRecord, ShakeResult } from "../src/hub/api";
 
@@ -521,5 +529,178 @@ describe("hub api", () => {
 
 		expect(JSON.parse(String(calls[0].init?.body))).toEqual({});
 		expect(result).toBe(false);
+	});
+
+	test("getMcpServers GETs the mcp path and unwraps the rows", async () => {
+		setToken("t0k3n");
+		stubFetch(() =>
+			json({
+				ok: true,
+				servers: [
+					{ name: "ctx7", scope: "project", type: "http", enabled: true, location: "https://mcp.example.dev/api", envCount: 0 },
+					{ name: "localtools", scope: "user", type: "stdio", enabled: false, location: "bun", envCount: 2, health: "disconnected" },
+				],
+			}),
+		);
+
+		const servers = await getMcpServers("s1");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/mcp");
+		expect(servers).toHaveLength(2);
+		expect(servers[0]).toMatchObject({ name: "ctx7", scope: "project", enabled: true });
+	});
+
+	test("postMcpAdd posts only the provided fields and unwraps the placement", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, name: "ctx7", scope: "user" }));
+
+		const added = await postMcpAdd("s1", {
+			name: "ctx7",
+			scope: "user",
+			url: "https://mcp.example.dev/api",
+			transport: "sse",
+			token: "shh",
+		});
+
+		expect(calls[0].url).toBe("/api/sessions/s1/mcp/add");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			name: "ctx7",
+			scope: "user",
+			url: "https://mcp.example.dev/api",
+			transport: "sse",
+			token: "shh",
+		});
+		expect(added).toEqual({ name: "ctx7", scope: "user" });
+
+		await postMcpAdd("s1", { name: "localtools", command: "bun", args: ["run", "mcp"] });
+		expect(JSON.parse(String(calls[1].init?.body))).toEqual({ name: "localtools", command: "bun", args: ["run", "mcp"] });
+	});
+
+	test("postMcpRemove posts the scoped removal", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true }));
+
+		await postMcpRemove("s1", "ctx7", "project");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/mcp/remove");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ name: "ctx7", scope: "project" });
+	});
+
+	test("postMcpEnabled posts the switch and unwraps the touched file", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, name: "ctx7", enabled: false, where: "disabled-list" }));
+
+		const result = await postMcpEnabled("s1", "ctx7", false);
+
+		expect(calls[0].url).toBe("/api/sessions/s1/mcp/enabled");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ name: "ctx7", enabled: false });
+		expect(result).toEqual({ name: "ctx7", enabled: false, where: "disabled-list" });
+	});
+
+	test("postMcpTest posts the target and unwraps the catalog", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, name: "ctx7", count: 2, tools: [{ name: "resolve" }, { name: "search" }] }));
+
+		const result = await postMcpTest("s1", "ctx7");
+
+		expect(calls[0].url).toBe("/api/sessions/s1/mcp/test");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ name: "ctx7" });
+		expect(result).toEqual({ name: "ctx7", count: 2, tools: [{ name: "resolve" }, { name: "search" }] });
+	});
+
+	test("mcp client surfaces agent-reported failures as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: 'Server "ctx7" already exists in /home/u/.omp/agent/mcp.json' }, 409));
+
+		const err = await postMcpAdd("s1", { name: "ctx7", command: "bun" }).then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).message).toContain("already exists");
+	});
+
+	test("startSession forwards superagent:true in the POST body", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", superagent: true });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			superagent: true,
+		});
+	});
+
+	test("startSession omits superagent when unset or false", async () => {
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", superagent: false });
+
+		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
+	test("startSession forwards the tools whitelist in the POST body", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", tools: ["bash", "read", "edit", "write"] });
+
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			machineId: "m1",
+			cwd: "/srv/app",
+			tools: ["bash", "read", "edit", "write"],
+		});
+	});
+
+	test("startSession omits an empty tools whitelist", async () => {
+		stubFetch(() => json({ session: { id: "s_x" } }, 202));
+
+		await startSession({ machineId: "m1", cwd: "/srv/app", tools: [] });
+
+		expect(Object.keys(JSON.parse(String(calls[0].init?.body)))).toEqual(["machineId", "cwd"]);
+	});
+
+	test("postSessionPrompt posts the text and resolves acceptance", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ ok: true, accepted: true }));
+
+		const accepted = await postSessionPrompt("s1", "run the smoke test");
+
+		expect(accepted).toBe(true);
+		expect(calls[0].url).toBe("/api/sessions/s1/prompt");
+		expect(calls[0].init?.method).toBe("POST");
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ text: "run the smoke test" });
+	});
+
+	test("postSessionPrompt surfaces error statuses as HubApiError", async () => {
+		setToken("t0k3n");
+		stubFetch(() => json({ error: "text is required" }, 400));
+
+		const err = await postSessionPrompt("s1", "   ").then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(err).toBeInstanceOf(HubApiError);
+		expect((err as HubApiError).status).toBe(400);
+		expect((err as HubApiError).message).toBe("text is required");
+	});
+
+	test("getNotices unwraps the notices listing", async () => {
+		setToken("t0k3n");
+		const notices: Notice[] = [
+			{ id: "n_0a0a0a0a0a", message: "deploy done", urgency: "urgent", sessionId: "s1", createdAt: 12 },
+			{ id: "n_0b0b0b0b0b", message: "hello", urgency: "info", createdAt: 10 },
+		];
+		stubFetch(() => json({ notices }));
+
+		const result = await getNotices();
+
+		expect(calls[0].url).toBe("/api/notices");
+		expect(result).toEqual(notices);
 	});
 });

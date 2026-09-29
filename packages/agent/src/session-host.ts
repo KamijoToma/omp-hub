@@ -14,6 +14,14 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import type { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import type * as ModelRoles from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import type {
+	MCPHttpServerConfig,
+	MCPServerConfig,
+	MCPServerConnection,
+	MCPSseServerConfig,
+	MCPStdioServerConfig,
+} from "@oh-my-pi/pi-coding-agent/mcp/types";
 import type { evaluateLoopCondition } from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { COMPACT_MODES } from "@oh-my-pi/pi-coding-agent/session/compact-modes";
@@ -25,6 +33,8 @@ import type { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/t
 import type { cfgExtendedContext as CfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { parseConfiguredThinkingLevel as ParseThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
+import { createFleetClient } from "./fleet-client";
+import { buildFleetTools } from "./fleet-tools";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
 import type { LoopConditionConfig, LoopStatus } from "./session-loop";
@@ -37,6 +47,10 @@ interface HostConfig {
 	prompt?: string;
 	/** Resume this omp session file instead of minting a new session. */
 	sessionFile?: string;
+	/** 0.8.0: fleet-operator session — registers the fleet tools and may issue `fleet-req`. */
+	superagent?: boolean;
+	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
+	tools?: string[];
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -46,7 +60,7 @@ type ReadyFrame = { t: "ready"; sessionFile: string; pid: number; links: Session
 
 /** Parent → child `cmd` frame (protocol §4). Known parameters are documented
  * here; unknown ones pass through untouched (executeCommand validates). */
-type CommandFrame = {
+export type CommandFrame = {
 	t: "cmd";
 	reqId: string;
 	cmd: string;
@@ -80,10 +94,25 @@ type CommandFrame = {
 	condition?: LoopConditionConfig;
 	/** `set-extended-context`: target state; omitted toggles. */
 	enabled?: boolean;
-	/** `upload-file` client-supplied file name (sanitized before writing) or `rename` target name (protocol §2). */
+	/** `upload-file` client-supplied file name (sanitized before writing), `rename` target name (protocol §2),
+	 * or the `mcp-*` target server name. */
 	name?: string;
 	/** `upload-file` payload, base64. */
 	dataB64?: string;
+	/** `mcp-add`/`mcp-remove` config scope; omitted means `"project"`. */
+	scope?: string;
+	/** `mcp-add` remote server URL (http/sse transport). */
+	url?: string;
+	/** `mcp-add` remote transport; omitted means `"http"`. */
+	transport?: string;
+	/** `mcp-add` bearer token folded into the config's Authorization header. */
+	token?: string;
+	/** `mcp-add` stdio command (exclusive with `url`). */
+	command?: string;
+	/** `mcp-add` stdio command arguments. */
+	args?: string[];
+	/** `prompt`: text delivered to the session via `session.prompt()`. */
+	text?: string;
 };
 
 /** Child → parent answer; exactly one per `cmd` (protocol §4). */
@@ -131,7 +160,18 @@ interface AgentState {
 	goal: GoalModeState | null;
 	/** Loop controller status; null when the loop is disabled. */
 	loop: LoopStatus | null;
+	/** Tool names currently exposed at the top level (0.9.0; sorted). */
+	tools: string[];
 }
+
+/** `mcp-config-writer` module surface (config file read-modify-write, protocol §2 `mcp-*`). */
+type McpConfigWriter = typeof import("@oh-my-pi/pi-coding-agent/mcp/config-writer");
+/** `mcp-client` module surface (temporary test connections, protocol §2 `mcp-test`). */
+type McpClient = typeof import("@oh-my-pi/pi-coding-agent/mcp/client");
+/** The `MCPManager` class: the live session manager singleton plus test connections. */
+type McpManagerClass = typeof MCPManager;
+/** User/project `mcp.json` path resolution (pi-utils, same resolver the SDK discovery uses). */
+type GetMCPConfigPathFn = typeof import("@oh-my-pi/pi-utils").getMCPConfigPath;
 
 /**
  * SDK functions the command surface needs, loaded lazily in `run()` after the
@@ -146,6 +186,13 @@ interface CommandDeps {
 	/** Valid one-off compact mode names (contract §1). */
 	compactModes: typeof COMPACT_MODES;
 	evaluateLoopCondition: typeof evaluateLoopCondition;
+	/** MCP management surface (protocol §2 `mcp-*`): config writer, test client, live manager class. */
+	mcp: {
+		config: McpConfigWriter;
+		client: McpClient;
+		manager: McpManagerClass;
+		configPath: GetMCPConfigPathFn;
+	};
 	/** Typed `extendedContext` setting descriptor (SDK ≥ v18 descriptor registry; string keys are gone). */
 	cfgExtendedContext: typeof CfgExtendedContext;
 	/** Background dispatches (`compact`) can only log their failures. */
@@ -184,6 +231,9 @@ function agentState(session: AgentSession, deps: CommandDeps, loop: LoopStatus |
 		extendedContext: deps.cfgExtendedContext.get(session.settings),
 		goal: goalState(session),
 		loop,
+		// The session's effective callable surface — what a `tools` whitelist
+		// (start.tools) actually produced, not a config echo.
+		tools: [...session.getActiveToolNames()].sort(),
 	};
 }
 
@@ -455,8 +505,254 @@ export function firstUserText(
 	return undefined;
 }
 
+/** Catalog cap per server on `mcp-list`/`mcp-test` payloads; schemas stay host-side. */
+const MCP_CATALOG_CAP = 50;
+/** Description cap per cataloged tool, in characters. */
+const MCP_DESCRIPTION_CAP = 200;
+
+/** One cataloged tool/resource/prompt on a `mcp-list`/`mcp-test` payload. */
+interface McpCatalogEntry {
+	name: string;
+	description?: string;
+}
+
+/** MCP config scope of one server entry. */
+type McpScope = "user" | "project";
+
+/** Validated `mcp-add`/`mcp-remove` scope; omitted/blank means `"project"`. */
+function parseMcpScope(raw: string | undefined): McpScope {
+	if (raw === undefined || raw.trim() === "") return "project";
+	if (raw === "project" || raw === "user") return raw;
+	throw new Error(`invalid scope: ${raw} (use project or user)`);
+}
+
+/**
+ * One-line location for a listing row (TUI `handleListCommand` parity): the
+ * stdio command, or the remote URL stripped of query string and userinfo so
+ * API keys carried in either never reach the hub or the browser.
+ */
+function mcpServerLocation(config: MCPServerConfig): string | null {
+	if (config.type === "http" || config.type === "sse") return redactedUrlLocation(config.url);
+	return config.command;
+}
+
+/** Remote URL stripped to origin + path; null when unparseable or empty. */
+function redactedUrlLocation(raw: string): string | null {
+	if (!raw) return null;
+	try {
+		const parsed = new URL(raw);
+		const path = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "";
+		return `${parsed.origin}${path}`;
+	} catch {
+		return null;
+	}
+}
+
+/** Trim one catalog description to the wire cap. */
+function mcpCatalogEntry(name: string, description: string | undefined): McpCatalogEntry {
+	const clean = description?.trim();
+	if (!clean) return { name };
+	return {
+		name,
+		description: clean.length > MCP_DESCRIPTION_CAP ? `${clean.slice(0, MCP_DESCRIPTION_CAP)}…` : clean,
+	};
+}
+
+/** Bounded `{name, description}` catalog from full MCP tool/resource/prompt objects. */
+function mcpCatalog(entries: ReadonlyArray<{ name: string; description?: string }>): McpCatalogEntry[] {
+	return entries.slice(0, MCP_CATALOG_CAP).map(entry => mcpCatalogEntry(entry.name, entry.description));
+}
+
+/** `mcp-add` stdio config from frame fields. */
+function mcpStdioConfig(command: string, args: string[] | undefined): MCPStdioServerConfig {
+	return {
+		type: "stdio",
+		command,
+		...(args !== undefined && args.length > 0 ? { args: [...args] } : {}),
+	};
+}
+
+/** `mcp-add` remote config: normalized URL plus the optional bearer header. */
+function mcpRemoteConfig(transport: "http" | "sse", rawUrl: string, token: string | undefined): MCPHttpServerConfig | MCPSseServerConfig {
+	const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+	if (transport === "sse") {
+		return { type: "sse", url: normalizedUrl, ...(token !== undefined ? { headers: { Authorization: `Bearer ${token}` } } : {}) };
+	}
+	return { type: "http", url: normalizedUrl, ...(token !== undefined ? { headers: { Authorization: `Bearer ${token}` } } : {}) };
+}
+
+/** `mcp-add` config from frame fields: stdio (`command`+`args`) or remote (`url`+`transport`, `token` → header). */
+function buildMcpServerConfig(frame: CommandFrame): MCPServerConfig {
+	const name = typeof frame.name === "string" ? frame.name.trim() : "";
+	if (!name) throw new Error("mcp-add requires a server name");
+	const hasCommand = typeof frame.command === "string" && frame.command.trim() !== "";
+	const hasUrl = typeof frame.url === "string" && frame.url.trim() !== "";
+	if (hasCommand && hasUrl) throw new Error("use either command or url, not both");
+	if (!hasCommand && !hasUrl) throw new Error("mcp-add requires command or url");
+	let token: string | undefined;
+	if (frame.token !== undefined) {
+		if (typeof frame.token !== "string" || frame.token.trim() === "") throw new Error("token must be a non-empty string");
+		token = frame.token;
+	}
+	if (token !== undefined && !hasUrl) throw new Error("token requires url (http/sse transport)");
+	const args = frame.args === undefined ? undefined : mcpStringArgs(frame.args);
+
+	if (hasCommand) return mcpStdioConfig(frame.command!.trim(), args);
+	const transport = frame.transport === undefined || frame.transport === "" ? "http" : frame.transport;
+	if (transport !== "http" && transport !== "sse") throw new Error(`invalid transport: ${transport} (use http or sse)`);
+	return mcpRemoteConfig(transport, frame.url!.trim(), token);
+}
+
+/** Validated `mcp-add` args array; undefined stays undefined. */
+function mcpStringArgs(raw: unknown): string[] | undefined {
+	if (!Array.isArray(raw) || raw.some(arg => typeof arg !== "string")) {
+		throw new Error("args must be an array of strings");
+	}
+	return raw as string[];
+}
+
+/**
+ * One `mcp-list` row: config truth (TUI `handleListCommand` fields, redacted)
+ * joined with the live session manager's view (health, implementation,
+ * instructions, bounded catalogs) for enabled, non-shadowed entries — the same
+ * join the TUI `/extensions` dashboard draws, minus schemas and env values.
+ * Env/header/token values never cross the wire; `envCount` and the redacted
+ * location are the only echoes.
+ */
+function mcpListServer(
+	name: string,
+	config: MCPServerConfig,
+	scope: McpScope,
+	shadowed: boolean,
+	disabledList: ReadonlySet<string>,
+	manager: MCPManager | undefined,
+): Record<string, unknown> {
+	const enabled = config.enabled !== false && !disabledList.has(name);
+	const row: Record<string, unknown> = {
+		name,
+		scope,
+		type: config.type ?? "stdio",
+		enabled,
+		location: mcpServerLocation(config),
+		envCount: "env" in config && config.env ? Object.keys(config.env).length : 0,
+	};
+	if (shadowed) row.shadowed = true;
+	if (config.type === "stdio" && config.args && config.args.length > 0) row.args = [...config.args];
+	// Shadowed same-name configs share the name with the winner: joining by
+	// name would steal the live connection's health/catalog for a dead row
+	// (TUI `snapshotMcpRuntime` shadowed guard parity).
+	if (shadowed || !enabled || manager === undefined) return row;
+
+	const health = manager.getConnectionStatus(name);
+	row.health = health;
+	if (health !== "connected") return row;
+	const connection = manager.getConnection(name);
+	if (!connection) return row;
+	const info = connection.serverInfo;
+	if (info?.name) {
+		row.implementationName = info.name;
+		if (info.version) row.implementationVersion = info.version;
+	}
+	if (connection.instructions) row.instructions = connection.instructions;
+	const connectionTools = connection.tools ?? [];
+	const tools =
+		connectionTools.length > 0 ? connectionTools : manager.getTools().filter(tool => tool.mcpServerName === name);
+	row.toolsCount = tools.length;
+	row.tools = mcpCatalog(tools.map(tool => ({ name: tool.name, description: tool.description })));
+	const resources = manager.getServerResources(name);
+	if (resources) row.resourcesCount = resources.resources.length + resources.templates.length;
+	const prompts = manager.getServerPrompts(name);
+	if (prompts) row.promptsCount = prompts.length;
+	return row;
+}
+
+/**
+ * Live session manager accessor. The SDK pins each top-level session's manager
+ * into the process-global slot (`MCPManager.setInstance`), and a session host
+ * child hosts exactly one session — the singleton IS this session's manager.
+ * A missing or stale instance (older agent SDK, disposed session) just means
+ * no live section on the rows.
+ */
+function liveMcpManager(deps: CommandDeps): MCPManager | undefined {
+	try {
+		return deps.mcp.manager.instance();
+	} catch {
+		return undefined;
+	}
+}
+
+/** `mcp-list` payload: user rows first, then project rows (TUI listing order); project shadows user. */
+async function mcpListPayload(cwd: string, deps: CommandDeps): Promise<{ servers: Array<Record<string, unknown>> }> {
+	const userPath = deps.mcp.configPath("user", cwd);
+	const projectPath = deps.mcp.configPath("project", cwd);
+	const [userConfig, projectConfig] = await Promise.all([
+		deps.mcp.config.readMCPConfigFile(userPath),
+		deps.mcp.config.readMCPConfigFile(projectPath),
+	]);
+	const disabledList = new Set(await deps.mcp.config.readDisabledServers(userPath));
+	// The loader's merge order: project entries shadow same-name user entries.
+	const projectNames = new Set(Object.keys(projectConfig.mcpServers ?? {}));
+	const manager = liveMcpManager(deps);
+
+	const servers: Array<Record<string, unknown>> = [];
+	for (const [name, config] of Object.entries(userConfig.mcpServers ?? {})) {
+		servers.push(mcpListServer(name, config, "user", projectNames.has(name), disabledList, manager));
+	}
+	for (const [name, config] of Object.entries(projectConfig.mcpServers ?? {})) {
+		servers.push(mcpListServer(name, config, "project", false, disabledList, manager));
+	}
+	return { servers };
+}
+
+/**
+ * `mcp-test` (TUI ACP `handleTestCommand` parity): one temporary connection to
+ * a configured, enabled server — the live session manager is not touched.
+ * OAuth-backed servers get the session's auth storage so saved credentials
+ * refresh exactly as they do at session start. The connection (and any stdio
+ * subprocess) is always torn down before this returns.
+ */
+async function mcpTestPayload(
+	session: AgentSession,
+	frame: CommandFrame,
+	deps: CommandDeps,
+): Promise<{ name: string; count: number; tools: McpCatalogEntry[] }> {
+	const name = typeof frame.name === "string" ? frame.name.trim() : "";
+	if (!name) throw new Error("mcp-test requires a server name");
+	const cwd = session.sessionManager.getCwd();
+	const userPath = deps.mcp.configPath("user", cwd);
+	const projectPath = deps.mcp.configPath("project", cwd);
+	const [userConfig, projectConfig] = await Promise.all([
+		deps.mcp.config.readMCPConfigFile(userPath),
+		deps.mcp.config.readMCPConfigFile(projectPath),
+	]);
+	const disabledList = new Set(await deps.mcp.config.readDisabledServers(userPath));
+	// Same candidate set as the loader: enabled, non-shadowed entries, project first.
+	const config = projectConfig.mcpServers?.[name] ?? userConfig.mcpServers?.[name];
+	if (!config || config.enabled === false || disabledList.has(name)) {
+		throw new Error(`server "${name}" not found or disabled (see mcp-list)`);
+	}
+
+	let connection: MCPServerConnection | undefined;
+	try {
+		const manager = new deps.mcp.manager(cwd, null);
+		manager.setAuthStorage(session.modelRegistry.authStorage);
+		const resolved = await manager.prepareConfig(config);
+		connection = await deps.mcp.client.connectToServer(name, resolved);
+		const tools = await deps.mcp.client.listTools(connection);
+		return { name, count: tools.length, tools: mcpCatalog(tools) };
+	} finally {
+		if (connection) {
+			try {
+				await deps.mcp.client.disconnectServer(connection);
+			} catch (err) {
+				deps.log.warn(`mcp-test disconnect failed for "${name}": ${errorMessage(err)}`);
+			}
+		}
+	}
+}
+
 /** Run one session command; a throw becomes `{ok:false,error}` on the wire (§4). */
-async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
+export async function executeCommand(session: AgentSession, frame: CommandFrame, deps: CommandDeps, loop: SessionLoop): Promise<unknown> {
 	switch (frame.cmd) {
 		case "get-state":
 			return agentState(session, deps, loop.status());
@@ -638,8 +934,70 @@ async function executeCommand(session: AgentSession, frame: CommandFrame, deps: 
 			// SDK throws bubble (they carry good messages); reply is the post-op state.
 			return { goal: goalState(session) };
 		}
+		case "prompt": {
+			// 0.8.0 `prompt {text}`: a new user turn from outside the collab
+			// channel. Blank (whitespace-only) text is a caller bug, rejected
+			// before the SDK ever sees it.
+			const text = typeof frame.text === "string" ? frame.text : "";
+			if (text.trim() === "") throw new Error("prompt requires non-blank text");
+			const accepted = await session.prompt(text);
+			return { accepted };
+		}
 		case "upload-file":
 			return writeHubUpload(frame.name, frame.dataB64);
+		case "mcp-list":
+			// MCP management (protocol §2 `mcp-*`): config truth joined with the
+			// session's live manager. Config edits apply to NEW sessions; the live
+			// section shows what this session actually loaded at start.
+			return await mcpListPayload(session.sessionManager.getCwd(), deps);
+		case "mcp-add": {
+			const scope = parseMcpScope(frame.scope);
+			const serverName = typeof frame.name === "string" ? frame.name.trim() : "";
+			const config = buildMcpServerConfig(frame);
+			await deps.mcp.config.addMCPServer(deps.mcp.configPath(scope, session.sessionManager.getCwd()), serverName, config);
+			return { name: serverName, scope };
+		}
+		case "mcp-remove": {
+			const scope = parseMcpScope(frame.scope);
+			const serverName = typeof frame.name === "string" ? frame.name.trim() : "";
+			if (!serverName) throw new Error("mcp-remove requires a server name");
+			await deps.mcp.config.removeMCPServer(deps.mcp.configPath(scope, session.sessionManager.getCwd()), serverName);
+			return { name: serverName, scope };
+		}
+		case "mcp-set-enabled": {
+			// TUI `handleEnableDisableCommand` semantics: a project entry is
+			// updated in place, else a user entry, else the user-level
+			// `disabledServers` list (which covers discovered servers with no
+			// writable config entry). The reply names what was touched.
+			const serverName = typeof frame.name === "string" ? frame.name.trim() : "";
+			if (!serverName) throw new Error("mcp-set-enabled requires a server name");
+			if (typeof frame.enabled !== "boolean") throw new Error("mcp-set-enabled requires a boolean enabled");
+			const cwd = session.sessionManager.getCwd();
+			const userPath = deps.mcp.configPath("user", cwd);
+			const projectPath = deps.mcp.configPath("project", cwd);
+			const [userConfig, projectConfig] = await Promise.all([
+				deps.mcp.config.readMCPConfigFile(userPath),
+				deps.mcp.config.readMCPConfigFile(projectPath),
+			]);
+			const projectEntry = projectConfig.mcpServers?.[serverName];
+			if (projectEntry) {
+				await deps.mcp.config.updateMCPServer(projectPath, serverName, { ...projectEntry, enabled: frame.enabled });
+				return { name: serverName, enabled: frame.enabled, where: "project" };
+			}
+			const userEntry = userConfig.mcpServers?.[serverName];
+			if (userEntry) {
+				await deps.mcp.config.updateMCPServer(userPath, serverName, { ...userEntry, enabled: frame.enabled });
+				return { name: serverName, enabled: frame.enabled, where: "user" };
+			}
+			const disabledList = await deps.mcp.config.readDisabledServers(userPath);
+			if (!frame.enabled || disabledList.includes(serverName)) {
+				await deps.mcp.config.setServerDisabled(userPath, serverName, !frame.enabled);
+				return { name: serverName, enabled: frame.enabled, where: "disabled-list" };
+			}
+			throw new Error(`server "${serverName}" not found in user or project config`);
+		}
+		case "mcp-test":
+			return await mcpTestPayload(session, frame, deps);
 		case "set-extended-context": {
 			if (frame.enabled !== undefined && typeof frame.enabled !== "boolean") {
 				throw new Error("set-extended-context requires a boolean enabled");
@@ -715,6 +1073,25 @@ for (const method of ["log", "info", "debug"] as const) {
 
 const REQUIRED_CONFIG_KEYS = ["id", "cwd", "relayUrl"] as const;
 
+/** `tools` whitelist (protocol §2 `start.tools`): an array of non-empty strings.
+ * Trimmed + deduped (first-seen order); anything else is a daemon bug that must
+ * fail the start, not silently widen or empty the tool set. */
+function parseTools(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.length === 0 || value.some(name => typeof name !== "string" || name.trim() === "")) {
+		throw new Error("--config.tools must be a non-empty array of non-empty strings");
+	}
+	const seen: Record<string, true> = {};
+	const tools: string[] = [];
+	for (const raw of value as string[]) {
+		const name = raw.trim();
+		if (seen[name]) continue;
+		seen[name] = true;
+		tools.push(name);
+	}
+	return tools;
+}
+
 function parseConfig(argv: string[]): HostConfig {
 	let raw: string | undefined;
 	for (let index = 0; index < argv.length; index++) {
@@ -754,6 +1131,8 @@ function parseConfig(argv: string[]): HostConfig {
 		relayUrl: config.relayUrl as string,
 		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
 		agentDir: optional("agentDir"),
+		superagent: config.superagent === true,
+		tools: parseTools(config.tools),
 	};
 }
 
@@ -774,6 +1153,12 @@ async function run(): Promise<void> {
 
 	const decoder = new TextDecoder();
 	let stdinBuffer = "";
+	// 0.8.0 fleet IPC: a superagent session proxies hub calls to the parent via
+	// `fleet-req`; the parent's `fleet-res` frames correlate by reqId. Created
+	// before the stdin handler is installed so early replies are never dropped.
+	const fleetClient =
+		config.superagent === true ? createFleetClient(line => rawStdoutWrite(`${line}\n`), log) : undefined;
+
 	// Commands are answered only once the session exists (`ready`); earlier frames
 	// get a plain `{ok:false}` rather than silence — the parent waits on exactly
 	// one `cmd-result` per request.
@@ -789,10 +1174,13 @@ async function run(): Promise<void> {
 			log.warn(`ignoring non-JSON stdin line: ${line}`);
 			return;
 		}
-		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown };
+		const frame = (parsed ?? {}) as Partial<CommandFrame> | { t: "stop"; reason?: unknown } | { t: "fleet-res" };
 		switch (frame.t) {
 			case "stop":
 				requestStop(typeof frame.reason === "string" ? frame.reason : "stop");
+				return;
+			case "fleet-res":
+				fleetClient?.handleFrame(frame);
 				return;
 			case "cmd": {
 				// Pass every parameter through: per-command validation lives in
@@ -847,6 +1235,10 @@ async function run(): Promise<void> {
 	const { computeSessionContextBreakdown } = await import("@oh-my-pi/pi-coding-agent/session/context-usage-runtime");
 	const { COMPACT_MODES } = await import("@oh-my-pi/pi-coding-agent/session/compact-modes");
 	const { evaluateLoopCondition } = await import("@oh-my-pi/pi-coding-agent/modes/loop-condition");
+	const mcpConfig = await import("@oh-my-pi/pi-coding-agent/mcp/config-writer");
+	const mcpClient = await import("@oh-my-pi/pi-coding-agent/mcp/client");
+	const { MCPManager } = await import("@oh-my-pi/pi-coding-agent/mcp/manager");
+	const { getMCPConfigPath } = await import("@oh-my-pi/pi-utils");
 	const { cfgExtendedContext } = await import("@oh-my-pi/pi-coding-agent/session/context-settings");
 	const { cfgCollabDisplayName } = await import("@oh-my-pi/pi-coding-agent/collab/settings");
 	const { cfgLoopConditionTimeoutMs } = await import("@oh-my-pi/pi-coding-agent/modes/settings");
@@ -858,6 +1250,7 @@ async function run(): Promise<void> {
 		computeSessionContextBreakdown,
 		compactModes: COMPACT_MODES,
 		evaluateLoopCondition,
+		mcp: { config: mcpConfig, client: mcpClient, manager: MCPManager, configPath: getMCPConfigPath },
 		cfgExtendedContext,
 		log,
 	};
@@ -887,6 +1280,14 @@ async function run(): Promise<void> {
 		hasUI: false,
 		interactivePrompts: true,
 		autoApprove: true,
+		// 0.8.0: superagent sessions register the fleet tools (hub calls proxied
+		// through the parent); plain sessions see none of them.
+		...(fleetClient ? { customTools: buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) } : {}),
+		// 0.9.0: an explicit whitelist replaces the whole tool set —
+		// `restrictToolNames` also keeps discovered extras (extensions, MCP,
+		// ambient custom tools) out of the schema. Fleet tools are custom tools,
+		// so a superagent whitelist deliberately excludes them.
+		...(config.tools ? { toolNames: config.tools, restrictToolNames: true } : {}),
 	});
 
 	await initTheme().catch(err => log.warn(`theme init failed: ${errorMessage(err)}`));

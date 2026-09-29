@@ -31,6 +31,10 @@ export interface SessionRecord {
 	name: string;
 	/** Named omp profile the session runs under; absent means the default profile. */
 	profile?: string;
+	/** Fleet-operator session (protocol §4 fleet-req); set at start, never minted by the fleet itself. */
+	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
+	tools?: string[];
 	status: SessionStatus;
 	startedAt: number;
 	exitedAt?: number;
@@ -49,6 +53,10 @@ export interface CreateSessionInput {
 	cwd: string;
 	name?: string;
 	profile?: string;
+	/** Marks the started session a fleet operator (protocol §2 `start.superagent`). */
+	superagent?: true;
+	/** Callable-tool whitelist (protocol §2 `start.tools`); pre-validated by the API layer. */
+	tools?: string[];
 }
 
 export interface SessionReadyInput {
@@ -89,6 +97,8 @@ export class SessionStore {
 			cwd: input.cwd,
 			name: input.name?.trim() || path.basename(input.cwd) || input.cwd,
 			...(input.profile ? { profile: input.profile } : {}),
+			...(input.superagent ? { superagent: true as const } : {}),
+			...(input.tools ? { tools: input.tools } : {}),
 			status: "starting",
 			startedAt: Date.now(),
 		};
@@ -185,6 +195,29 @@ export class SessionStore {
 		record.exitedAt = Date.now();
 		record.activity = undefined;
 		if (reason) record.exitReason = reason;
+		return record;
+	}
+
+	/**
+	 * Daemon-restart recovery (protocol §2 `restart-daemon`): flips a terminal
+	 * record back to `starting` so the hub can re-issue a `start` under the SAME
+	 * id, keeping panel pages and links stable. Identity fields (cwd, name,
+	 * profile, sessionFile, superagent) survive; volatile child state (links,
+	 * pid, activity, exit fields) clears and refills from `session-ready`.
+	 * `startedAt` deliberately stays: the reconcile watermark (`startedAt <
+	 * connectedAt`) must keep treating the resumed record as pre-connection, so
+	 * later heartbeats still retire it if the resumed child dies quietly.
+	 */
+	reissue(id: string): SessionRecord | undefined {
+		const record = this.#sessions.get(id);
+		if (!record || !record.sessionFile) return record;
+		record.status = "starting";
+		record.links = undefined;
+		record.pid = undefined;
+		record.activity = undefined;
+		record.exitedAt = undefined;
+		record.exitReason = undefined;
+		record.error = undefined;
 		return record;
 	}
 

@@ -32,6 +32,10 @@ export interface SessionConfig {
 	profile?: string;
 	/** Resume an existing omp session file instead of minting a new one. */
 	sessionFile?: string;
+	/** 0.8.0: fleet-operator session — the child registers fleet tools; its `fleet-req` frames are proxied. */
+	superagent?: true;
+	/** 0.9.0: callable-tool whitelist (protocol §2 `start.tools`); the child restricts the SDK session to it. */
+	tools?: string[];
 	relayUrl: string;
 	webUrl: string;
 	agentDir?: string;
@@ -92,6 +96,13 @@ export interface SupervisorOptions {
 	hostEntry?: string;
 	/** omp profiles root for existence checks; defaults to `~/$PI_CONFIG_DIR|.omp/profiles`. */
 	profilesRoot?: string;
+	/**
+	 * 0.8.0 fleet proxy: answers a superagent child's `fleet-req` frames against
+	 * the hub API. Non-superagent children never reach it.
+	 */
+	fleet?: (req: { reqId: string; method: string; path: string; body?: unknown }) => Promise<
+		{ ok: true; status: number; body?: unknown } | { ok: false; error: string }
+	>;
 }
 
 /** Child must exit within 10 s of stop; escalate to SIGKILL after that (protocol §4). */
@@ -121,6 +132,8 @@ export class Supervisor {
 	#hostEntry: string;
 	/** omp profiles root backing profile existence checks. */
 	#profilesRoot: string;
+	/** Fleet proxy handler for superagent children (protocol 0.8.0). */
+	#fleet: SupervisorOptions["fleet"];
 	/** In-flight `cmd` requests keyed by reqId (protocol §4). */
 	#pending = new Map<string, PendingCommand>();
 
@@ -129,6 +142,7 @@ export class Supervisor {
 		this.#log = log;
 		this.#hostEntry = options.hostEntry ?? new URL("./session-host.ts", import.meta.url).pathname;
 		this.#profilesRoot = options.profilesRoot ?? defaultProfilesRoot();
+		this.#fleet = options.fleet;
 	}
 
 	/** Sessions occupying a slot (starting or live). */
@@ -401,6 +415,39 @@ export class Supervisor {
 					const error = typeof frame.error === "string" ? frame.error : "session command failed";
 					pending.resolve({ ok: false, error });
 				}
+				return;
+			}
+			case "fleet-req": {
+				// Answered exactly once (protocol 0.8.0 §4): refusal, handler
+				// result, or handler throw — never silence.
+				const reqId = typeof frame.reqId === "string" ? frame.reqId : "";
+				const reply = (res: Record<string, unknown>): void => {
+					try {
+						record.child.stdin.write(`${JSON.stringify({ t: "fleet-res", reqId, ...res })}\n`);
+						void Promise.resolve(record.child.stdin.flush()).catch(() => {});
+					} catch {
+						// Child is gone; there is nobody left to answer.
+					}
+				};
+				if (record.config.superagent !== true) {
+					reply({ ok: false, error: "fleet: not a superagent session" });
+					return;
+				}
+				const request = {
+					reqId,
+					method: typeof frame.method === "string" ? frame.method : "",
+					path: typeof frame.path === "string" ? frame.path : "",
+					...(frame.body === undefined ? {} : { body: frame.body }),
+				};
+				void (async () => {
+					try {
+						const result =
+							(await this.#fleet?.(request)) ?? { ok: false as const, error: "fleet: no proxy configured" };
+						reply(result);
+					} catch (err) {
+						reply({ ok: false, error: errorMessage(err) });
+					}
+				})();
 				return;
 			}
 			default:
