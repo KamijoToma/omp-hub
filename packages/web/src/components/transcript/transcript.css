@@ -17,6 +17,41 @@
 	color: var(--fg);
 }
 
+.tr-mode-bar {
+	position: sticky;
+	top: 0;
+	z-index: 3;
+	display: flex;
+	flex: none;
+	justify-content: flex-end;
+	margin: -14px -16px 0;
+	padding: 8px 16px 4px;
+	background: var(--bg);
+	border-bottom: 1px solid var(--border);
+}
+
+.tr-mode-switch {
+	min-height: 34px;
+	padding: 5px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-raised);
+	color: var(--fg-muted);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.tr-mode-switch[aria-pressed="true"] {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.tr-mode-switch:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
 .tr-history {
 	align-self: center;
 	flex: none;
@@ -146,6 +181,24 @@
 	border-color: color-mix(in oklch, var(--accent) 26%, var(--border));
 }
 
+/* Body-only turns contain answer text and exactly one muted work summary. */
+.tr-turn--body {
+	gap: 4px;
+}
+
+.tr-footnote {
+	max-width: 100%;
+	color: var(--fg-faint);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	overflow-wrap: anywhere;
+}
+
+.tr-turn--body:hover > .tr-rewind,
+.tr-turn--body > .tr-rewind:focus-visible {
+	opacity: 1;
+}
+
 /* ---- message rows inside cards ---- */
 
 .tr-msg {
@@ -227,7 +280,17 @@
 	.tr-msg:has(> .tr-rewind) {
 		padding-right: 30px;
 	}
+	.tr-turn--body > .tr-rewind {
+		opacity: 1;
+		width: 44px;
+		height: 44px;
+	}
+
+	.tr-turn--body:has(> .tr-rewind) {
+		padding-right: 48px;
+	}
 }
+
 
 .tr-text {
 	white-space: pre-wrap;
@@ -785,6 +848,15 @@
 		padding: 10px 10px 16px;
 		padding-bottom: max(16px, env(safe-area-inset-bottom));
 	}
+	.tr-mode-bar {
+		margin: -10px -10px 0;
+		padding: 5px 10px;
+	}
+
+	.tr-mode-switch {
+		min-height: 44px;
+	}
+
 	.tr-turn {
 		padding: 8px 10px;
 	}

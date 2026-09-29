@@ -8,6 +8,7 @@ import { useState } from "react";
 import type { Notice } from "../lib/client";
 import { useThemePreference, type ThemePreference } from "../lib/theme";
 import { STATS_METRICS, toggleStatsMetric, useStatsPrefs } from "../lib/stats-prefs";
+import { setTranscriptMode, useTranscriptMode } from "../lib/transcript-mode";
 import { DEFAULT_DISPLAY_NAME, getDisplayName, setDisplayName, type SessionRecord } from "./api";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { showAllSessions, useHiddenSessions } from "./hidden-sessions";
@@ -125,6 +126,7 @@ export function SettingsModal({ sessionId, initialSection, notify, onLogout, onC
 	const timeMode = useSessionTimeMode();
 	const hidden = useHiddenSessions();
 	const visibleStats = useStatsPrefs();
+	const transcriptMode = useTranscriptMode();
 	const subview = view === "model" || view === "thinking" || view === "advanced";
 
 	const toggleNotification = (kind: "alerts" | "completions"): void => {
@@ -211,6 +213,14 @@ export function SettingsModal({ sessionId, initialSection, notify, onLogout, onC
 							<span className="hb-modal-value">{hidden.size} hidden session{hidden.size === 1 ? "" : "s"} in this browser</span>
 							<button type="button" className="sh-btn" disabled={hidden.size === 0} onClick={showAllSessions}>Show all</button>
 						</div>
+					</section>
+					<section className="hb-modal-section">
+						<h3 className="hb-card-title">Transcript</h3>
+						<label className="hb-settings-choice">
+							<input type="checkbox" checked={transcriptMode === "body"} onChange={e => setTranscriptMode(e.target.checked ? "body" : "full")} />
+							<span>Only show model answers</span>
+						</label>
+						<p className="hb-card-note">Hide thinking, tool details and transcript metadata. Each answer shows an approximate model-request time and tool count. Applies to /join and subagents too.</p>
 					</section>
 					<section className="hb-modal-section">
 						<h3 className="hb-card-title">Session stats bar</h3>
