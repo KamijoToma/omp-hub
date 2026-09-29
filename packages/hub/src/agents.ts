@@ -338,6 +338,20 @@ function num(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** `x.y.z` triple of a daemon version; null for unknown or test-only versions. */
+export function versionTriple(version: string): [number, number, number] | null {
+	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+	if (!match) return null;
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Old daemons still proxy unrestricted /api/* fleet requests and are unsafe as operators. */
+export function supportsFleetNamespace(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 12));
+}
+
 function parseLinks(value: unknown): SessionLinks | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const raw = value as Frame;
@@ -926,6 +940,10 @@ export class AgentRegistry {
 			const record = this.#sessions.get(id);
 			if (!record?.sessionFile) continue;
 			if (statuses.get(id) !== undefined) continue;
+			if (record.superagent && (!record.namespaceId || !supportsFleetNamespace(conn.version))) {
+				log.warn(`machine ${conn.machineId}: refusing to resume scoped operator ${id} on an incompatible daemon`);
+				continue;
+			}
 			const fresh = this.#sessions.reissue(id);
 			if (!fresh?.sessionFile) continue;
 			const sent = this.send(conn.machineId, {

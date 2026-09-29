@@ -43,6 +43,7 @@ function record(id: string, activity?: SessionRecord["activity"]): SessionRecord
 	return {
 		id, machineId: "machine", machineName: "machine", cwd: "/tmp", name: id,
 		status: "live", startedAt: 1,
+		namespaceId: null, membershipVersion: 0,
 		links: { full: `link-${id}`, view: "", web: "", webView: "" },
 		activity,
 	};

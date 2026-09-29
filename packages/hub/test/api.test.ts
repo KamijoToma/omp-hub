@@ -352,6 +352,8 @@ describe("hub api", () => {
 		const retry = await agent.wait((frame) => (frame.t === "start" ? frame : undefined), "retry start frame");
 		expect(retry).toMatchObject({ id: session.id, cwd: "/nope" });
 		expect(retry.sessionFile).toBeUndefined(); // nothing to resume
+		agent.ws.send(JSON.stringify({ t: "session-error", id: session.id, error: "cwd still missing" }));
+		await waitForStatus(session.id, "failed");
 
 		// Offline: disconnect the agent; the terminal record stays, restart refuses.
 		agent.ws.close();

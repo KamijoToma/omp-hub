@@ -2,7 +2,7 @@
  * HTTP API (docs/protocol.md §3): machine/session registry for the web UI.
  * Everything except `/api/health` requires `Authorization: Bearer <HUB_TOKEN>`.
  */
-import { newCmdReqId, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
+import { newCmdReqId, supportsFleetNamespace, versionTriple, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import { FleetMoveInProgressError, type FleetEvent, type FleetState } from "./fleet-state";
 import { log } from "./log";
@@ -697,13 +697,6 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** First release whose agent starts per-profile stats dashboards (protocol 0.5.0). */
 const PROFILE_RELAY_VERSION: readonly [number, number, number] = [0, 5, 0];
 
-/** `x.y.z` triple of an agent version string; null when unparsable ("unknown", "test"). */
-function versionTriple(version: string): [number, number, number] | null {
-	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-	if (!match) return null;
-	return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
 function supportsProfileRelay(version: string | null): boolean {
 	if (version === null) return false;
 	const triple = versionTriple(version);
@@ -713,13 +706,6 @@ function supportsProfileRelay(version: string | null): boolean {
 		: triple[1] !== PROFILE_RELAY_VERSION[1]
 			? triple[1] > PROFILE_RELAY_VERSION[1]
 			: triple[2] >= PROFILE_RELAY_VERSION[2];
-}
-
-/** Old daemons still proxy unrestricted /api/* fleet requests and are unsafe as operators. */
-function supportsFleetNamespace(version: string | null): boolean {
-	if (version === null) return false;
-	const triple = versionTriple(version);
-	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 12));
 }
 
 async function usageProxy(machineId: string, rest: string, search: string, req: Request, ctx: ApiContext): Promise<Response> {

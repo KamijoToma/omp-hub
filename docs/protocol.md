@@ -634,6 +634,9 @@ interface SessionListing {
   refused with `session-error` `"daemon is restarting"`. Older daemons answer
   `ok:false, "unknown machine command: restart-daemon"` (the hub surfaces 400). Code updates only:
   dependency changes still need a manual install on the machine before restarting.
+  A namespace-scoped superagent is not reissued if detached or if the replacement daemon
+  reports a version older than 0.12.0; its record remains exited rather than running
+  under the legacy unrestricted proxy.
 - `search-sessions` → `data: { results: SessionSearchHit[] }`: case-insensitive prompt/assistant
   text search over session files, powering the hub web's session filter boxes. `query` is required
   (trimmed, ≤ 256 chars) and matched against the text content of `user`/`assistant` message entries
