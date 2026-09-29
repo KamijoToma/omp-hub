@@ -8,9 +8,13 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Toasts } from "./components/shell/Toasts";
 import GuestApp from "./guest/app";
 import { clearToken, getToken } from "./hub/api";
 import { HomePage } from "./hub/HomePage";
+import { SettingsModal } from "./hub/SettingsModal";
+import { useAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./hub/session-alerts";
+import { pushToast, useLocalToasts } from "./hub/toasts";
 import "./hub/highlight";
 import { SessionPage } from "./hub/SessionPage";
 import { TokenGate } from "./hub/TokenGate";
@@ -47,9 +51,26 @@ function NoticeToasts(): ReactNode {
 	return null;
 }
 
+/** Home and usage have no collab surface to render their local notices. */
+function PageToasts(): ReactNode {
+	return <Toasts notices={useLocalToasts()} />;
+}
+
+/** One registry alert watcher across authenticated pages, including the home page. */
+function HubAlerts({ currentId }: { currentId: string }): ReactNode {
+	const enabled = useAlertsEnabled();
+	const completions = useCompletionsEnabled();
+	useSessionAlerts({ enabled, completions, currentId, notify: pushToast });
+	return null;
+}
+
 function Shell(): ReactNode {
 	const route = useRoute();
 	const [token, setToken] = useState<string | null>(() => getToken());
+	const [settingsSection, setSettingsSection] = useState<"browser" | "session" | null>(null);
+	const routeKey = route.kind === "session" ? `s/${route.id}` : route.kind;
+
+	useEffect(() => setSettingsSection(null), [routeKey]);
 
 	// Unknown paths fall back to the hub home.
 	useEffect(() => {
@@ -62,6 +83,7 @@ function Shell(): ReactNode {
 
 	const logout = useCallback((): void => {
 		clearToken();
+		setSettingsSection(null);
 		setToken(null);
 		navigate("/", true);
 	}, []);
@@ -69,25 +91,29 @@ function Shell(): ReactNode {
 	if (route.kind === "unknown") return null;
 	if (route.kind === "join") return <GuestApp />;
 	if (!token) return <TokenGate onReady={setToken} />;
-	// Token-authenticated hub pages also watch the hub notice channel for toasts.
-	if (route.kind === "session")
-		return (
-			<>
-				<SessionPage id={route.id} />
-				<NoticeToasts />
-			</>
-		);
-	if (route.kind === "usage")
-		return (
-			<>
-				<UsagePage machineId={route.machineId} />
-				<NoticeToasts />
-			</>
-		);
+	// Keep the alert watcher mounted across home/session/usage navigation.
 	return (
 		<>
-			<HomePage onLogout={logout} />
+			<HubAlerts currentId={route.kind === "session" ? route.id : ""} />
+			{route.kind === "session" ? (
+				<SessionPage id={route.id} onOpenSettings={setSettingsSection} />
+			) : route.kind === "usage" ? (
+				<UsagePage machineId={route.machineId} />
+			) : (
+				<HomePage onLogout={logout} onOpenSettings={() => setSettingsSection("browser")} />
+			)}
 			<NoticeToasts />
+			{route.kind !== "session" && <PageToasts />}
+			{settingsSection !== null && (
+				<SettingsModal
+					key={routeKey}
+					sessionId={route.kind === "session" ? route.id : undefined}
+					initialSection={settingsSection}
+					notify={pushToast}
+					onLogout={logout}
+					onClose={() => setSettingsSection(null)}
+				/>
+			)}
 		</>
 	);
 }

@@ -129,6 +129,20 @@ Hub additions:
   snapshot. Older agents send their usual full snapshot until upgraded.
 - Display name: profile name input on the token gate, stored
   `localStorage["omp-hub.name"]`, default `"guest"`.
+- Authenticated hub pages share one settings center (`SettingsModal`): the home
+  header and session rail/switcher open browser preferences; `/settings` opens
+  the live session controls in the same dialog. Browser options reuse their
+  existing localStorage stores, while model/thinking and the SDK's allowlisted
+  settings stay tied to the current live session. The dialog becomes a
+  scrollable bottom sheet on phones; the unauthenticated `/join` page has no
+  hub-settings entry.
+- `HubAlerts` stays mounted across authenticated routes and consumes the shared
+  sessions-store poll; session rail and dialog notification toggles subscribe
+  to the same browser-local preference. Home/usage and session status cards
+  render local alert toasts when no collab surface exists.
+- Hub startup variables and daemon CLI flags are deployment configuration, not
+  writable browser preferences. Logging out only removes the browser's saved
+  bearer token; changing the server token still requires operator deployment.
 
 ## Security model (MVP)
 

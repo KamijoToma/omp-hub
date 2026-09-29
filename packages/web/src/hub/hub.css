@@ -506,6 +506,18 @@
 	.hb-page .sh-btn-label {
 		display: inline;
 	}
+	/* Keep the three header controls usable on 320px screens. */
+	.hb-top-actions {
+		gap: 4px;
+	}
+	.hb-top-actions .sh-btn {
+		justify-content: center;
+		width: 40px;
+		padding: 0;
+	}
+	.hb-top-actions .sh-btn-label {
+		display: none;
+	}
 	.hb-machine-id {
 		display: none;
 	}
@@ -790,6 +802,82 @@
 	line-height: 1.4;
 	color: var(--err);
 	overflow-wrap: anywhere;
+}
+
+/* Settings center: one scrollable dialog on desktop and a thumb-sized sheet on phones. */
+.hb-settings-tabs {
+	position: sticky;
+	top: -12px;
+	z-index: 1;
+	display: flex;
+	gap: 8px;
+	margin: -12px -12px 0;
+	padding: 12px;
+	background: var(--bg-raised);
+	border-bottom: 1px solid var(--border);
+}
+
+.hb-settings-tabs .sh-btn {
+	flex: 1;
+	justify-content: center;
+}
+
+.hb-settings-field {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.hb-settings-field .sh-input {
+	max-width: 170px;
+	min-width: 0;
+}
+
+.hb-settings-choice {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 36px;
+	padding: 6px 8px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	cursor: pointer;
+}
+
+.hb-settings-choice input {
+	flex: none;
+	accent-color: var(--accent);
+}
+
+.hb-settings-name .sh-input {
+	flex: 1;
+	min-width: 0;
+}
+
+.hb-settings-stats {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 6px;
+}
+
+.hb-settings-stats .hb-settings-choice {
+	min-width: 0;
+}
+
+@media (max-width: 640px) {
+	.hb-settings-tabs .sh-btn,
+	.hb-settings-choice {
+		min-height: 44px;
+	}
+
+	.hb-settings-stats {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.hb-modal {
+		max-height: min(88vh, 88dvh);
+	}
 }
 
 /* ---- settings: advanced view ---- */
@@ -2045,6 +2133,10 @@
 	background: var(--bg-raised);
 }
 
+.hb-rail-settings {
+	margin-bottom: 0;
+}
+
 .hb-rail-backdrop {
 	display: none;
 }
@@ -2412,7 +2504,8 @@
 		left: 0;
 		top: 0;
 		bottom: 0;
-		z-index: 30;
+		/* The open picker must remain usable above a reconnecting session banner. */
+		z-index: 52;
 		max-width: 85vw;
 		border-right: 1px solid var(--border-strong);
 		box-shadow: var(--rail-mobile-shadow);
@@ -2444,6 +2537,26 @@
 		width: auto;
 		min-width: 40px;
 		padding: 0 10px;
+	}
+
+	.hb-rail-toggle,
+	.hb-rail-home {
+		min-height: 40px;
+		margin-right: 2px;
+		margin-left: 2px;
+	}
+
+	.hb-nav-head {
+		gap: 4px;
+		padding: 8px;
+	}
+
+	.hb-nav-head .sh-btn {
+		flex: none;
+		width: 40px;
+		justify-content: center;
+		padding-right: 0;
+		padding-left: 0;
 	}
 
 	.hb-nav-body .sh-input {

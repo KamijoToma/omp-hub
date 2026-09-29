@@ -4,7 +4,7 @@
  * persists, and `sessionActivityTime` falls back activity → exit → start.
  */
 import { describe, expect, test } from "bun:test";
-import { parseStoredMode, sessionActivityTime, toggleSessionTimeMode } from "../src/hub/session-time-mode";
+import { parseStoredMode, sessionActivityTime, setSessionTimeMode, toggleSessionTimeMode } from "../src/hub/session-time-mode";
 
 // Installed before any toggle; module-level load() already ran, which is the
 // same default a fresh page gets.
@@ -33,6 +33,13 @@ describe("session time mode", () => {
 	test("toggle flips and persists for every consumer", () => {
 		expect(backing.get(KEY)).toBeUndefined();
 		toggleSessionTimeMode();
+		expect(backing.get(KEY)).toBe("activity");
+		toggleSessionTimeMode();
+		expect(backing.get(KEY)).toBe("created");
+	});
+
+	test("settings selection and rail shortcut share the same timestamp mode", () => {
+		setSessionTimeMode("activity");
 		expect(backing.get(KEY)).toBe("activity");
 		toggleSessionTimeMode();
 		expect(backing.get(KEY)).toBe("created");

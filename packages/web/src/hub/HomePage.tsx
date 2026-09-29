@@ -1,22 +1,21 @@
 /**
  * Hub home: machines, start-session form, session list.
  *
- * Machines and sessions are polled every 2 s while the page is mounted (the hub
- * keeps no push channel for the registry); a poll failure is surfaced in a
- * banner but never clears the last good rows.
+ * Machines use a 2 s poll; sessions share the authenticated shell's registry
+ * store with alerts and the rail. Poll errors retain the last good rows.
  */
-import { Activity, ChevronDown, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Square, X } from "lucide-react";
+import { Activity, ChevronDown, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Settings2, Square, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
+import { useSessions } from "./sessions-store";
 import type { MachineRecord, MachineSession, SessionRecord, SessionStatus } from "./api";
 import { TOOL_CATALOG } from "./tool-catalog";
 import {
 	errorText,
 	getMachineSessions,
 	getMachines,
-	getSessions,
 	listMachineProfiles,
 	restartDaemon,
 	startSession,
@@ -30,6 +29,7 @@ import { navigate } from "./router";
 import { Modal } from "./Modal";
 
 const POLL_MS = 2000;
+const EMPTY_SESSIONS: readonly SessionRecord[] = [];
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
 	starting: "starting",
@@ -43,11 +43,13 @@ const tempDirFor = (machine: MachineRecord | undefined): string => machine?.tmpd
 
 export interface HomePageProps {
 	onLogout(): void;
+	onOpenSettings(): void;
 }
 
-export function HomePage({ onLogout }: HomePageProps): ReactNode {
+export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode {
 	const [machines, setMachines] = useState<MachineRecord[]>([]);
-	const [sessions, setSessions] = useState<SessionRecord[]>([]);
+	const { sessions: polledSessions, error: sessionsError } = useSessions();
+	const sessions = polledSessions ?? EMPTY_SESSIONS;
 	const [error, setError] = useState<string | null>(null);
 	const [machineId, setMachineId] = useState("");
 	/** Machine awaiting restart confirmation; null renders no dialog. */
@@ -75,10 +77,9 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 		let cancelled = false;
 		const tick = async (): Promise<void> => {
 			try {
-				const [nextMachines, nextSessions] = await Promise.all([getMachines(), getSessions()]);
+				const nextMachines = await getMachines();
 				if (cancelled) return;
 				setMachines(nextMachines);
-				setSessions(nextSessions);
 				setError(null);
 			} catch (err) {
 				if (!cancelled) setError(errorText(err));
@@ -278,16 +279,20 @@ export function HomePage({ onLogout }: HomePageProps): ReactNode {
 				</div>
 				<div className="hb-top-actions">
 					<ThemeToggle />
-					<button type="button" className="sh-btn" onClick={onLogout}>
+					<button type="button" className="sh-btn hb-settings-entry" onClick={onOpenSettings} aria-label="omp-hub settings">
+						<Settings2 size={14} aria-hidden="true" />
+						<span className="sh-btn-label">Settings</span>
+					</button>
+					<button type="button" className="sh-btn" onClick={onLogout} aria-label="Logout">
 						<LogOut size={14} aria-hidden="true" />
 						<span className="sh-btn-label">Logout</span>
 					</button>
 				</div>
 			</header>
 
-			{error && (
+			{(error || sessionsError) && (
 				<div className="hb-banner" role="alert">
-					{error}
+					{error || sessionsError}
 				</div>
 			)}
 

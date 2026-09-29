@@ -13,19 +13,26 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
+import { Toasts } from "../components/shell/Toasts";
 import { errorText, getDisplayName, restartSession, type SessionRecord } from "./api";
-import { pushToast } from "./toasts";
+import { pushToast, useLocalToasts } from "./toasts";
 import { relTime } from "../lib/format";
 import { navigate } from "./router";
 import { sessionsStore, useSessionRecord } from "./sessions-store";
 import { SessionRail, SessionSwitcherModal } from "./SessionRail";
 import { steerPendingCount } from "./steering-queue";
-import { alertsEnabled, requestAlertPermission, setAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./session-alerts";
+import { requestAlertPermission, setAlertsEnabled, useAlertsEnabled } from "./session-alerts";
 import { clearCompletedSession, useCompletedSessionTracker } from "./rail-completion";
 import { SessionView } from "./SessionView";
 
 export interface SessionPageProps {
 	id: string;
+	onOpenSettings(section: "browser" | "session"): void;
+}
+
+/** Status cards have no collab surface to render settings/alert feedback. */
+function StatusToasts(): ReactNode {
+	return <Toasts notices={useLocalToasts()} />;
 }
 
 /** localStorage flag behind the rail's expanded/collapsed state (`"1"` = expanded). */
@@ -151,7 +158,7 @@ function SessionStatusCard({ id, record, loadError, onHome }: { id: string; reco
 	);
 }
 
-export function SessionPage({ id }: SessionPageProps): ReactNode {
+export function SessionPage({ id, onOpenSettings }: SessionPageProps): ReactNode {
 	const { record, error: loadError } = useSessionRecord(id);
 	const displayName = useRef(getDisplayName()).current;
 
@@ -243,12 +250,11 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 	useCompletedSessionTracker(id);
 	useEffect(() => clearCompletedSession(id), [id]);
 
-	// Cross-session alerts off the shared registry poll (bell lives in the rail).
-	const [alertsOn, setAlertsOn] = useState(alertsEnabled);
+	// The rail bell and the settings center share one reactive browser preference.
+	const alertsOn = useAlertsEnabled();
 	const toggleAlerts = useCallback((): void => {
 		const next = !alertsOn;
 		setAlertsEnabled(next);
-		setAlertsOn(next);
 		if (!next) return;
 		void requestAlertPermission().then(permission => {
 			if (permission === "granted") pushToast("info", "session alerts on");
@@ -256,10 +262,6 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 			else pushToast("warning", "alerts on — notifications blocked, using toasts and the tab title");
 		});
 	}, [alertsOn]);
-	// Completion notices ride the same registry diff with their own toggle
-	// (settings dialog), independent of the rail bell.
-	const completionsOn = useCompletionsEnabled();
-	useSessionAlerts({ enabled: alertsOn, completions: completionsOn, currentId: id, notify: pushToast });
 
 	return (
 		<div className="hb-frame">
@@ -271,6 +273,7 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 				onSwitch={switchSession}
 				alertsOn={alertsOn}
 				onToggleAlerts={toggleAlerts}
+				onOpenSettings={() => onOpenSettings("browser")}
 			/>
 			<div className="hb-frame-main">
 				{live !== null && live.links ? (
@@ -283,15 +286,23 @@ export function SessionPage({ id }: SessionPageProps): ReactNode {
 						registryLive={record?.status === "live"}
 						onLeave={leave}
 						onOpenSwitcher={() => setSwitcherOpen(true)}
+						onOpenSettings={() => onOpenSettings("session")}
 					/>
 				) : (
-					<SessionStatusCard id={id} record={record} loadError={loadError} onHome={leave} />
+					<>
+						<SessionStatusCard id={id} record={record} loadError={loadError} onHome={leave} />
+						<StatusToasts />
+					</>
 				)}
 			</div>
 			{switcherOpen && (
 				<SessionSwitcherModal
 					currentId={id}
 					onSwitch={switchSession}
+					onOpenSettings={() => {
+						setSwitcherOpen(false);
+						onOpenSettings("browser");
+					}}
 					onClose={() => setSwitcherOpen(false)}
 					onDeleted={session => {
 						// Deleting the attached session leaves the page.
