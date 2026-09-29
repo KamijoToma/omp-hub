@@ -441,26 +441,13 @@ export class AgentRegistry {
 		if (!conn || conn.ws !== ws) return;
 		this.#connections.delete(machineId);
 		this.#failPending(machineId, "agent disconnected");
+		const plan = this.#armResumePlan(machineId);
 		const machine = this.#machines.get(machineId);
-		// An accepted daemon restart ends in this disconnect: convert the flag
-		// into a resume plan snapshot of exactly the sessions alive right now
-		// (children that already exited via `stop` keep their own terminal state).
-		const upgrading = machine?.restartingSince !== undefined;
-		if (machine && upgrading) {
-			machine.restartingSince = undefined;
-			machine.resumePlan = {
-				at: Date.now(),
-				ids: this.#sessions
-					.list()
-					.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
-					.map(record => record.id),
-			};
-		}
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(machineId, upgrading ? "daemon upgrade" : "agent disconnected");
+		const exited = this.#sessions.exitSessionsFor(machineId, plan ? "daemon upgrade" : "agent disconnected");
 		log.info(
 			`machine ${machineId}: agent disconnected (${exited.length} session(s) exited)` +
-				(upgrading ? `; ${machine?.resumePlan?.ids.length ?? 0} queued for same-id resume` : ""),
+				(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
 		);
 	}
 
@@ -750,8 +737,15 @@ export class AgentRegistry {
 		if (previous && previous.ws !== ws) {
 			this.#connections.delete(machineId);
 			this.#failPending(machineId, "agent disconnected");
-			const exited = this.#sessions.exitSessionsFor(machineId, "agent replaced");
-			log.warn(`machine ${machineId}: replaced by a new connection (${exited.length} session(s) exited)`);
+			// The fresh daemon of a restart can connect before the dying daemon's
+			// socket tears down — this replacement path, not handleClose, is what
+			// runs then, so the resume plan must arm here too.
+			const plan = this.#armResumePlan(machineId);
+			const exited = this.#sessions.exitSessionsFor(machineId, plan ? "daemon upgrade" : "agent replaced");
+			log.warn(
+				`machine ${machineId}: replaced by a new connection (${exited.length} session(s) exited)` +
+					(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
+			);
 			try {
 				previous.ws.close(4000, "agent replaced");
 			} catch {
@@ -816,22 +810,10 @@ export class AgentRegistry {
 		if (this.#connections.get(conn.machineId)?.ws !== conn.ws) return;
 		this.#connections.delete(conn.machineId);
 		this.#failPending(conn.machineId, "agent offline");
+		const plan = this.#armResumePlan(conn.machineId);
 		const machine = this.#machines.get(conn.machineId);
-		// Same conversion as {@link handleClose}: a silent daemon death during an
-		// accepted restart still owes the fresh daemon its resume plan.
-		const upgrading = machine?.restartingSince !== undefined;
-		if (machine && upgrading) {
-			machine.restartingSince = undefined;
-			machine.resumePlan = {
-				at: Date.now(),
-				ids: this.#sessions
-					.list()
-					.filter(record => record.machineId === conn.machineId && !isTerminalStatus(record.status))
-					.map(record => record.id),
-			};
-		}
 		if (machine) machine.connected = false;
-		const exited = this.#sessions.exitSessionsFor(conn.machineId, upgrading ? "daemon upgrade" : reason);
+		const exited = this.#sessions.exitSessionsFor(conn.machineId, plan ? "daemon upgrade" : reason);
 		try {
 			conn.ws.close(4000, reason);
 		} catch {
@@ -839,7 +821,30 @@ export class AgentRegistry {
 		}
 		log.warn(
 			`machine ${conn.machineId}: offline (${reason}); ${exited.length} session(s) exited` +
-				(upgrading ? `; ${machine?.resumePlan?.ids.length ?? 0} queued for same-id resume` : ""),
+				(plan ? `; ${plan.ids.length} queued for same-id resume` : ""),
 		);
+	}
+
+	/**
+	 * Converts an armed daemon-restart flag into a resume plan snapshot of the
+	 * sessions alive right now. Called from every path a restarting daemon's
+	 * connection can end — graceful close, watchdog offline, and the `hello`
+	 * replacement race (the fresh daemon can connect before the dying one's
+	 * socket tears down). Returns the armed plan, or undefined when no restart
+	 * was in flight.
+	 */
+	#armResumePlan(machineId: string): MachineState["resumePlan"] {
+		const machine = this.#machines.get(machineId);
+		if (!machine || machine.restartingSince === undefined) return undefined;
+		machine.restartingSince = undefined;
+		const plan = {
+			at: Date.now(),
+			ids: this.#sessions
+				.list()
+				.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
+				.map(record => record.id),
+		};
+		machine.resumePlan = plan;
+		return plan;
 	}
 }
