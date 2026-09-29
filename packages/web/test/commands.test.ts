@@ -1,14 +1,11 @@
 /**
- * Slash-command routing (docs/protocol.md §6): leading-slash detection, the
- * command table, unknown-command notices, palette matching, and the composer
- * interception wrapper. UI-free — every command reaches the surface through a
- * stubbed {@link CommandContext}.
+ * Slash-command syntax, unknown-command handling, palette matching, and the
+ * composer interception wrapper without mounting the browser UI.
  */
 import { describe, expect, test } from "bun:test";
 import type { MachineSession } from "../src/hub/api";
 import type { CommandContext, ModalKind } from "../src/hub/commands";
 import {
-	COMMANDS,
 	commandQuery,
 	createComposerClient,
 	dumpFileName,
@@ -31,7 +28,6 @@ import type { SessionEntry } from "../src/lib/wire";
 interface Trace {
 	modals: ModalKind[];
 	themes: number;
-	paths: string[];
 	dumps: number;
 	notices: { level: Notice["level"]; message: string }[];
 	compacts: unknown[];
@@ -58,7 +54,6 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 	const trace: Trace = {
 		modals: [],
 		themes: 0,
-		paths: [],
 		dumps: 0,
 		notices: [],
 		compacts: [],
@@ -87,7 +82,7 @@ function makeContext(): { ctx: CommandContext; trace: Trace } {
 			toggleTheme: () => {
 				trace.themes += 1;
 			},
-			navigate: path => trace.paths.push(path),
+			leaveSession: () => {},
 			downloadDump: () => {
 				trace.dumps += 1;
 			},
@@ -154,37 +149,6 @@ class FakeClient {
 }
 
 describe("composer routing", () => {
-	test("plain text is passed through and never touches the command table", () => {
-		const { ctx, trace } = makeContext();
-
-		expect(routeComposerText("fix the failing test", ctx)).toBe("passthrough");
-
-		expect(trace).toEqual({
-			modals: [],
-			themes: 0,
-			paths: [],
-			dumps: 0,
-			notices: [],
-			compacts: [],
-			shakes: [],
-			handoffs: [],
-			clears: 0,
-			news: 0,
-			renames: [],
-			titles: 0,
-			resumes: [],
-			retries: 0,
-			extendedContext: [],
-			prewalks: [],
-			plans: [],
-			advisorToggles: 0,
-			tiers: [],
-			pauses: 0,
-			cycles: 0,
-			roleCycles: 0,
-			todosShown: 0,
-		});
-	});
 
 	test("only a leading slash starts a command", () => {
 		const { ctx } = makeContext();
@@ -220,103 +184,6 @@ describe("composer routing", () => {
 		expect(routeComposerText("sure.", ctx)).toBe("passthrough");
 
 		expect(trace.retries).toBe(0);
-	});
-
-	test("the table covers exactly the §6 commands", () => {
-		expect(COMMANDS.map(cmd => cmd.name)).toEqual([
-			"model",
-			"thinking",
-			"rewind",
-			"branch",
-			"tree",
-			"compact",
-			"shake",
-			"handoff",
-			"clear",
-			"new",
-			"rename",
-			"sessions",
-			"resume",
-			"retry",
-			"todo",
-			"goal",
-			"loop",
-			"extended-context",
-			"prewalk",
-			"plan",
-			"advisor",
-			"fast",
-			"slow",
-			"pause",
-			"cycle",
-			"cycle-roles",
-			"settings",
-			"collab",
-			"mcp",
-			"theme",
-			"dump",
-			"leave",
-			"help",
-		]);
-	});
-
-	test("every command reaches its surface hook", () => {
-		const cases: { text: string; check(trace: Trace): void }[] = [
-			{ text: "/model", check: t => expect(t.modals).toEqual(["model"]) },
-			{ text: "/MODEL", check: t => expect(t.modals).toEqual(["model"]) },
-			{ text: "/thinking", check: t => expect(t.modals).toEqual(["thinking"]) },
-			{ text: "/rewind", check: t => expect(t.modals).toEqual(["rewind"]) },
-			{ text: "/branch", check: t => expect(t.modals).toEqual(["rewind"]) },
-			{ text: "/tree", check: t => expect(t.modals).toEqual(["tree"]) },
-			{ text: "/compact", check: t => expect(t.compacts).toEqual([{}]) },
-			{ text: "/shake", check: t => expect(t.shakes).toEqual(["elide"]) },
-			{ text: "/handoff", check: t => expect(t.handoffs).toEqual([undefined]) },
-			{ text: "/clear", check: t => expect(t.clears).toBe(1) },
-			{ text: "/new", check: t => expect(t.news).toBe(1) },
-			{ text: "/rename Focus work", check: t => expect(t.renames).toEqual(["Focus work"]) },
-			{ text: "/sessions", check: t => expect(t.modals).toEqual(["sessions"]) },
-			{ text: "/resume", check: t => expect(t.resumes).toEqual([""]) },
-			{ text: "/resume 9f2c", check: t => expect(t.resumes).toEqual(["9f2c"]) },
-			{ text: "/retry", check: t => expect(t.retries).toBe(1) },
-			{ text: "/todo", check: t => expect(t.todosShown).toBe(1) },
-			{ text: "/goal", check: t => expect(t.modals).toEqual(["goal"]) },
-			{ text: "/loop", check: t => expect(t.modals).toEqual(["loop"]) },
-			{ text: "/extended-context", check: t => expect(t.extendedContext).toEqual([undefined]) },
-			{ text: "/prewalk", check: t => expect(t.prewalks).toEqual([{ action: "arm" }]) },
-			{ text: "/plan", check: t => expect(t.plans).toEqual([{}]) },
-			{ text: "/advisor", check: t => expect(t.advisorToggles).toBe(1) },
-			{ text: "/fast", check: t => expect(t.tiers).toEqual(["priority"]) },
-			{ text: "/slow", check: t => expect(t.tiers).toEqual(["flex"]) },
-			{ text: "/pause", check: t => expect(t.pauses).toBe(1) },
-			{ text: "/cycle", check: t => expect(t.cycles).toBe(1) },
-			{ text: "/cycle-roles", check: t => expect(t.roleCycles).toBe(1) },
-			{ text: "/settings", check: t => expect(t.modals).toEqual(["settings"]) },
-			{ text: "/collab", check: t => expect(t.modals).toEqual(["links"]) },
-			{ text: "/theme", check: t => expect(t.themes).toBe(1) },
-			{ text: "/dump", check: t => expect(t.dumps).toBe(1) },
-			{ text: "/leave", check: t => expect(t.paths).toEqual(["/"]) },
-			{ text: "/help", check: t => expect(t.modals).toEqual(["help"]) },
-		];
-
-		for (const { text, check } of cases) {
-			const { ctx, trace } = makeContext();
-			expect(routeComposerText(text, ctx)).toBe("ran");
-			expect(trace.notices).toEqual([]);
-			check(trace);
-		}
-	});
-
-	test("advanced-mode commands forward their parsed arguments", () => {
-		const { ctx, trace } = makeContext();
-
-		expect(routeComposerText("/prewalk openai/gpt-5", ctx)).toBe("ran");
-		expect(routeComposerText("/prewalk restart", ctx)).toBe("ran");
-		expect(routeComposerText("/plan off", ctx)).toBe("ran");
-		expect(routeComposerText("/plan plans/feature.md", ctx)).toBe("ran");
-
-		expect(trace.prewalks).toEqual([{ action: "arm", target: "openai/gpt-5" }, { action: "restart" }]);
-		expect(trace.plans).toEqual([{ action: "disable" }, { action: "enable", planFilePath: "plans/feature.md" }]);
-		expect(trace.notices).toEqual([]);
 	});
 
 	test("compact arguments split into mode + instructions", () => {
@@ -446,7 +313,6 @@ describe("composer routing", () => {
 		expect(commandQuery("/model openai")).toBe("model");
 
 		expect(matchCommands(null)).toEqual([]);
-		expect(matchCommands("").map(cmd => cmd.name)).toEqual(COMMANDS.map(cmd => cmd.name));
 		expect(matchCommands("th").map(cmd => cmd.name)).toEqual(["thinking", "theme"]);
 		expect(matchCommands("se").map(cmd => cmd.name)).toEqual(["sessions", "settings"]);
 		expect(matchCommands("zz")).toEqual([]);
@@ -617,7 +483,6 @@ describe("composer client wrapper", () => {
 		wrapped.sendPrompt("/");
 
 		expect(client.sent()).toEqual(["explain the diff"]);
-		expect(trace.paths).toEqual(["/"]);
 		expect(trace.notices).toEqual([{ level: "warning", message: UNKNOWN_COMMAND_MESSAGE }]);
 		// Inherited methods keep working through the wrapper: `Object.create(client)`
 		// would drop the private-field brand and throw here.

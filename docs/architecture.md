@@ -117,18 +117,25 @@ Upstream facts the design relies on:
 - URL `#fragment` is the room-link channel, read once at mount; hash routing collides with the
   link grammar ⇒ **path routing** (`/`, `/s/<id>`, `/join`).
 - Responsive already: breakpoints 768px/640px, visualViewport height var, safe-area insets,
-  PWA manifest. The hub home page reuses the same tokens.
+  PWA manifest. The shared frame keeps the rail visible beside the scrollable New tab;
+  its columns follow the remaining pane width, and the cwd field wraps below 400px
+  so widening the rail cannot crush the mobile form.
 - Secure context requirement: WebCrypto (`crypto.subtle`) needs https or localhost. Plain-LAN
   http deployments need TLS for the web client to decrypt rooms (see Security/TLS).
 
 Hub additions:
 
-- `main.tsx` boots a tiny path router (no dependency): `/` home, `/s/<id>` session, `/join`
-  arbitrary-link guest (vendored connect screen).
+- `main.tsx` boots a tiny path router (no dependency): `/` selects the pinned New tab,
+  `/s/<id>` selects a session in the same `HubFrame`, `/join` is an arbitrary-link
+  guest (vendored connect screen), and `/usage/<machineId>` remains separate.
 - Token gate: token in `localStorage["omp-hub.token"]`, sent as `Authorization: Bearer`.
-- Home: machine list (live, from `/api/machines`), start form (machine, cwd, name, optional
-  initial prompt), session list (poll `/api/sessions` every 2s) with status + open/stop actions
-  + copyable attach links.
+- New tab: live machine list (`/api/machines`), namespace create/list and
+  selection for a full start form (machine, profile, cwd, name, prompt,
+  tools/superagent), plus per-machine history with resume and message search.
+  The persistent rail owns the hub session list (`/api/sessions` every 2s),
+  status/selection, stop vs delete, copyable attach/view links, and live-session
+  namespace moves through its Manage dialog. Deleting the current row selects
+  the next visible session, falling back to New with no survivors.
 - Session registry polling is shared by the rail and an authenticated
   `WarmSessions` coordinator. It keeps at most six writable `GuestClient`
   replicas connected across route changes, choosing the visible session first,
@@ -151,9 +158,9 @@ Hub additions:
   snapshot. Older agents send their usual full snapshot until upgraded.
 - Display name: profile name input on the token gate, stored
   `localStorage["omp-hub.name"]`, default `"guest"`.
-- Authenticated hub pages share one settings center (`SettingsModal`): the home
-  header and session rail/switcher open browser preferences; `/settings` opens
-  the live session controls in the same dialog. Browser options reuse their
+- Authenticated hub pages share one settings center (`SettingsModal`): the New
+  tab header and shared rail/switcher open browser preferences; `/settings`
+  opens the live session controls in the same dialog. Browser options reuse their
   existing localStorage stores, while model/thinking and the SDK's allowlisted
   settings stay tied to the current live session. The dialog becomes a
   scrollable bottom sheet on phones; the unauthenticated `/join` page has no
@@ -170,9 +177,10 @@ Hub additions:
   and the full view remains one tap away.
 
 - `HubAlerts` stays mounted across authenticated routes and consumes the shared
-  sessions-store poll; session rail and dialog notification toggles subscribe
-  to the same browser-local preference. Home/usage and session status cards
-  render local alert toasts when no collab surface exists.
+  sessions-store poll; the persistent frame also tracks completed sessions while
+  New is selected. Rail and settings notification toggles share a browser-local
+  preference. New/usage and session status cards render local alert toasts when
+  no collab surface exists.
 - Hub startup variables and daemon CLI flags are deployment configuration, not
   writable browser preferences. Logging out only removes the browser's saved
   bearer token; changing the server token still requires operator deployment.

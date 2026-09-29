@@ -1,16 +1,15 @@
 /**
- * Hub home: machines, start-session form, session list.
- *
- * Machines use a 2 s poll; sessions share the authenticated shell's registry
- * store with alerts and the rail. Poll errors retain the last good rows.
+ * The pinned New tab: machine management, full session start and machine history.
+ * Machine polling runs only while this pane is mounted; the shared registry
+ * powers the rail, history badges and daemon restart confirmation.
  */
-import { Activity, ChevronDown, Copy, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Settings2, Square, X } from "lucide-react";
+import { Activity, ChevronDown, FolderClock, FolderOpen, History, LogOut, Play, RefreshCw, Settings2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeToggle } from "../components/shell/ThemeToggle";
 import { relTime } from "../lib/format";
-import { sessionsStore, useSessions } from "./sessions-store";
-import type { MachineRecord, MachineSession, NamespaceRecord, SessionRecord, SessionStatus } from "./api";
+import { useSessions } from "./sessions-store";
+import type { MachineRecord, MachineSession, NamespaceRecord, SessionRecord } from "./api";
 import { TOOL_CATALOG } from "./tool-catalog";
 import {
 	createNamespace,
@@ -18,14 +17,10 @@ import {
 	getMachineSessions,
 	getMachines,
 	getNamespaces,
-	HubApiError,
 	listMachineProfiles,
 	restartDaemon,
-	setSessionNamespace,
 	startSession,
-	stopSession,
 } from "./api";
-import { copyText } from "./clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { historyStatus } from "./history-status";
 import { groupSearchPaths, mergeMessageMatches, useMessageMatches } from "./message-search";
@@ -35,16 +30,6 @@ import { Modal } from "./Modal";
 const POLL_MS = 2000;
 const EMPTY_SESSIONS: readonly SessionRecord[] = [];
 
-const STATUS_LABEL: Record<SessionStatus, string> = {
-	starting: "starting",
-	live: "live",
-	exited: "exited",
-	failed: "failed",
-};
-
-/** Machine-reported temp directory (`hello.tmpdir`); `/tmp` covers POSIX machines and pre-0.3.0 agents. */
-const tempDirFor = (machine: MachineRecord | undefined): string => machine?.tmpdir ?? "/tmp";
-
 export interface HomePageProps {
 	onLogout(): void;
 	onOpenSettings(): void;
@@ -53,22 +38,13 @@ export interface HomePageProps {
 export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode {
 	const [machines, setMachines] = useState<MachineRecord[]>([]);
 	const { sessions: polledSessions, error: sessionsError } = useSessions();
-	const [movedSessions, setMovedSessions] = useState<ReadonlyMap<string, SessionRecord>>(() => new Map());
-	const sessions = useMemo(() => polledSessions?.map(row => {
-		const moved = movedSessions.get(row.id);
-		return moved && moved.membershipVersion > row.membershipVersion
-			? { ...row, namespaceId: moved.namespaceId, membershipVersion: moved.membershipVersion, controllerId: moved.controllerId }
-			: row;
-	}) ?? EMPTY_SESSIONS, [polledSessions, movedSessions]);
+	const sessions = polledSessions ?? EMPTY_SESSIONS;
 	const [namespaces, setNamespaces] = useState<NamespaceRecord[]>([]);
 	const [namespaceName, setNamespaceName] = useState("");
 	const [namespaceBusy, setNamespaceBusy] = useState(false);
 	const [namespaceError, setNamespaceError] = useState<string | null>(null);
 	const [namespaceFeedback, setNamespaceFeedback] = useState<string | null>(null);
 	const [namespaceId, setNamespaceId] = useState("");
-	const [movingId, setMovingId] = useState<string | null>(null);
-	const [moveError, setMoveError] = useState<{ id: string; message: string } | null>(null);
-	const [moveFeedback, setMoveFeedback] = useState<{ id: string; message: string } | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [namespacePollError, setNamespacePollError] = useState<string | null>(null);
 	const [machineId, setMachineId] = useState("");
@@ -86,7 +62,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	const [formError, setFormError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
-	const [flash, setFlash] = useState<{ key: string; ok: boolean } | null>(null);
 	const [history, setHistory] = useState<MachineSession[] | null>(null);
 	const [historyTruncated, setHistoryTruncated] = useState(false);
 	const [historyError, setHistoryError] = useState<string | null>(null);
@@ -118,13 +93,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 			clearInterval(timer);
 		};
 	}, []);
-
-	// Copy feedback reverts on its own; a new copy restarts the countdown.
-	useEffect(() => {
-		if (!flash) return;
-		const timer = setTimeout(() => setFlash(null), 1600);
-		return () => clearTimeout(timer);
-	}, [flash]);
 
 	const connected = useMemo(() => machines.filter(m => m.connected), [machines]);
 	// Keep the form pinned to a machine that can actually accept a start.
@@ -254,31 +222,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 		}
 	};
 
-	const moveSession = async (session: SessionRecord, targetId: string | null): Promise<void> => {
-		if (movingId || session.namespaceId === targetId) return;
-		setMovingId(session.id);
-		setMoveError(null);
-		setMoveFeedback(null);
-		try {
-			const updated = await setSessionNamespace(session.id, targetId, session.membershipVersion);
-			setMovedSessions(previous => new Map(previous).set(updated.id, updated));
-			sessionsStore.refresh();
-			setMoveFeedback({ id: session.id, message: targetId === null ? "Removed from namespace" : "Namespace updated" });
-		} catch (err) {
-			setMoveError({
-				id: session.id,
-				message: err instanceof HubApiError && err.status === 409
-					? `Namespace assignment changed. ${errorText(err)} Refresh and retry.`
-					: errorText(err),
-			});
-			if (err instanceof HubApiError && err.status === 409) {
-				sessionsStore.refresh();
-			}
-		} finally {
-			setMovingId(null);
-		}
-	};
-
 	const submit = async (): Promise<void> => {
 		if (!machineId) {
 			setFormError("no connected machine to start on");
@@ -344,15 +287,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 			document.removeEventListener("keydown", onKeyDown, true);
 		};
 	}, [toolsOpen]);
-
-	const copy = useCallback(async (key: string, text: string): Promise<void> => {
-		setFlash({ key, ok: await copyText(text) });
-	}, []);
-
-	const copyLabel = (key: string, label: string): string => {
-		if (flash?.key !== key) return label;
-		return flash.ok ? "copied" : "copy failed";
-	};
 
 	return (
 		<div className="hb-page">
@@ -525,7 +459,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 									<button
 										type="button"
 										className="sh-btn"
-										onClick={() => setCwd(tempDirFor(connected.find(m => m.machineId === machineId)))}
+										onClick={() => setCwd(connected.find(m => m.machineId === machineId)?.tmpdir ?? "/tmp")}
 										disabled={!machineId}
 										title="fill in the selected machine's temp directory"
 									>
@@ -655,100 +589,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 
 				<div className="hb-col">
 					<section className="hb-card">
-						<h2 className="hb-card-title">Sessions</h2>
-						{sessions.length === 0 ? (
-							<p className="hb-empty">no sessions yet</p>
-						) : (
-							<ul className="hb-sessions">
-								{sessions.map(s => (
-									<li key={s.id} className="hb-session">
-										<div className="hb-session-head">
-											<span className={`hb-dot hb-dot-${s.unreachable ? "unreachable" : s.status}`} aria-label={s.unreachable ? "unreachable" : STATUS_LABEL[s.status]} />
-											<span className="hb-session-name" title={s.name}>
-												{s.name}
-											</span>
-											<span className="hb-status">{s.unreachable ? "unreachable" : STATUS_LABEL[s.status]}</span>
-										</div>
-										<div className="hb-session-meta">
-											<span className="hb-mono" title={s.cwd}>
-												{s.cwd}
-											</span>
-											{s.profile && (
-												<span className="hb-mono" title="omp profile">
-													{s.profile}
-												</span>
-											)}
-											<span className="hb-mono">{s.machineName}</span>
-											<span className="hb-mono">{relTime(s.startedAt)}</span>
-											<span className="hb-mono">namespace: {namespaces.find(ns => ns.id === s.namespaceId)?.name ?? s.namespaceId ?? "none"}</span>
-											{s.controllerId && <span className="hb-mono" title={s.controllerId}>controller: {sessions.find(owner => owner.id === s.controllerId)?.name ?? s.controllerId}</span>}
-										</div>
-										{s.status === "failed" && s.error && <div className="hb-session-error">{s.error}</div>}
-										{s.status === "live" && (
-											<SessionNamespaceControl
-												key={`${s.id}:${s.membershipVersion}`}
-												session={s}
-												namespaces={namespaces}
-												busy={movingId === s.id}
-												disabled={movingId !== null}
-												error={moveError?.id === s.id ? moveError.message : null}
-												feedback={moveFeedback?.id === s.id ? moveFeedback.message : null}
-												onMove={targetId => void moveSession(s, targetId)}
-											/>
-										)}
-										{s.status === "exited" && s.exitReason && <div className="hb-session-note">{s.exitReason}</div>}
-										<div className="hb-session-actions">
-											{s.status === "live" && (
-												<button type="button" className="sh-btn" onClick={() => navigate(`/s/${s.id}`)}>
-													Open
-												</button>
-											)}
-											{(s.status === "live" || s.status === "starting") && (
-												<button
-													type="button"
-													className="sh-btn sh-btn-stop"
-													disabled={s.unreachable}
-													title={s.unreachable ? "machine is offline; stop after it reconnects" : undefined}
-													onClick={() => {
-														void stopSession(s.id).catch(err => setError(errorText(err)));
-													}}
-												>
-													<Square size={12} aria-hidden="true" />
-													Stop
-												</button>
-											)}
-											<button
-												type="button"
-												className="sh-btn"
-												disabled={!s.links}
-												onClick={() => {
-													const link = s.links?.full;
-													if (link) void copy(`${s.id}:full`, link);
-												}}
-											>
-												<Copy size={12} aria-hidden="true" />
-												{copyLabel(`${s.id}:full`, "attach link")}
-											</button>
-											<button
-												type="button"
-												className="sh-btn"
-												disabled={!s.links}
-												onClick={() => {
-													const link = s.links?.view;
-													if (link) void copy(`${s.id}:view`, link);
-												}}
-											>
-												<Copy size={12} aria-hidden="true" />
-												{copyLabel(`${s.id}:view`, "view link")}
-											</button>
-										</div>
-									</li>
-								))}
-							</ul>
-						)}
-					</section>
 
-					<section className="hb-card">
 						<div className="hb-history-head">
 							<h2 className="hb-card-title">History</h2>
 							<button
@@ -844,58 +685,6 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				/>
 			)}
 			{confirmRestart && <RestartConfirmModal machine={confirmRestart} sessions={sessions} onDone={() => setConfirmRestart(null)} />}
-		</div>
-	);
-}
-
-/** Explicit confirmation before exposing a live session's existing transcript to another fleet. */
-function SessionNamespaceControl({ session, namespaces, busy, disabled, error, feedback, onMove }: {
-	session: SessionRecord;
-	namespaces: readonly NamespaceRecord[];
-	busy: boolean;
-	disabled: boolean;
-	error: string | null;
-	feedback: string | null;
-	onMove(target: string | null): void;
-}): ReactNode {
-	const [target, setTarget] = useState(session.namespaceId ?? "");
-	const [acknowledged, setAcknowledged] = useState(false);
-	const changed = target !== (session.namespaceId ?? "");
-	const destination = namespaces.find(ns => ns.id === target);
-	const allowed = !destination || destination.machineIds === null || destination.machineIds.includes(session.machineId);
-	const operatorChangeForbidden = session.superagent === true && changed && Boolean(target);
-	return (
-		<div className="hb-namespace-control">
-			<label className="sh-field">
-				<span className="sh-field-label">assign / move live session</span>
-				<select
-					className="sh-input"
-					aria-label={`namespace for ${session.name}`}
-					value={target}
-					disabled={disabled}
-					onChange={e => { setTarget(e.target.value); setAcknowledged(false); }}
-				>
-					<option value="">outside fleet (remove)</option>
-					{namespaces.map(ns => (
-						<option key={ns.id} value={ns.id} disabled={ns.machineIds !== null && !ns.machineIds.includes(session.machineId)}>
-							{ns.name}
-						</option>
-					))}
-				</select>
-			</label>
-			{changed && target && !operatorChangeForbidden && (
-				<label className="sh-field-hint">
-					<input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />
-					{" "}I understand: moving this session exposes its existing conversation history and future messages to superagents in {destination?.name ?? target}. The previous controller loses new access, but already scheduled work may finish.
-				</label>
-			)}
-			{changed && !target && <p className="sh-field-hint">Removing this session revokes new fleet access; accepted work may finish, and the transcript remains.</p>}
-			{operatorChangeForbidden && <p className="sh-field-hint">A running superagent cannot enter another namespace; start a fresh operator session.</p>}
-			{error && <div className="sh-connect-error" role="alert">{error}</div>}
-			{feedback && <div className="hb-session-note" role="status">{feedback}</div>}
-			<button type="button" className="sh-btn" disabled={!changed || disabled || !allowed || operatorChangeForbidden || (Boolean(target) && !acknowledged)} onClick={() => onMove(target || null)}>
-				{busy ? "updating…" : target ? "Apply namespace" : "Remove from namespace"}
-			</button>
 		</div>
 	);
 }

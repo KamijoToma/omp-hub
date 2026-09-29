@@ -115,7 +115,7 @@ export function UsagePage({ machineId }: { machineId: string }): ReactNode {
 		<div className="hb-page">
 			<header className="hb-top">
 				<div className="hb-usage-head">
-					<button type="button" className="sh-btn" onClick={() => navigate("/")} aria-label="back to hub">
+					<button type="button" className="sh-btn" onClick={() => navigate("/")} aria-label="back to New session">
 						<ChevronLeft size={14} aria-hidden="true" />
 					</button>
 					<span

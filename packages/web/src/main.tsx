@@ -1,8 +1,8 @@
 /**
  * Hub SPA boot: path router over the vendored collab guest client.
  *
- * `/` → token gate, then home (machines + start form + sessions)
- * `/s/<id>` → token gate, then the live session
+ * `/` → token gate, then the shared frame's pinned New tab
+ * `/s/<id>` → token gate, then a session in the same frame
  * `/join` → vendored connect screen / guest session (no hub token needed)
  */
 import type { ReactNode } from "react";
@@ -11,13 +11,12 @@ import { createRoot } from "react-dom/client";
 import { Toasts } from "./components/shell/Toasts";
 import GuestApp from "./guest/app";
 import { clearToken, getToken, onUnauthorized } from "./hub/api";
-import { HomePage } from "./hub/HomePage";
 import { clientPool } from "./hub/client-pool";
+import { HubFrame } from "./hub/HubFrame";
 import { SettingsModal } from "./hub/SettingsModal";
 import { useAlertsEnabled, useCompletionsEnabled, useSessionAlerts } from "./hub/session-alerts";
 import { pushToast, useLocalToasts } from "./hub/toasts";
 import "./hub/highlight";
-import { SessionPage } from "./hub/SessionPage";
 import { sessionsStore } from "./hub/sessions-store";
 import { WarmSessions } from "./hub/WarmSessions";
 import { TokenGate } from "./hub/TokenGate";
@@ -59,7 +58,7 @@ function PageToasts(): ReactNode {
 	return <Toasts notices={useLocalToasts()} />;
 }
 
-/** One registry alert watcher across authenticated pages, including the home page. */
+/** One registry alert watcher across authenticated pages, including the New tab. */
 function HubAlerts({ currentId }: { currentId: string }): ReactNode {
 	const enabled = useAlertsEnabled();
 	const completions = useCompletionsEnabled();
@@ -75,7 +74,7 @@ function Shell(): ReactNode {
 
 	useEffect(() => setSettingsSection(null), [routeKey]);
 
-	// Unknown paths fall back to the hub home.
+	// Unknown paths fall back to the pinned New tab.
 	useEffect(() => {
 		if (route.kind === "unknown") navigate("/", true);
 	}, [route]);
@@ -107,12 +106,14 @@ function Shell(): ReactNode {
 		<>
 			<WarmSessions currentId={route.kind === "session" ? route.id : null} />
 			<HubAlerts currentId={route.kind === "session" ? route.id : ""} />
-			{route.kind === "session" ? (
-				<SessionPage id={route.id} onOpenSettings={setSettingsSection} />
-			) : route.kind === "usage" ? (
+			{route.kind === "usage" ? (
 				<UsagePage machineId={route.machineId} />
 			) : (
-				<HomePage onLogout={logout} onOpenSettings={() => setSettingsSection("browser")} />
+				<HubFrame
+					id={route.kind === "session" ? route.id : null}
+					onLogout={logout}
+					onOpenSettings={setSettingsSection}
+				/>
 			)}
 			<NoticeToasts />
 			{route.kind !== "session" && <PageToasts />}

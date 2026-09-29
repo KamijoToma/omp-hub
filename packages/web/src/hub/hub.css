@@ -1,5 +1,5 @@
 /* Hub layer styles (hb-*). Token vars only — no raw colors.
- * Breakpoints mirror the vendored shell: 1024px hub grid, 640px compact. */
+ * New pane columns depend on available width; compact controls at 640px. */
 
 .hb-page {
 	/* Bounded, not min-height: content taller than the viewport must scroll here —
@@ -10,6 +10,7 @@
 	padding-top: calc(16px + env(safe-area-inset-top, 0px));
 	padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
 	background: var(--bg);
+	container: hb-new / inline-size;
 }
 
 .hb-top {
@@ -36,8 +37,8 @@
 	border-radius: var(--radius);
 }
 
-/* Single column by default; machines + start form beside the session list
- * once there is room for both. */
+/* Single column by default; machine controls and the start form sit beside
+ * machine history when there is room for two columns. */
 .hb-grid {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
@@ -105,6 +106,7 @@
 
 .hb-machine {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	min-width: 0;
@@ -115,6 +117,8 @@
 }
 
 .hb-machine-name {
+	flex: 1 1 120px;
+	min-width: 120px;
 	font-size: 13px;
 	font-weight: 500;
 	white-space: nowrap;
@@ -273,53 +277,11 @@
 	overflow-wrap: anywhere;
 }
 
-/* ---- sessions ---- */
-.hb-sessions {
-	list-style: none;
-	padding: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-}
-
-.hb-session {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	padding: 10px;
-	background: var(--bg-inset);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-}
-
-.hb-session-head {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-}
-
-.hb-session-name {
-	font-size: 13px;
-	font-weight: 600;
-	min-width: 0;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
 .hb-status {
 	flex: none;
 	margin-left: auto;
 	font: 400 11px / 1.5 var(--font-mono);
 	color: var(--fg-muted);
-}
-
-.hb-session-meta {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px 10px;
-	min-width: 0;
 }
 
 .hb-mono {
@@ -337,13 +299,6 @@
 .hb-session-note {
 	font-size: 12px;
 	color: var(--fg-muted);
-}
-
-.hb-session-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin-top: 2px;
 }
 
 .hb-namespace-control {
@@ -367,7 +322,6 @@
 .hb-form .sh-field[hidden] {
 	display: none;
 }
-
 /* ---- history (machine omp sessions) ---- */
 .hb-history-head {
 	display: flex;
@@ -494,11 +448,14 @@
 }
 
 /* ---- responsive ---- */
-@media (min-width: 1024px) {
+@container hb-new (min-width: 1100px) {
 	.hb-grid {
-		grid-template-columns: minmax(320px, 1fr) minmax(0, 1.2fr);
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
 		align-items: start;
 	}
+}
+
+@media (min-width: 1024px) {
 	.hb-page {
 		padding: 24px;
 	}
@@ -1311,6 +1268,18 @@
 
 .hb-cwd-row .sh-btn {
 	flex: none;
+}
+
+/* The icon strip can grow to 96px: keep the cwd input usable in the remaining
+ * pane instead of squeezing it between two fixed-width browse buttons. */
+@container hb-new (max-width: 400px) {
+	.hb-cwd-row {
+		flex-wrap: wrap;
+	}
+
+	.hb-cwd-row .sh-input {
+		flex: 1 0 100%;
+	}
 }
 
 .hb-dirbar {
@@ -2181,6 +2150,32 @@ body.hb-rail-resizing {
 	border-color: var(--border);
 }
 
+.hb-rail-new {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 32px;
+	margin: 4px 6px 0;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.hb-rail-new:hover,
+.hb-nav-new:hover {
+	color: var(--fg);
+	border-color: var(--border-strong);
+}
+
+.hb-rail-new-current,
+.hb-nav-new-current {
+	color: var(--fg);
+	background: var(--accent-muted);
+	border-color: var(--border-strong);
+}
+
 .hb-rail-list {
 	flex: 1;
 	min-height: 0;
@@ -2278,7 +2273,7 @@ body.hb-rail-resizing {
 	animation: hb-pulse 1.2s ease-in-out infinite;
 }
 
-.hb-rail-home {
+.hb-rail-settings {
 	flex: none;
 	display: flex;
 	align-items: center;
@@ -2291,13 +2286,9 @@ body.hb-rail-resizing {
 	border-radius: var(--radius);
 }
 
-.hb-rail-home:hover {
+.hb-rail-settings:hover {
 	color: var(--fg);
 	background: var(--bg-raised);
-}
-
-.hb-rail-settings {
-	margin-bottom: 0;
 }
 
 .hb-rail-backdrop {
@@ -2407,6 +2398,21 @@ body.hb-rail-resizing {
 	color: var(--fg-muted);
 }
 
+.hb-nav-new {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 12px 0;
+	padding: 8px 10px;
+	min-height: 40px;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	text-align: left;
+}
+
 .hb-nav-body {
 	flex: 1;
 	min-height: 0;
@@ -2429,6 +2435,13 @@ body.hb-rail-resizing {
 	margin: 0;
 	padding: 0;
 	list-style: none;
+}
+.hb-session-manage-stop {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-bottom: 14px;
 }
 
 .hb-nav-row-wrap {
@@ -2699,6 +2712,17 @@ body.hb-rail-resizing {
 		min-height: 40px;
 	}
 
+	/* Keep long names readable while giving each management action a 40px
+	 * touch target; four buttons cannot fit beside a row in the 280px drawer. */
+	.hb-nav-row-wrap {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	.hb-nav-row {
+		flex: 1 0 100%;
+	}
+
 	.hb-nav-act {
 		width: 40px;
 		height: 40px;
@@ -2712,7 +2736,7 @@ body.hb-rail-resizing {
 	}
 
 	.hb-rail-toggle,
-	.hb-rail-home {
+	.hb-rail-settings {
 		min-height: 40px;
 		margin-right: 2px;
 		margin-left: 2px;
