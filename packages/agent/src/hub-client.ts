@@ -73,6 +73,8 @@ export interface CmdFrame {
 	cmd: string;
 	/** `list-dir` target directory; omitted lists the agent user's home. */
 	path?: string;
+	/** `get-subscriptions`: one profile; omitted/default means the default profile. */
+	profile?: string;
 	provider?: string;
 	modelId?: string;
 	/** `set-model` target role; omitted means `"default"`. */

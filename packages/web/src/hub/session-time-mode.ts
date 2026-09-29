@@ -36,11 +36,16 @@ function persist(): void {
 	}
 }
 
-/** Flip created↔last-activity for every picker row (this browser only). */
-export function toggleSessionTimeMode(): void {
-	mode = mode === "created" ? "activity" : "created";
+/** Set the timestamp mode from either the rail shortcut or settings center. */
+export function setSessionTimeMode(next: SessionTimeMode): void {
+	if (mode === next) return;
+	mode = next;
 	persist();
 	for (const listener of listeners) listener();
+}
+
+export function toggleSessionTimeMode(): void {
+	setSessionTimeMode(mode === "created" ? "activity" : "created");
 }
 
 /** Reactive view of the preference; updates across all consumers. */

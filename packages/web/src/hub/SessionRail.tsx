@@ -12,7 +12,7 @@
  * live without opening the drawer. `SessionSwitcherModal` (the `/sessions`
  * slash command and Ctrl+K dialog) shares the picker body.
  */
-import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { Bell, BellOff, Eye, EyeOff, Home, PanelLeftClose, PanelLeftOpen, Pencil, RotateCcw, Settings2, Sparkles, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { relTime, shortenPath } from "../lib/format";
@@ -541,10 +541,11 @@ export interface SessionRailProps {
 	alertsOn: boolean;
 	/** Flips the alert toggle; the page owns permission prompting and polling. */
 	onToggleAlerts(): void;
+	onOpenSettings(): void;
 }
 
 /** The docked/overlay session drawer: collapsed icon strip or the full picker. */
-export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, alertsOn, onToggleAlerts }: SessionRailProps): ReactNode {
+export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onSwitch, alertsOn, onToggleAlerts, onOpenSettings }: SessionRailProps): ReactNode {
 	const { sessions, error } = useSessions();
 	const hidden = useHiddenSessions();
 	// Hidden sessions (this browser) leave the collapsed strip entirely; the
@@ -599,6 +600,9 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 							>
 								{alertsOn ? <Bell size={13} aria-hidden="true" /> : <BellOff size={13} aria-hidden="true" />}
 							</button>
+							<button type="button" className="sh-btn sh-btn-icon" onClick={onOpenSettings} title="omp-hub settings" aria-label="omp-hub settings">
+								<Settings2 size={13} aria-hidden="true" />
+							</button>
 							<button
 								type="button"
 								className="sh-btn sh-btn-icon"
@@ -652,6 +656,9 @@ export function SessionRail({ currentId, expanded, onToggleExpanded, onHome, onS
 								<RailRow key={session.id} session={session} current={session.id === currentId} onSwitch={onSwitch} />
 							))}
 						</ul>
+						<button type="button" className="hb-rail-home hb-rail-settings" onClick={onOpenSettings} title="omp-hub settings" aria-label="omp-hub settings">
+							<Settings2 size={14} aria-hidden="true" />
+						</button>
 						<button type="button" className="hb-rail-home" onClick={onHome} title="back to the hub home">
 							<Home size={14} aria-hidden="true" />
 						</button>
@@ -675,10 +682,11 @@ export interface SessionSwitcherModalProps {
 	onClose(): void;
 	/** Fires after a row delete succeeded; owners navigate when it was current. */
 	onDeleted?(session: SessionRecord): void;
+	onOpenSettings(): void;
 }
 
 /** The `/sessions` dialog (also Ctrl+K): same rows in the shared modal shell. */
-export function SessionSwitcherModal({ currentId, onSwitch, onClose, onDeleted }: SessionSwitcherModalProps): ReactNode {
+export function SessionSwitcherModal({ currentId, onSwitch, onClose, onDeleted, onOpenSettings }: SessionSwitcherModalProps): ReactNode {
 	const { sessions, error } = useSessions();
 
 	const pick = useCallback(
@@ -693,7 +701,15 @@ export function SessionSwitcherModal({ currentId, onSwitch, onClose, onDeleted }
 	);
 
 	return (
-		<Modal title="Switch session" onClose={onClose}>
+		<Modal
+			title="Switch session"
+			onClose={onClose}
+			leading={
+				<button type="button" className="sh-btn sh-btn-icon" onClick={onOpenSettings} title="omp-hub settings" aria-label="omp-hub settings">
+					<Settings2 size={14} aria-hidden="true" />
+				</button>
+			}
+		>
 			<PickerBody sessions={sessions} error={error} currentId={currentId} onPick={pick} onDeleted={onDeleted} />
 		</Modal>
 	);

@@ -31,6 +31,7 @@ export const ALERTS_ENABLED_KEY = "omp-hub.notify";
  * the page instead of silently flipping back.
  */
 let alertsMemory: boolean | null = null;
+const alertsListeners = new Set<() => void>();
 
 /** Registry updates arrive via the shared sessions store; no side poller. */
 
@@ -51,6 +52,19 @@ export function setAlertsEnabled(enabled: boolean): void {
 	} catch {
 		// persistence is best-effort; the in-memory value still serves this page
 	}
+	for (const listener of alertsListeners) listener();
+}
+
+/** Shared view for the rail, settings center and authenticated-page watcher. */
+export function useAlertsEnabled(): boolean {
+	return useSyncExternalStore(
+		listener => {
+			alertsListeners.add(listener);
+			return () => alertsListeners.delete(listener);
+		},
+		() => alertsMemory ?? alertsEnabled(),
+		() => false,
+	);
 }
 
 /** Storage key behind the settings dialog's completion-notice toggle (`"1"` = on). */

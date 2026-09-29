@@ -65,6 +65,11 @@ export function showSession(id: string): void {
 	replace(next);
 }
 
+/** Restore every hidden row in this browser, including ids no longer in the registry. */
+export function showAllSessions(): void {
+	if (ids.size > 0) replace(new Set());
+}
+
 /** Reactive view of the hidden set; updates across all consumers. */
 export function useHiddenSessions(): ReadonlySet<string> {
 	return useSyncExternalStore(
