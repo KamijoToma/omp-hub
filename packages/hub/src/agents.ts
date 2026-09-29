@@ -225,10 +225,20 @@ interface MachineState {
 	 */
 	restartingSince?: number;
 	/**
-	 * Armed by the disconnect that followed an accepted restart: the session ids
-	 * that were alive at that moment. The reconnected daemon's first heartbeat
-	 * reconciles against this plan and re-issues same-id starts for children
-	 * that are gone; the watchdog TTL covers a daemon that never comes back.
+	 * Session ids alive when the restart was REQUESTED. The daemon stops its
+	 * children during the handover, so by the time the fresh daemon connects
+	 * the records are already terminal — the disconnect-time snapshot of
+	 * "non-terminal records" would always be empty. Filtered by the handover
+	 * exit reason when the plan arms, so a session the operator stopped in the
+	 * request window stays stopped.
+	 */
+	resumeIds?: string[];
+	/**
+	 * Armed when a restarting daemon's connection ends: the request-time
+	 * `resumeIds` filtered to sessions the handover itself terminated (or ones
+	 * still live). The reconnected daemon's first heartbeat reconciles against
+	 * this plan and re-issues same-id starts for children that are gone; the
+	 * watchdog TTL covers a daemon that never comes back.
 	 */
 	resumePlan?: { at: number; ids: string[] };
 }
@@ -548,13 +558,24 @@ export class AgentRegistry {
 			return { ok: false, error: "daemon restart already in progress" };
 		}
 		if (!this.isOnline(machineId)) return { ok: false, error: "agent offline" };
+		// Snapshot NOW, while the records are still non-terminal: the daemon's
+		// stopAll exits every child (session-exit frames) long before the
+		// disconnect that arms the plan.
+		const resumeIds = this.#sessions
+			.list()
+			.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
+			.map(record => record.id);
+		machine.resumeIds = resumeIds;
 		machine.restartingSince = Date.now();
 		const result = await this.sendCmd(machineId, { reqId: newCmdReqId(), cmd: "restart-daemon" });
 		if (!result.ok && result.error !== "agent disconnected") {
 			machine.restartingSince = undefined;
+			machine.resumeIds = undefined;
 			return result;
 		}
-		log.info(`machine ${machineId}: daemon restart accepted — waiting for the fresh daemon to reconnect`);
+		log.info(
+			`machine ${machineId}: daemon restart accepted — waiting for the fresh daemon to reconnect (planned resume: ${resumeIds.length} session(s))`,
+		);
 		return { ok: true, data: { restarting: true } };
 	}
 
@@ -780,6 +801,7 @@ export class AgentRegistry {
 		for (const machine of this.#machines.values()) {
 			if (machine.restartingSince !== undefined && now - machine.restartingSince > RESTART_FLAG_TTL_MS) {
 				machine.restartingSince = undefined;
+				machine.resumeIds = undefined;
 				log.warn(`machine ${machine.machineId}: daemon restart flag expired without a disconnect — the daemon never restarted`);
 			}
 			if (machine.resumePlan && now - machine.resumePlan.at > RESTART_FLAG_TTL_MS) {
@@ -821,24 +843,30 @@ export class AgentRegistry {
 	}
 
 	/**
-	 * Converts an armed daemon-restart flag into a resume plan snapshot of the
-	 * sessions alive right now. Called from every path a restarting daemon's
-	 * connection can end — graceful close, watchdog offline, and the `hello`
-	 * replacement race (the fresh daemon can connect before the dying one's
-	 * socket tears down). Returns the armed plan, or undefined when no restart
+	 * Converts an armed daemon-restart flag into a resume plan. Called from
+	 * every path a restarting daemon's connection can end — graceful close,
+	 * watchdog offline, and the `hello` replacement race (the fresh daemon can
+	 * connect before the dying one's socket tears down). The id list is the
+	 * REQUEST-time snapshot (`resumeIds`): by handover the daemon has already
+	 * stopped its children, so their records read terminal with
+	 * `exitReason: "daemon upgrade"`. A session exited for any other reason
+	 * (operator stop, crash) keeps its terminal state; a still-non-terminal
+	 * id resumes as-is. Returns the armed plan, or undefined when no restart
 	 * was in flight.
 	 */
 	#armResumePlan(machineId: string): MachineState["resumePlan"] {
 		const machine = this.#machines.get(machineId);
 		if (!machine || machine.restartingSince === undefined) return undefined;
 		machine.restartingSince = undefined;
-		const plan = {
-			at: Date.now(),
-			ids: this.#sessions
-				.list()
-				.filter(record => record.machineId === machineId && !isTerminalStatus(record.status))
-				.map(record => record.id),
-		};
+		const snapshotted = machine.resumeIds;
+		machine.resumeIds = undefined;
+		const ids = (snapshotted ?? []).flatMap(id => {
+			const record = this.#sessions.get(id);
+			if (!record?.sessionFile) return [];
+			if (isTerminalStatus(record.status) && record.exitReason !== "daemon upgrade") return [];
+			return [record.id];
+		});
+		const plan = { at: Date.now(), ids };
 		machine.resumePlan = plan;
 		return plan;
 	}
