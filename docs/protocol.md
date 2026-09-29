@@ -830,7 +830,7 @@ Text starting with `/` in the web composer is NEVER sent to the agent. Handling:
 | `/collab` | links modal (attach/view/web links, copy buttons) |
 | `/mcp` | MCP servers modal (list/add/test/enable/remove; drives `GET/POST …/mcp…`) |
 | `/theme` | toggle light/dark (vendored theme store) |
-| `/dump` | download the current transcript snapshot as `.jsonl` |
+| `/dump` | download the full loaded transcript as `.jsonl`; asks the user to load older pages first when history remains |
 | `/leave` | back to hub home |
 | `/help` | command list modal |
 | anything else | local notice "host-only or unknown command — not sent" |
@@ -865,3 +865,35 @@ vendored web `lib/wire.ts` matches).
 - Guest answers are display-label keyed; the bridge disambiguates labels that
   collide with reserved runtime labels on the wire and maps answers back to the
   original labels before persisting results.
+
+## 8. Recent-first browser history (encrypted collab frames)
+
+The browser's `hello` (proto 3) optionally sends `recentEntries: 80`. The
+patched agent-side `CollabHost` replies with the normal `welcome` and
+`snapshot-chunk` train, but copies/sends only the newest 80 wire entries
+(fewer if the 512 KiB page budget is reached). `welcome.entryCount` counts
+only entries in that train; `welcome.hasMoreHistory: boolean` reports whether
+earlier entries exist. The final chunk makes the guest live immediately;
+new `entry`, `event`, state and UI-request frames continue normally, and
+writable guests can prompt before fetching earlier pages.
+
+When the user scrolls to the top (or clicks **load older messages**), the
+browser sends `{t:"fetch-history", reqId, beforeId, limit:80}`. `beforeId` is
+the first currently loaded entry's ID. The host locates it in the current
+session, returns up to 80 preceding entries, bounded by 512 KiB, in one
+targeted `{t:"history", reqId, entries, hasMore}` frame. A missing cursor
+returns `error` instead of silently mixing two revisions; the browser
+exposes a retry/error control. A reconnect discards outstanding pages and
+starts with a new tail snapshot; late replies are ignored. The browser
+prepends history while preserving the viewport and keeping live entries at
+the end. Both full and view links can page; mutation permissions are
+unchanged.
+
+This addition is optional within proto 3: an older host ignores
+`recentEntries` and sends the full transcript with no `hasMoreHistory`;
+old session files containing entries without IDs also fall back to full
+snapshots because they cannot provide a paging cursor. Unmodified `omp join`
+omits the option and receives the original full snapshot. The relay still
+forwards opaque ciphertext (§1). The
+`packages/agent` lockfile applies a pinned SDK patch for the host behavior;
+deploy the patched agent to gain recent-first loading.

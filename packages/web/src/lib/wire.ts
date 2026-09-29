@@ -348,12 +348,15 @@ export type GuestFrame =
 			 * read-only and rejects their mutating frames.
 			 */
 			writeToken?: string;
+			/** Opt in to a bounded tail snapshot; absent keeps legacy full-sync behavior. */
+			recentEntries?: number;
 	  }
 	| { t: "prompt"; text: string; images?: ImageContent[] }
 	| { t: "ui-response"; reqId: number; value?: CollabUiResponseValue }
 	| { t: "abort" }
 	| { t: "agent-cmd"; cmd: "chat" | "kill" | "revive"; agentId: string; text?: string }
-	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number };
+	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number }
+	| { t: "fetch-history"; reqId: number; beforeId: string; limit: number };
 
 /** EventBus channels mirrored to guests (task subagent traffic only). */
 export type BusChannel = "task:subagent:progress" | "task:subagent:lifecycle";
@@ -374,6 +377,8 @@ export type HostFrame =
 			entryCount: number;
 			/** True when this peer joined through a read-only (view) link. */
 			readOnly?: boolean;
+			/** Older entries exist; only set by hosts supporting recent-only snapshots. */
+			hasMoreHistory?: boolean;
 	  }
 	/**
 	 * Targeted snapshot fragment delivered after `welcome`. Hosts split the
@@ -392,6 +397,7 @@ export type HostFrame =
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `text` is decoded JSONL from `fromByte`, `newSize` the next offset base. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	| { t: "history"; reqId: number; entries: SessionEntry[]; hasMore: boolean; error?: string }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 

@@ -170,6 +170,10 @@ function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 					<div className="sh-transcript">
 						<Transcript
 							entries={snap.entries}
+							hasMoreHistory={snap.hasMoreHistory}
+							historyLoading={snap.historyLoading}
+							historyError={snap.historyError}
+							onLoadOlder={() => client.loadOlder()}
 							stream={snap.stream}
 							streamDone={snap.streamDone}
 							activeTools={snap.activeTools}
