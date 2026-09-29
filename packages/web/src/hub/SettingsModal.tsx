@@ -14,7 +14,7 @@ import { showAllSessions, useHiddenSessions } from "./hidden-sessions";
 import { LinksSection } from "./LinksModal";
 import { Modal } from "./Modal";
 import { ModelPickerView } from "./ModelPicker";
-import { setShowEnded, useShowEnded } from "./rail-filter";
+import { setShowExtras, useShowExtras } from "./rail-filter";
 import {
 	notificationPermission,
 	requestAlertPermission,
@@ -121,7 +121,7 @@ export function SettingsModal({ sessionId, initialSection, notify, onLogout, onC
 	const [permission, setPermission] = useState(notificationPermission);
 	const [name, setName] = useState(getDisplayName);
 	const [savedName, setSavedName] = useState<string | null>(null);
-	const showEnded = useShowEnded();
+	const showExtras = useShowExtras();
 	const timeMode = useSessionTimeMode();
 	const hidden = useHiddenSessions();
 	const visibleStats = useStatsPrefs();
@@ -204,8 +204,8 @@ export function SettingsModal({ sessionId, initialSection, notify, onLogout, onC
 							</select>
 						</label>
 						<label className="hb-settings-choice">
-							<input type="checkbox" checked={showEnded} onChange={e => setShowEnded(e.target.checked)} />
-							<span>Show ended sessions in the Sessions list</span>
+							<input type="checkbox" checked={showExtras} onChange={e => setShowExtras(e.target.checked)} />
+							<span>Show ended and hidden sessions in the Sessions list</span>
 						</label>
 						<div className="hb-modal-row">
 							<span className="hb-modal-value">{hidden.size} hidden session{hidden.size === 1 ? "" : "s"} in this browser</span>

@@ -1,16 +1,18 @@
 /**
- * Per-browser "show ended sessions" preference for the session rail and the
+ * Per-browser "show folded sessions" preference for the session rail and the
  * quick switcher. Terminal (`exited`/`failed`) rows fold away by default so
  * dead agents stop cluttering the list — without touching the hub registry,
  * which is in-memory and shared by every guest (same constraint as
- * `hidden-sessions.ts`; see also the per-row hidden set, which stays
- * orthogonal: it removes one session for this browser, this toggle folds the
- * whole terminal class). The session currently on screen is always exempt —
- * its row must not vanish under the viewer (enforced by the consumers).
+ * `hidden-sessions.ts`). One toggle drives both folded groups: the terminal
+ * class as a whole and this browser's per-row hidden set (see also
+ * `hidden-sessions.ts`, whose per-row removal stays orthogonal). The session
+ * currently on screen is always exempt — its row must not vanish under the
+ * viewer (enforced by the consumers).
  */
 import { useSyncExternalStore } from "react";
 import type { SessionStatus } from "./api";
 
+// Legacy key name: it predates the toggle also revealing the hidden group.
 const KEY = "omp-hub.rail.show-ended";
 
 let show: boolean = load();
@@ -38,16 +40,16 @@ function emit(): void {
 	for (const listener of listeners) listener();
 }
 
-/** Flip the ended-rows fold; persists per browser. */
-export function setShowEnded(value: boolean): void {
+/** Flip the folded-groups toggle; persists per browser. */
+export function setShowExtras(value: boolean): void {
 	if (show === value) return;
 	show = value;
 	persist();
 	emit();
 }
 
-/** Reactive view of the fold toggle; updates across all consumers. */
-export function useShowEnded(): boolean {
+/** Reactive view of the folded-groups toggle; updates across all consumers. */
+export function useShowExtras(): boolean {
 	return useSyncExternalStore(
 		listener => {
 			listeners.add(listener);
@@ -80,9 +82,21 @@ export function partitionEnded<T extends { id: string; status: SessionStatus }>(
  */
 export function railRowsOrdered<T extends { id: string; status: SessionStatus }>(
 	rows: readonly T[],
-	showEnded: boolean,
+	showExtras: boolean,
 	currentId: string | undefined,
 ): T[] {
 	const { active, ended } = partitionEnded(rows);
-	return [...active, ...(showEnded ? ended : ended.filter(row => row.id === currentId))];
+	return [...active, ...(showExtras ? ended : ended.filter(row => row.id === currentId))];
+}
+
+/**
+ * Label for the single folded-groups toggle: collapsed counts what a click
+ * reveals, expanded says what is shown; `null` when there is nothing to show.
+ */
+export function extrasLabel(endedCount: number, hiddenCount: number, shown: boolean): string | null {
+	const parts: string[] = [];
+	if (endedCount > 0) parts.push(`${endedCount} ended`);
+	if (hiddenCount > 0) parts.push(`${hiddenCount} hidden`);
+	if (parts.length === 0) return null;
+	return shown ? `showing ${parts.join(" · ")} — back` : `${parts.join(" · ")} — show`;
 }
