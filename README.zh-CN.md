@@ -72,16 +72,16 @@
 
 ## 从 GitHub Release 安装
 
-每台代理机器需要 Bun ≥ 1.3.14 和可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.0` 资源。要使用本页介绍但尚未随该版本发布的新功能（如按消息内容搜索会话），请改用下文的源码仓库。
+Hub／源码归档需要 Bun ≥ 1.3.14；代理机器需要可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.1` 资源。标签之后的新功能须从下文的源码仓库运行，直到下一次发布。
 
 ```bash
 # 在 Hub 机器的任意目录开始：
 mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
 umask 077  # 保护含会话链接的 hub-state.json
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/omp-hub-v0.9.0.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
-tar -xzf omp-hub-v0.9.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-v0.9.1.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt
+tar -xzf omp-hub-v0.9.1.tar.gz
 cd omp-hub
 HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
 ```
@@ -110,6 +110,20 @@ HUB_TOKEN='<同一个强共享密钥>' \
 ```
 
 替换示例密钥、证书路径与域名，并把 Hub 的入站访问限定在可信网络。也可在反向代理终止 TLS，并为 Hub 设置 `HUB_PUBLIC_URL=https://hub.example.com`，使生成的会话链接使用 WSS。远程浏览器的 WebCrypto 需要 HTTPS，非本机的 `ws://` 会话链接会被拒绝。完整控制链接具有写入权限，务必保密。代理的锁文件会安装针对当前平台预编译的 SDK 二进制文件，**无需相邻 SDK 源码仓库或 Rust 构建**。参见[代理说明](packages/agent/README.md)。
+
+**Linux x64（glibc）** 的原生代理归档不需要 Bun。请在受控机器上下载，并将三个可执行文件与
+`pi_natives.linux-x64-baseline.node` 放在同一目录；代理会从该目录启动隔离的会话宿主和统计进程：
+
+```bash
+mkdir -p "$HOME/omp-hub-agent" && cd "$HOME/omp-hub-agent"
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-agent-linux-x64-v0.9.1.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt
+tar -xzf omp-hub-agent-linux-x64-v0.9.1.tar.gz
+HUB_TOKEN="<与 Hub 相同的密钥>" ./omp-hub-agent --hub wss://hub.example.com
+```
+
+原生代理不需要 Bun、npm 或源码仓库，但仍需机器上的 omp 凭据；`ws://` 只用于本机回环地址。
 
 ### 源码仓库（获取最新源码功能）
 
@@ -153,7 +167,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -e HUB_TOKEN="$HUB_TOKEN" omp-hub
 - [里程碑（英文）](docs/milestones.md)：MVP 阶段与后续计划。
 - [端到端验证记录（英文）](docs/e2e.md)：人工验证步骤和已知限制。
 
-GitHub Actions 按锁文件安装三个包的依赖、运行类型检查及 Bun 测试，再构建 Web UI 与仅包含 Hub 的容器。`main` 分支上符合条件的版本标签会打包 Release 归档和 `SHA256SUMS.txt`，验证解包后的归档并发布资源。发布资源对应标签时的代码，不包含未发布的源码更改；该工作流不会发布 npm 包或 Docker 镜像。
+GitHub Actions 按锁文件安装三个包的依赖、运行类型检查及 Bun 测试，再构建 Web UI、仅包含 Hub 的容器与 Linux x64 原生代理。每次推送都会实测原生代理的会话、具名 profile 统计与自重启；符合条件的标签在下载 CI 产物后再次验证，将源码与原生归档及 `SHA256SUMS.txt` 发布至 GitHub Release。发布资源对应标签时的代码，不包含未发布的源码更改；该工作流不会发布 npm 包或 Docker 镜像。
 
 ## 许可证
 
