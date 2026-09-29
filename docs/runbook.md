@@ -107,11 +107,13 @@ the fresh process re-execs the same binary with the same flags.
 `scripts/prod-deploy-hook.sh` is installed as the shared
 `.git/hooks/reference-transaction` (covers every worktree). When
 `refs/heads/prod` actually moves (any merge/`update-ref` — a no-op update is
-ignored), it builds the web dist + hub binary in the prod worktree and runs
-`systemctl --user restart omp-hub`, which execs the fresh build; it then polls
-`/healthz` and logs the outcome to `packages/hub/hub-deploy.log`. Build
-failures leave the running hub untouched — fix and merge again. The **daemon
-is never restarted** by the hook: when its code changed, use the panel's
+ignored), it installs the web dependencies from the lockfile
+(`bun install --frozen-lockfile` — a no-op when current), builds the web dist
++ hub binary in the prod worktree, and runs `systemctl --user restart
+omp-hub`, which execs the fresh build; it then polls `/healthz` and logs the
+outcome to `packages/hub/hub-deploy.log`. Install/build failures leave the
+running hub untouched — fix and merge again. The **daemon is never
+restarted** by the hook: when its code changed, use the panel's
 restart-daemon (same-id resume). Deployment is serialized with `flock`;
 overlapping merges just log one deploy. Re-install after cloning:
 

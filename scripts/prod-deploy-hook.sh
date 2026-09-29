@@ -30,6 +30,14 @@ flock -n 9 || exit 0 # a newer deploy is already in flight; it wins
 {
 	echo "[$(date -Is)] prod branch moved — building and restarting the hub (daemon untouched)"
 	cd "$PROD" || exit 0
+	# prod's node_modules goes stale whenever a merge brings new packages (the
+	# web build then fails on unresolvable imports). Install from the lockfile
+	# first: a no-op within milliseconds when current, and --frozen-lockfile
+	# fails rather than building against a drifted dependency set.
+	if ! /home/skyrain/.local/bin/bun --cwd=packages/web install --frozen-lockfile >>"$LOG" 2>&1; then
+		echo "[$(date -Is)] web install FAILED — running hub left alone; fix and merge again" >>"$LOG"
+		exit 0
+	fi
 	if ! /home/skyrain/.local/bin/bun --cwd=packages/web run build >>"$LOG" 2>&1; then
 		echo "[$(date -Is)] web build FAILED — running hub left alone; fix and merge again" >>"$LOG"
 		exit 0
