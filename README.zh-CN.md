@@ -77,16 +77,16 @@
 
 ## 从 GitHub Release 安装
 
-Hub 和已发布的 `v0.9.1` 源码包可使用 Bun ≥ 1.3.14；当前源码**代理**的受限 SQL 会话查询进程要求 Bun ≥ 1.4.0，编译版原生代理自带运行时。代理机器还需要可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.1` 资源。标签之后的新功能须从下文的源码仓库运行，直到下一次发布。
+Hub 可使用 Bun ≥ 1.3.14；源码**代理**的受限 SQL 会话查询进程要求 Bun ≥ 1.4.0，编译版原生代理自带运行时。代理机器还需要可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用 `v0.15.0` 资源。标签之后的新功能须从下文的源码仓库运行。
 
 ```bash
 # 在 Hub 机器的任意目录开始：
 mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
 umask 077  # 保护含会话链接的 hub-state.json
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-v0.9.1.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/omp-hub-v0.15.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
-tar -xzf omp-hub-v0.9.1.tar.gz
+tar -xzf omp-hub-v0.15.0.tar.gz
 cd omp-hub
 HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
 ```
@@ -116,15 +116,15 @@ HUB_TOKEN='<同一个强共享密钥>' \
 
 替换示例密钥、证书路径与域名，并把 Hub 的入站访问限定在可信网络。也可在反向代理终止 TLS，并为 Hub 设置 `HUB_PUBLIC_URL=https://hub.example.com`，使生成的会话链接使用 WSS。远程浏览器的 WebCrypto 需要 HTTPS，非本机的 `ws://` 会话链接会被拒绝。完整控制链接具有写入权限，务必保密。代理的锁文件会安装针对当前平台预编译的 SDK 二进制文件，**无需相邻 SDK 源码仓库或 Rust 构建**。参见[代理说明](packages/agent/README.md)。
 
-**Linux x64（glibc）** 的原生代理归档不需要 Bun。请在受控机器上下载，并将三个可执行文件与
-`pi_natives.linux-x64-baseline.node` 放在同一目录；代理会从该目录启动隔离的会话宿主和统计进程：
+**Linux x64（glibc）** 的原生代理归档不需要 Bun。请在受控机器上下载，并将五个可执行文件与
+`pi_natives.linux-x64-baseline.node` 放在同一目录；代理会从该目录启动隔离的会话宿主、统计、订阅用量和 SQL 查询进程：
 
 ```bash
 mkdir -p "$HOME/omp-hub-agent" && cd "$HOME/omp-hub-agent"
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-agent-linux-x64-v0.9.1.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/omp-hub-agent-linux-x64-v0.15.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
-tar -xzf omp-hub-agent-linux-x64-v0.9.1.tar.gz
+tar -xzf omp-hub-agent-linux-x64-v0.15.0.tar.gz
 HUB_TOKEN="<与 Hub 相同的密钥>" ./omp-hub-agent --hub wss://hub.example.com
 ```
 

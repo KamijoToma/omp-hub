@@ -27,6 +27,8 @@ and web guest must use compatible `COLLAB_PROTO` versions.
 
 ## Run
 
+Source execution requires Bun ≥ 1.4.0 for the confined SQL transcript-query worker.
+
 ```bash
 HUB_TOKEN="<same token as the hub>" bun run dev -- --hub ws://127.0.0.1:8080 --name my-machine
 # flags: --hub (required) --token (or HUB_TOKEN env, required) --name (default: hostname)
@@ -46,9 +48,10 @@ against a mock SDK.
 ## Native Linux x64 distribution
 
 The release archive `omp-hub-agent-linux-x64-vX.Y.Z.tar.gz` includes a compiled daemon,
-`omp-hub-agent-session`, `omp-hub-agent-stats` and a pinned
-`pi_natives.linux-x64-baseline.node`. Extract them into the **same directory** and run
-`HUB_TOKEN=\"<secret>\" ./omp-hub-agent --hub wss://hub.example.com`. No Bun or npm install is
+`omp-hub-agent-session`, `omp-hub-agent-stats`, `omp-hub-agent-subscriptions`,
+`omp-hub-agent-sql-query` and a pinned `pi_natives.linux-x64-baseline.node`.
+Extract them into the **same directory** and run
+`HUB_TOKEN="<secret>" ./omp-hub-agent --hub wss://hub.example.com`. No Bun or npm install is
 needed on that machine. The native addon is versioned with the pinned SDK and must not be
 replaced by an addon from another release. Keep the included notices with the archive.
 

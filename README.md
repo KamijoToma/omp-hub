@@ -85,16 +85,16 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
 
 ## Install from a GitHub release
 
-The Hub and published `v0.9.1` source archive run on Bun ≥ 1.3.14. The current source **agent** requires Bun ≥ 1.4.0 for its confined SQL transcript-query worker; the compiled native agent bundles its own runtime. An agent machine needs working omp provider credentials (`~/.omp/agent` or provider API keys). The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. These examples use the `v0.9.1` assets. For changes made after that tag, use the source checkout below until the next release.
+The Hub runs on Bun ≥ 1.3.14; the source **agent** requires Bun ≥ 1.4.0 for its confined SQL transcript-query worker. The compiled native agent bundles its own runtime. An agent machine needs working omp provider credentials (`~/.omp/agent` or provider API keys). The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. These examples use the `v0.15.0` assets. For changes made after that tag, use the source checkout below.
 
 ```bash
 # On the hub machine, from any working directory:
 mkdir -p "$HOME/omp-hub-release" && cd "$HOME/omp-hub-release"
 umask 077  # keep hub-state.json and its session links private
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-v0.9.1.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/omp-hub-v0.15.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
-tar -xzf omp-hub-v0.9.1.tar.gz
+tar -xzf omp-hub-v0.15.0.tar.gz
 cd omp-hub
 HUB_TOKEN=dev-token HOST=127.0.0.1 bun packages/hub/src/main.ts
 ```
@@ -125,16 +125,16 @@ HUB_TOKEN='<same-strong-shared-secret>' \
 Replace the example secret, certificate paths and DNS name; restrict hub ingress to trusted networks. Alternatively terminate TLS at a reverse proxy and set `HUB_PUBLIC_URL=https://hub.example.com` on the hub so generated session links use WSS. A remote browser needs HTTPS for WebCrypto; remote insecure `ws://` links are rejected. Keep full links private: they grant write access. The agent's frozen lockfile installs platform-specific prebuilt SDK binaries; **no sibling SDK checkout or Rust build** is needed. See [agent setup](packages/agent/README.md).
 
 On **Linux x64 (glibc)**, the native Agent archive does **not** require Bun. Download it on the
-controlled machine and keep all three executables and `pi_natives.linux-x64-baseline.node` together.
-The daemon spawns the isolated session host and named-profile statistics process from that directory:
+controlled machine and keep all five executables and `pi_natives.linux-x64-baseline.node` together.
+The daemon spawns the isolated session host, statistics, subscription and SQL-query workers from that directory:
 
 ```bash
-mkdir -p \"$HOME/omp-hub-agent\" && cd \"$HOME/omp-hub-agent\"
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/omp-hub-agent-linux-x64-v0.9.1.tar.gz
-curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.9.1/SHA256SUMS.txt
+mkdir -p "$HOME/omp-hub-agent" && cd "$HOME/omp-hub-agent"
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/omp-hub-agent-linux-x64-v0.15.0.tar.gz
+curl -fL -O https://github.com/KamijoToma/omp-hub/releases/download/v0.15.0/SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
-tar -xzf omp-hub-agent-linux-x64-v0.9.1.tar.gz
-HUB_TOKEN=\"<same secret as the hub>\" ./omp-hub-agent --hub wss://hub.example.com
+tar -xzf omp-hub-agent-linux-x64-v0.15.0.tar.gz
+HUB_TOKEN="<same secret as the hub>" ./omp-hub-agent --hub wss://hub.example.com
 ```
 
 The native agent needs the machine's omp auth store (`~/.omp/agent`) or provider credentials,
