@@ -56,6 +56,7 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 	const [profiles, setProfiles] = useState<string[]>([]);
 	const [profile, setProfile] = useState("");
 	const [superagent, setSuperagent] = useState(false);
+	const [searchMode, setSearchMode] = useState<"fleet" | "sql">("fleet");
 	const [selectedTools, setSelectedTools] = useState<string[]>([]);
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const toolsRef = useRef<HTMLDivElement | null>(null);
@@ -246,12 +247,14 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 				prompt: prompt.trim() || undefined,
 				profile: profile || undefined,
 				superagent: superagent || undefined,
+				searchMode: superagent ? searchMode : undefined,
 				namespaceId: namespaceId || undefined,
 				tools: !superagent && selectedTools.length > 0 ? selectedTools : undefined,
 			});
 			setName("");
 			setPrompt("");
 			setSuperagent(false);
+			setSearchMode("fleet");
 			setSelectedTools([]);
 			setToolsOpen(false);
 			setBusy(false);
@@ -574,6 +577,35 @@ export function HomePage({ onLogout, onOpenSettings }: HomePageProps): ReactNode
 								</select>
 								<span className="sh-field-hint">a superagent can manage only sessions in its namespace</span>
 							</label>
+							{superagent && (
+								<details className="hb-search-settings">
+									<summary>Advanced settings</summary>
+									<fieldset className="hb-search-mode">
+										<legend>Message search mode</legend>
+										<label>
+											<input
+												type="radio"
+												name="superagent-search-mode"
+												value="fleet"
+												checked={searchMode === "fleet"}
+												onChange={() => setSearchMode("fleet")}
+											/>
+											{" "}Fleet search (default)
+										</label>
+										<label>
+											<input
+												type="radio"
+												name="superagent-search-mode"
+												value="sql"
+												checked={searchMode === "sql"}
+												onChange={() => setSearchMode("sql")}
+											/>
+											{" "}SQL query
+										</label>
+										<p className="sh-field-hint">SQL queries run only on worker transcripts in this namespace, with no filesystem access.</p>
+									</fieldset>
+								</details>
+							)}
 							{formError && (
 								<div className="sh-connect-error" role="alert">
 									{formError}

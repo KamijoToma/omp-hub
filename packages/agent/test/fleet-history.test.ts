@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { readStoredSessionMessages, searchStoredSessionMessages } from "../src/machine-cmds";
+import { queryStoredSessionMessages, readStoredSessionMessages, searchStoredSessionMessages } from "../src/machine-cmds";
 
 test("terminal fleet history reads the active branch without modifying its file or escaping the session store", async () => {
 	const dir = await mkdtemp(path.join(tmpdir(), "fleet-history-test-"));
@@ -66,6 +66,38 @@ test("terminal search uses full stored text, does not write history and refuses 
 		await symlink(outsider, link);
 		await expect(searchStoredSessionMessages(link, { query: "git merge" }, { sessionRoots: [root] }))
 			.rejects.toThrow("outside managed omp session stores");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("terminal SQL reads a managed persisted branch without writing history or following escaped symlinks", async () => {
+	const dir = await mkdtemp(path.join(tmpdir(), "fleet-sql-history-"));
+	const root = path.join(dir, "agent", "sessions");
+	try {
+		await mkdir(root, { recursive: true });
+		const manager = SessionManager.create(dir, root);
+		manager.appendMessage({ role: "user", content: "persisted rollback", timestamp: Date.now() });
+		await manager.ensureOnDisk();
+		await manager.flush();
+		const file = manager.getSessionFile();
+		if (!file) throw new Error("SDK did not persist a session file");
+		const before = await readFile(file, "utf8");
+		const result = await queryStoredSessionMessages(file,
+			"SELECT m.role, p.text FROM messages m JOIN parts p ON m.id=p.message_id WHERE p.text LIKE '%rollback%'",
+			{ sessionRoots: [root] });
+		expect(result.rows).toEqual([["user", "persisted rollback"]]);
+		expect(await readFile(file, "utf8")).toBe(before);
+		const outside = path.join(dir, "outside.jsonl");
+		await writeFile(outside, before);
+		await expect(queryStoredSessionMessages(outside, "SELECT * FROM messages", { sessionRoots: [root] }))
+			.rejects.toThrow("outside managed omp session stores");
+		const escaped = path.join(root, "escaped.jsonl");
+		await symlink(outside, escaped);
+		await expect(queryStoredSessionMessages(escaped, "SELECT * FROM messages", { sessionRoots: [root] }))
+			.rejects.toThrow("outside managed omp session stores");
+		await expect(queryStoredSessionMessages(file, "ATTACH '/etc/passwd' AS x", { sessionRoots: [root] }))
+			.rejects.toThrow("invalid SQL:");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

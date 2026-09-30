@@ -516,6 +516,87 @@ describe("namespace-scoped fleet control", () => {
 		}
 	});
 
+	test("SQL query is scoped and exclusive, without a controller claim or caller-supplied file path", async () => {
+		const machine = await socket("m_sql_access", "0.15.0");
+		try {
+			const namespaceId = await createNamespace("sql-access");
+			const privateNamespace = await createNamespace("sql-private");
+			const owner = await live(machine, "m_sql_access", { superagent: true, searchMode: "sql", namespaceId });
+			const fleetOwner = await live(machine, "m_sql_access", { superagent: true, namespaceId });
+			const worker = await live(machine, "m_sql_access", { namespaceId });
+			const privateWorker = await live(machine, "m_sql_access", { namespaceId: privateNamespace });
+			const url = `/api/fleet/sessions/${worker}/query`;
+			const post = (body: unknown, target = url, operator = owner) =>
+				api(target, { method: "POST", body: JSON.stringify(body) }, operator);
+			expect((await post({ sql: "SELECT * FROM messages" }, `/api/fleet/sessions/${privateWorker}/query`)).status).toBe(404);
+			expect((await post({ sql: "SELECT * FROM messages" }, url, fleetOwner)).status).toBe(403);
+			expect((await api(`/api/fleet/sessions/${worker}/messages`, {}, owner)).status).toBe(403);
+			expect((await api(`/api/fleet/sessions/${worker}/search?query=secret`, {}, owner)).status).toBe(403);
+			for (const body of [{}, { sql: "" }, { sql: "x".repeat(4097) },
+				{ sql: "SELECT 1", path: "/etc/passwd" }, { sql: "SELECT 1", id: privateWorker },
+				{ sql: "SELECT 1", controllerId: owner }, { sql: 1 }, ["SELECT 1"]]) {
+				expect((await post(body)).status).toBe(400);
+			}
+			const pending = post({ sql: "SELECT id FROM messages" });
+			const cmd = await machine.take(frame => frame.t === "cmd" && frame.cmd === "fleet-query-messages" && frame.id === worker);
+			expect(cmd).toMatchObject({ sql: "SELECT id FROM messages" });
+			expect(cmd.path).toBeUndefined();
+			expect(cmd.controllerId).toBeUndefined();
+			machine.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true,
+				data: { columns: ["id"], rows: [["visible"]], truncated: false, leafId: "visible" } }));
+			expect(await (await pending).json()).toEqual({
+				columns: ["id"], rows: [["visible"]], truncated: false, leafId: "visible",
+			});
+			const invalid = post({ sql: "ATTACH DATABASE '/etc/passwd' AS private" });
+			const rejected = await machine.take(frame => frame.t === "cmd" && frame.cmd === "fleet-query-messages" &&
+				frame.sql === "ATTACH DATABASE '/etc/passwd' AS private");
+			machine.ws.send(JSON.stringify({ t: "cmd-result", reqId: rejected.reqId, ok: false, error: "invalid SQL: access denied" }));
+			expect((await invalid).status).toBe(400);
+		} finally { machine.ws.close(); }
+	});
+
+	test("SQL query gates both daemon versions, uses managed terminal history, and revokes moved results", async () => {
+		const modern = await socket("m_sql_modern", "0.15.0");
+		const legacy = await socket("m_sql_legacy", "0.14.0");
+		try {
+			const namespaceId = await createNamespace("sql-version");
+			const otherNamespace = await createNamespace("sql-moved");
+			const owner = await live(modern, "m_sql_modern", { superagent: true, searchMode: "sql", namespaceId });
+			const worker = await live(modern, "m_sql_modern", { namespaceId });
+			const oldWorker = await live(legacy, "m_sql_legacy", { namespaceId });
+			const post = (target: string, body: unknown = { sql: "SELECT id FROM messages" }) =>
+				api(`/api/fleet/sessions/${target}/query`, { method: "POST", body: JSON.stringify(body) }, owner);
+			expect((await post(oldWorker)).status).toBe(409);
+			const reading = post(worker);
+			const cmd = await modern.take(frame => frame.t === "cmd" && frame.cmd === "fleet-query-messages" && frame.id === worker);
+			const moved = await api(`/api/sessions/${worker}/namespace`, {
+				method: "PUT", body: JSON.stringify({ namespaceId: otherNamespace, expectedVersion: 1 }),
+			});
+			expect(moved.status).toBe(200);
+			modern.ws.send(JSON.stringify({ t: "cmd-result", reqId: cmd.reqId, ok: true,
+				data: { columns: ["id"], rows: [["secret"]], truncated: false, leafId: "secret" } }));
+			expect(await (await reading).json()).toEqual({ error: "session membership changed" });
+			const terminal = await live(modern, "m_sql_modern", { namespaceId });
+			modern.ws.send(JSON.stringify({ t: "session-exit", id: terminal, code: 0, reason: "done" }));
+			const deadline = Date.now() + 3000;
+			for (;;) {
+				const payload = await (await api(`/api/sessions/${terminal}`)).json() as { session: { status: string } };
+				if (payload.session.status === "exited") break;
+				if (Date.now() > deadline) throw new Error("worker did not exit");
+				await new Promise<void>(resolve => setImmediate(resolve));
+			}
+			const pending = post(terminal);
+			const terminalCmd = await modern.take(frame => frame.t === "cmd" && frame.cmd === "query-session-messages");
+			expect(terminalCmd).toMatchObject({ path: "/tmp/agent/sessions/test.jsonl", sql: "SELECT id FROM messages" });
+			expect(terminalCmd.id).toBeUndefined();
+			modern.ws.send(JSON.stringify({ t: "cmd-result", reqId: terminalCmd.reqId, ok: false,
+				error: "session history unavailable: /private/agent/sessions/secret.jsonl" }));
+			const unavailable = await pending;
+			expect(unavailable.status).toBe(409);
+			expect(await unavailable.json()).toEqual({ error: "session history unavailable" });
+		} finally { modern.ws.close(); legacy.ws.close(); }
+	});
+
 });
 
 test("hub restart restores namespace membership and unacknowledged supervision events", async () => {

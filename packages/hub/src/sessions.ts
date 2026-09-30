@@ -33,6 +33,8 @@ export interface SessionRecord {
 	profile?: string;
 	/** Fleet-operator session (protocol §4 fleet-req); set at start, never minted by the fleet itself. */
 	superagent?: true;
+	/** Superagent message search capability, chosen once when started. */
+	searchMode?: "fleet" | "sql";
 	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
 	tools?: string[];
 	/** Fleet control scope; null sessions are invisible to superagents. */
@@ -62,6 +64,7 @@ export interface CreateSessionInput {
 	profile?: string;
 	/** Marks the started session a fleet operator (protocol §2 `start.superagent`). */
 	superagent?: true;
+	searchMode?: "fleet" | "sql";
 	/** Callable-tool whitelist (protocol §2 `start.tools`); pre-validated by the API layer. */
 	tools?: string[];
 	namespaceId?: string | null;
@@ -117,6 +120,7 @@ export class SessionStore {
 			name: input.name?.trim() || path.basename(input.cwd) || input.cwd,
 			...(input.profile ? { profile: input.profile } : {}),
 			...(input.superagent ? { superagent: true as const } : {}),
+			...(input.superagent ? { searchMode: input.searchMode ?? "fleet" } : {}),
 			...(input.tools ? { tools: input.tools } : {}),
 			namespaceId: input.namespaceId ?? null,
 			membershipVersion: 0,
@@ -159,6 +163,8 @@ export class SessionStore {
 		for (const record of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
 			record.namespaceId ??= null;
 			record.membershipVersion ??= 0;
+			if (record.superagent) record.searchMode = record.searchMode === "sql" ? "sql" : "fleet";
+			else delete record.searchMode;
 			this.#sessions.set(record.id, record);
 			this.#order.set(record.id, this.#sequence++);
 		}

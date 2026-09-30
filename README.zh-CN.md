@@ -72,7 +72,7 @@
 
 ## 从 GitHub Release 安装
 
-Hub／源码归档需要 Bun ≥ 1.3.14；代理机器需要可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.1` 资源。标签之后的新功能须从下文的源码仓库运行，直到下一次发布。
+Hub 和已发布的 `v0.9.1` 源码包可使用 Bun ≥ 1.3.14；当前源码**代理**的受限 SQL 会话查询进程要求 Bun ≥ 1.4.0，编译版原生代理自带运行时。代理机器还需要可用的 omp 模型凭据（`~/.omp/agent` 或提供商 API 密钥）。[已发布的版本](https://github.com/KamijoToma/omp-hub/releases)提供包含 Hub 源码、**已构建** Web UI、代理源码和第三方许可证的归档；不包含 `node_modules` 或 Docker 构建文件。以下使用已发布的 `v0.9.1` 资源。标签之后的新功能须从下文的源码仓库运行，直到下一次发布。
 
 ```bash
 # 在 Hub 机器的任意目录开始：

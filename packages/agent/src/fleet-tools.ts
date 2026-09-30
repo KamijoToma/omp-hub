@@ -30,7 +30,7 @@ function textResult(body: unknown): { content: Array<{ type: "text"; text: strin
  * format, urgency values, when to use what) because the model sees nothing
  * else about the hub.
  */
-export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
+export function buildFleetTools(request: FleetRequest, searchMode: "fleet" | "sql" = "fleet"): ToolDefinition[] {
 	const tool = (
 		name: string,
 		label: string,
@@ -83,26 +83,31 @@ export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
 				...(p.text === undefined ? {} : { text: p.text }),
 				...(p.clearQueue === undefined ? {} : { clearQueue: p.clearQueue }),
 			})).body),
-		tool("fleet_get_messages", "Read worker messages",
-			"Without cursor return the latest messages (20 by default); messages stay chronological. Pass nextCursor (the oldest returned id) as cursor to page strictly earlier history while hasMore is true. Includes tool output and custom messages; leafId identifies the current branch tip.",
-			type({ id: type.string, "cursor?": type.string, "limit?": type.number }),
-			async p => {
-				const query = new URLSearchParams();
-				if (typeof p.cursor === "string" && p.cursor.trim()) query.set("cursor", p.cursor.trim());
-				if (p.limit !== undefined) query.set("limit", String(p.limit));
-				return assertFetched(await request("GET", `${sessionPath(p.id)}/messages${query.size ? `?${query}` : ""}`)).body;
-			}),
-		tool("fleet_search_messages", "Search worker messages",
-			"Search one namespace worker's active branch, including stored text, tool-call arguments and tool results before message truncation. Use a literal case-insensitive query (1–256 characters) and/or inclusive from / exclusive to ISO-8601 timestamps with timezone. The newest 20 matches (max 50) arrive chronologically; nextCursor fetches older matches. Snippets are short: omit query and set a time window around a hit to inspect nearby messages. fleet_get_messages reads bounded messages from the newest turn backward, not directly by hit id.",
-			type({ id: type.string, "query?": type.string, "from?": type.string, "to?": type.string,
-				"cursor?": type.string, "limit?": type.number }),
-			async p => {
-				const query = new URLSearchParams();
-				for (const key of ["query", "from", "to", "cursor", "limit"] as const) {
-					if (p[key] !== undefined) query.set(key, String(p[key]));
-				}
-				return assertFetched(await request("GET", `${sessionPath(p.id)}/search?${query}`)).body;
-			}),
+		...(searchMode === "sql" ? [tool("fleet_query_messages", "Query worker messages",
+			"Query one namespace worker's visible active branch with read-only SQLite SELECT/WITH. Tables: messages(id, parent_id, seq, timestamp, role, tool_name) and parts(message_id, part_index, kind, text); parent_id points to the previous visible branch message (hidden entries are skipped). parts_fts is a trigram full-text index on parts.text (join parts_fts.rowid = parts.rowid). timestamp is ISO-8601 text; use >= and < for ranges. Full stored text, tool-call arguments and tool results are indexed, but hidden custom messages, thinking and images are excluded. SQL must be one statement <=4096 characters. Result: columns, up to 50 rows, truncated flag, leafId. No claim is needed.",
+			type({ id: type.string, sql: type.string }),
+			async p => assertFetched(await request("POST", `${sessionPath(p.id)}/query`, { sql: p.sql })).body)] : [
+			tool("fleet_get_messages", "Read worker messages",
+				"Without cursor return the latest messages (20 by default); messages stay chronological. Pass nextCursor (the oldest returned id) as cursor to page strictly earlier history while hasMore is true. Includes tool output and custom messages; leafId identifies the current branch tip.",
+				type({ id: type.string, "cursor?": type.string, "limit?": type.number }),
+				async p => {
+					const query = new URLSearchParams();
+					if (typeof p.cursor === "string" && p.cursor.trim()) query.set("cursor", p.cursor.trim());
+					if (p.limit !== undefined) query.set("limit", String(p.limit));
+					return assertFetched(await request("GET", `${sessionPath(p.id)}/messages${query.size ? `?${query}` : ""}`)).body;
+				}),
+			tool("fleet_search_messages", "Search worker messages",
+				"Search one namespace worker's active branch, including stored text, tool-call arguments and tool results before message truncation. Use a literal case-insensitive query (1–256 characters) and/or inclusive from / exclusive to ISO-8601 timestamps with timezone. The newest 20 matches (max 50) arrive chronologically; nextCursor fetches older matches. Snippets are short: omit query and set a time window around a hit to inspect nearby messages. fleet_get_messages reads bounded messages from the newest turn backward, not directly by hit id.",
+				type({ id: type.string, "query?": type.string, "from?": type.string, "to?": type.string,
+					"cursor?": type.string, "limit?": type.number }),
+				async p => {
+					const query = new URLSearchParams();
+					for (const key of ["query", "from", "to", "cursor", "limit"] as const) {
+						if (p[key] !== undefined) query.set(key, String(p[key]));
+					}
+					return assertFetched(await request("GET", `${sessionPath(p.id)}/search?${query}`)).body;
+				}),
+		]),
 		tool("fleet_get_input", "Read worker input",
 			"List pending select/editor/ask steps, including requestId. Can answer even if no human guest is connected.",
 			type({ id: type.string }), async p => assertFetched(await request("GET", `${sessionPath(p.id)}/input`)).body),

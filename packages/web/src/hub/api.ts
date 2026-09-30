@@ -31,6 +31,8 @@ export interface SessionRecord {
 	profile?: string;
 	/** Fleet-operator session (protocol §2 `start.superagent`, §4 fleet-req); set at start. */
 	superagent?: true;
+	/** Transcript search mode for a scoped superagent; absent means fleet search. */
+	searchMode?: "fleet" | "sql";
 	/** Callable-tool whitelist (protocol §2 `start.tools`); absent means the default tool set. */
 	tools?: string[];
 	/** Null means this session is outside the fleet. */
@@ -76,6 +78,8 @@ export interface StartSessionRequest {
 	sessionFile?: string;
 	/** Start a fleet-operator session (protocol §2 `start.superagent`). */
 	superagent?: boolean;
+	/** Scoped superagent message search mode; absent means fleet search. */
+	searchMode?: "fleet" | "sql";
 	/** Restrict the session to exactly these tools (protocol §2 `start.tools`); omitted means the default set. */
 	tools?: string[];
 	/** Fleet namespace for this session; required for superagents. */
@@ -509,6 +513,7 @@ export async function startSession(input: StartSessionRequest): Promise<SessionR
 	if (input.profile) body.profile = input.profile;
 	if (input.sessionFile) body.sessionFile = input.sessionFile;
 	if (input.superagent) body.superagent = true;
+	if (input.superagent && input.searchMode !== undefined) body.searchMode = input.searchMode;
 	if (input.namespaceId !== undefined) body.namespaceId = input.namespaceId;
 	if (input.tools?.length) body.tools = input.tools;
 	if (input.prewalk !== undefined) body.prewalk = input.prewalk;

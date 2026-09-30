@@ -39,6 +39,8 @@ export interface StartFrame {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — the child registers the fleet tools and may issue `fleet-req`. */
 	superagent?: boolean;
+	/** Superagent transcript-search tool choice; omitted on older hubs means fleet. */
+	searchMode?: "fleet" | "sql";
 	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
 	tools?: string[];
 	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */

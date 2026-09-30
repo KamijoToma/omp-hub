@@ -13,9 +13,10 @@ if (entry.length !== 1) {
 	throw new Error(`SPA root marker matched ${entry.length} chunks, expected exactly 1`);
 }
 const html = readFileSync("dist/index.html", "utf8");
-const fixed = html.replace(/<script type="module" crossorigin src="\/[^"]+\.js"/, `<script type="module" crossorigin src="/${entry[0]}"`);
-if (fixed === html) {
+const scriptTag = /<script type="module" crossorigin src="\/[^"]+\.js"/;
+if (!scriptTag.test(html)) {
 	throw new Error("entry <script> tag not found in dist/index.html");
 }
-writeFileSync("dist/index.html", fixed);
+const fixed = html.replace(scriptTag, `<script type="module" crossorigin src="/${entry[0]}"`);
+if (fixed !== html) writeFileSync("dist/index.html", fixed);
 console.log(`[fix-html-entry] dist/index.html → /${entry[0]}`);

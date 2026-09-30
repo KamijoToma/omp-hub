@@ -13,6 +13,8 @@ import type * as Sdk from "@oh-my-pi/pi-coding-agent";
 import { pageFleetMessages, searchFleetMessages, validateFleetSearch, type FleetMessagePage, type FleetSearchOptions, type FleetSearchPage } from "./fleet-client";
 import { errorMessage } from "./log";
 import { defaultProfilesRoot, listProfiles } from "./profiles";
+import { queryBranchMessages } from "./sql-query";
+import type { SqlMessageResult } from "./sql-projection";
 import { getSubscriptions } from "./subscriptions";
 import type { SubscriptionUsage } from "./subscriptions-worker";
 
@@ -322,6 +324,8 @@ export interface MachineCmdFrame {
 	paths?: string[];
 	/** `search-sessions` needle; matched case-insensitively. */
 	query?: string;
+	/** `query-session-messages` SQL, executed only against a managed session projection. */
+	sql?: string;
 	/** `get-subscriptions` selects one isolated omp profile. */
 	profile?: string;
 	cursor?: string;
@@ -332,7 +336,7 @@ export interface MachineCmdFrame {
 }
 
 export type MachineCmdResult =
-	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage | FleetSearchPage }
+	{ ok: true; data: DirListing | ProfileListing | SessionListing | SessionSearchResults | SubscriptionUsage | FleetMessagePage | FleetSearchPage | SqlMessageResult }
 	| { ok: false; error: string };
 
 /** Directory children only; symlinked directories are followed and included. */
@@ -527,6 +531,20 @@ export async function searchStoredSessionMessages(
 	return searchFleetMessages(await openStoredSession(file, options), search);
 }
 
+export async function queryStoredSessionMessages(
+	file: unknown, sql: unknown, options?: { sessionRoots: readonly string[] },
+): Promise<SqlMessageResult> {
+	if (typeof sql !== "string" || !sql.trim() || sql.length > 4096) {
+		throw new Error("invalid SQL: expected a nonempty query of at most 4096 characters");
+	}
+	try {
+		return await queryBranchMessages(await openStoredSession(file, options), sql);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new Error("session history unavailable");
+		throw err;
+	}
+}
+
 /** Routes one machine-level `cmd`; every path answers exactly once (protocol §2). */
 export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineCmdResult> {
 	if (frame.cmd === "list-dir") {
@@ -578,6 +596,13 @@ export async function handleMachineCmd(frame: MachineCmdFrame): Promise<MachineC
 			return { ok: true, data: await searchStoredSessionMessages(frame.path, {
 				query: frame.query, from: frame.from, to: frame.to, cursor: frame.cursor, limit: frame.pageLimit,
 			}) };
+		} catch (err) {
+			return { ok: false, error: errorMessage(err) };
+		}
+	}
+	if (frame.cmd === "query-session-messages") {
+		try {
+			return { ok: true, data: await queryStoredSessionMessages(frame.path, frame.sql) };
 		} catch (err) {
 			return { ok: false, error: errorMessage(err) };
 		}

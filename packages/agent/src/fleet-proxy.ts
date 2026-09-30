@@ -30,7 +30,7 @@ export function isAllowedFleetPath(method: string, rawPath: string): boolean {
 	if (segments.length === 4) return resource === "sessions" || resource === "notices";
 	if (segments.length !== 6) return false;
 	if (resource === "events") return action === "ack" && !!id && /^[A-Za-z0-9_-]+$/.test(id);
-	return resource === "sessions" && ["claim", "stop", "message", "interrupt", "input", "watch"].includes(action!);
+	return resource === "sessions" && ["claim", "stop", "message", "interrupt", "input", "watch", "query"].includes(action!);
 }
 
 /** A session start never carries owner, namespace, or superagent identity from a child. */
@@ -105,7 +105,7 @@ export async function handleFleetRequest(request: FleetProxyRequest, deps: Fleet
 	let body: unknown;
 	if (isSessionStart) body = permittedStartFields(request.body);
 	else if (method === "POST" && input && typeof input === "object" && !Array.isArray(input)) {
-		const keys = pathname.endsWith("/message") ? ["text", "mode"]
+		const keys = pathname.endsWith("/query") ? ["sql"] : pathname.endsWith("/message") ? ["text", "mode"]
 			: pathname.endsWith("/interrupt") ? ["text", "clearQueue"]
 			: pathname.endsWith("/input") ? ["requestId", "answer"]
 			: pathname === "/api/fleet/notices" ? ["message", "urgency", "sessionId"] : [];

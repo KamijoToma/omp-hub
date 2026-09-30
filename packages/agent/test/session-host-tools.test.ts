@@ -27,7 +27,7 @@ async function spawnHost(
 	id: string,
 	project: string,
 	relayPort: number,
-	config: { tools?: string[] },
+	config: { tools?: string[]; superagent?: true; searchMode?: "fleet" | "sql" },
 ): Promise<SpawnedHost> {
 	const ready = Promise.withResolvers<SessionReadyPayload>();
 	const exits: string[] = [];
@@ -107,6 +107,33 @@ test("an unrestricted session keeps the default tool set", async () => {
 			expect(tools).toContain("bash");
 		} finally {
 			await supervisor.stopAll("tools default test done");
+		}
+	});
+}, 120_000);
+
+test("a scoped superagent exposes only its chosen transcript-search capability", async () => {
+	await withRelay(async (relayPort, project) => {
+		const fleet = await spawnHost("s_mode_fleet", project, relayPort, { superagent: true, searchMode: "fleet" });
+		const sql = await spawnHost("s_mode_sql", project, relayPort, { superagent: true, searchMode: "sql" });
+		try {
+			await Promise.all([fleet.ready, sql.ready]);
+			expect(fleet.exits).toEqual([]);
+			expect(sql.exits).toEqual([]);
+			const fleetTools = await toolsOf(fleet.supervisor, "s_mode_fleet");
+			const sqlTools = await toolsOf(sql.supervisor, "s_mode_sql");
+			expect(fleetTools).toContain("fleet_get_messages");
+			expect(fleetTools).toContain("fleet_search_messages");
+			expect(fleetTools).not.toContain("fleet_query_messages");
+			expect(sqlTools).toContain("fleet_query_messages");
+			expect(sqlTools).not.toContain("fleet_get_messages");
+			expect(sqlTools).not.toContain("fleet_search_messages");
+			for (const names of [fleetTools, sqlTools]) {
+				expect(names).toContain("fleet_start_session");
+				expect(names).not.toContain("read");
+				expect(names).not.toContain("bash");
+			}
+		} finally {
+			await Promise.all([fleet.supervisor.stopAll("fleet mode test done"), sql.supervisor.stopAll("SQL mode test done")]);
 		}
 	});
 }, 120_000);

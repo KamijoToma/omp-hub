@@ -11,6 +11,7 @@ interface SessionJson {
 	id: string;
 	status: string;
 	superagent?: true;
+	searchMode?: "fleet" | "sql";
 }
 
 /** Hub instance plus the origins its tests talk to. */
@@ -138,6 +139,7 @@ describe("superagent sessions", () => {
 
 		const detail = await api(main, `/api/sessions/${session.id}`);
 		const record = ((await detail.json()) as { session: SessionJson }).session;
+		expect(record.searchMode).toBe("fleet");
 		expect(record).toMatchObject({ superagent: true, namespaceId });
 	});
 
@@ -157,6 +159,55 @@ describe("superagent sessions", () => {
 		});
 		expect(created.status).toBe(400);
 		expect(await created.json()).toEqual({ error: "superagent must be a boolean" });
+	});
+
+	test("SQL transcript mode is opt-in, version-gated, and retained on restart", async () => {
+		const older = await connectAgent(main, "m-sql-old", "sql-old", "0.14.0");
+		const modern = await connectAgent(main, "m-sql-ready", "sql-ready", "0.15.0");
+		const created = await api(main, "/api/namespaces", {
+			method: "POST", body: JSON.stringify({ name: "sql-operator-mode" }),
+		});
+		expect(created.status).toBe(201);
+		const data = (await created.json()) as { namespace: { id: string } };
+		const namespaceId = data.namespace.id;
+		const base = { cwd: "/srv/sa", namespaceId, searchMode: "sql" };
+		const plain = await api(main, "/api/sessions", {
+			method: "POST", body: JSON.stringify({ machineId: "m-sql-ready", ...base }),
+		});
+		expect(plain.status).toBe(400);
+		expect(await plain.json()).toEqual({ error: "searchMode requires superagent" });
+		const unsupported = await api(main, "/api/sessions", {
+			method: "POST", body: JSON.stringify({ machineId: "m-sql-old", ...base, superagent: true }),
+		});
+		expect(unsupported.status).toBe(409);
+		expect(await unsupported.json()).toEqual({ error: "machine daemon must be upgraded for SQL transcript search" });
+		const started = await api(main, "/api/sessions", {
+			method: "POST", body: JSON.stringify({ machineId: "m-sql-ready", ...base, superagent: true }),
+		});
+		expect(started.status).toBe(202);
+		const record = (await started.json()) as { session: SessionJson & { searchMode?: string } };
+		expect(record.session.searchMode).toBe("sql");
+		const frame = await modern.wait(f => f.t === "start" ? f : undefined, "SQL superagent start");
+		expect(frame.searchMode).toBe("sql");
+		modern.ws.send(JSON.stringify({ t: "session-ready", id: record.session.id, links: LINKS }));
+		modern.ws.send(JSON.stringify({ t: "session-exit", id: record.session.id, code: 0, reason: "done" }));
+		const deadline = Date.now() + 4_000;
+		for (;;) {
+			const latest = await api(main, `/api/sessions/${record.session.id}`);
+			const body = (await latest.json()) as { session: { status: string; searchMode?: string } };
+			if (body.session.status === "exited") {
+				expect(body.session.searchMode).toBe("sql");
+				break;
+			}
+			if (Date.now() > deadline) throw new Error("SQL operator did not exit");
+			await yieldLoop();
+		}
+		const restart = await api(main, `/api/sessions/${record.session.id}/restart`, { method: "POST" });
+		expect(restart.status).toBe(202);
+		const replay = await modern.wait(f => f.t === "start" && f.id === record.session.id ? f : undefined, "SQL operator restart");
+		expect(replay.searchMode).toBe("sql");
+		older.ws.close();
+		modern.ws.close();
 	});
 
 	test("rejects unscoped operators and 0.11.0 daemons before dispatch", async () => {
