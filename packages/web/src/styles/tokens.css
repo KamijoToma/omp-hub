@@ -29,6 +29,13 @@
 	--warn: oklch(0.79 0.14 85);
 	--err: oklch(0.66 0.19 25);
 
+	/* usage-page categorical chart hues (provider stacks, token mixes) —
+	 * legal only inside charts beside a legend; never for state. */
+	--hb-chart-1: oklch(0.7 0.21 341);
+	--hb-chart-2: oklch(0.66 0.2 293);
+	--hb-chart-3: oklch(0.78 0.12 205);
+	--hb-chart-4: oklch(0.79 0.14 85);
+
 	/* hairlines */
 	--border: oklch(1 0 0 / 9%);
 	--border-strong: oklch(1 0 0 / 13%);
@@ -71,6 +78,11 @@
 	--warn: oklch(0.6 0.13 85);
 	--err: oklch(0.55 0.19 25);
 
+	--hb-chart-1: oklch(0.62 0.23 341);
+	--hb-chart-2: oklch(0.55 0.21 293);
+	--hb-chart-3: oklch(0.6 0.12 205);
+	--hb-chart-4: oklch(0.6 0.13 85);
+
 	--border: oklch(0 0 0 / 10%);
 	--border-strong: oklch(0 0 0 / 15%);
 	--ring: oklch(0.58 0.13 230 / 70%);
@@ -101,6 +113,11 @@
 		--ok: oklch(0.55 0.13 150);
 		--warn: oklch(0.6 0.13 85);
 		--err: oklch(0.55 0.19 25);
+
+		--hb-chart-1: oklch(0.62 0.23 341);
+		--hb-chart-2: oklch(0.55 0.21 293);
+		--hb-chart-3: oklch(0.6 0.12 205);
+		--hb-chart-4: oklch(0.6 0.13 85);
 
 		--border: oklch(0 0 0 / 10%);
 		--border-strong: oklch(0 0 0 / 15%);

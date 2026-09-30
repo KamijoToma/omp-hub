@@ -4,8 +4,22 @@
  * by-model/timeseries keying.
  */
 import { describe, expect, test } from "bun:test";
-import type { MachineUsageStats, UsageAggregate } from "../src/hub/api";
-import { mergeMachineUsage } from "../src/hub/usage-merge";
+import type {
+	MachineDashboardStats,
+	MachineProviderUsage,
+	MachineUsageStats,
+	UsageAggregate,
+	UsageModelStats,
+	UsageRecentRequest,
+	UsageSessionSummary,
+} from "../src/hub/api";
+import {
+	mergeMachineUsage,
+	mergeModelDashboards,
+	mergeProviderUsage,
+	mergeRecentRequests,
+	mergeSessionSummaries,
+} from "../src/hub/usage-merge";
 
 function agg(overrides: Partial<UsageAggregate> = {}): UsageAggregate {
 	return {
@@ -137,5 +151,92 @@ describe("mergeMachineUsage", () => {
 		merged.timeSeries[0]!.requests = 99;
 		expect(part.overall.totalRequests).toBe(1);
 		expect(part.timeSeries[0]!.requests).toBe(1);
+	});
+});
+
+describe("mergeModelDashboards", () => {
+	function dash(model: string, cost: number, requests: number, folderCost = cost): MachineDashboardStats {
+		return {
+			overall: agg({ totalRequests: requests, totalCost: cost }),
+			byModel: [{ ...agg({ totalRequests: requests, totalCost: cost }), model, provider: "p" }],
+			timeSeries: [],
+			byFolder: [{ ...agg({ totalRequests: requests, totalCost: folderCost }), folder: "/proj" }],
+			byAgentType: [{ agentType: "main", totalRequests: requests, totalInputTokens: 0, totalOutputTokens: 0, totalCacheReadTokens: 0, totalCacheWriteTokens: 0, totalCost: cost }],
+			modelSeries: [{ timestamp: 1, model, provider: "p", requests }],
+			costSeries: [{ timestamp: 1, model, provider: "p", cost, unpricedRequests: 1, costInput: cost, costOutput: 0, costCacheRead: 0, costCacheWrite: 0, requests }],
+		};
+	}
+
+	test("sums folder, agent-type, and series across profiles", () => {
+		const merged = mergeModelDashboards([dash("a", 10, 5), dash("a", 1, 2)]);
+		expect(merged.overall.totalCost).toBeCloseTo(11);
+		expect(merged.byFolder[0]?.folder).toBe("/proj");
+		expect(merged.byFolder[0]?.totalCost).toBeCloseTo(11);
+		expect(merged.byAgentType[0]?.totalCost).toBeCloseTo(11);
+		expect(merged.modelSeries).toEqual([{ timestamp: 1, model: "a", provider: "p", requests: 7 }]);
+		expect(merged.costSeries[0]?.cost).toBeCloseTo(11);
+		expect(merged.costSeries[0]?.unpricedRequests).toBe(2);
+	});
+
+	test("keeps distinct models as distinct series rows", () => {
+		const merged = mergeModelDashboards([dash("a", 10, 5), dash("b", 1, 2)]);
+		expect(merged.modelSeries.map(row => row.model).sort()).toEqual(["a", "b"]);
+		expect(merged.costSeries.map(row => row.cost).sort()).toEqual([1, 10]);
+	});
+});
+
+describe("mergeProviderUsage", () => {
+	function providerPart(cost: number, speed: number | null): MachineProviderUsage {
+		return {
+			providers: [{
+				provider: "p",
+				totalRequests: 2,
+				failedRequests: 0,
+				models: 1,
+				totalInputTokens: 0,
+				totalOutputTokens: 0,
+				totalCacheReadTokens: 0,
+				totalCacheWriteTokens: 0,
+				totalTokens: 10,
+				totalCost: cost,
+				unpricedRequests: 0,
+				avgTokensPerSecond: speed,
+			}],
+			hourly: [{ provider: "p", hour: 21, totalTokens: 5, outputTokens: 0, requests: 1 }],
+			series: [{ timestamp: 1, provider: "p", totalTokens: 10, cost, unpricedRequests: 0, requests: 2 }],
+		};
+	}
+
+	test("sums totals, re-weights speed, maxes model counts", () => {
+		const merged = mergeProviderUsage([providerPart(10, 80), providerPart(6, 100)]);
+		const row = merged.providers[0]!;
+		expect(row.totalCost).toBeCloseTo(16);
+		expect(row.totalRequests).toBe(4);
+		expect(row.models).toBe(1);
+		expect(row.avgTokensPerSecond).toBeCloseTo((80 * 2 + 100 * 2) / 4);
+		expect(merged.hourly[0]?.totalTokens).toBe(10);
+		expect(merged.series[0]?.cost).toBeCloseTo(16);
+	});
+});
+
+describe("mergeRecentRequests + mergeSessionSummaries", () => {
+	test("recent: newest first, capped", () => {
+		const row = (id: number, timestamp: number): UsageRecentRequest => ({
+			id, model: "m", provider: "p", timestamp, duration: 0, ttft: null,
+			stopReason: "stop", errorMessage: null, agentType: "main", costUnpriced: false,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+		});
+		expect(mergeRecentRequests([[row(1, 10), row(2, 30)], [row(3, 20)]], 2).map(row => row.id)).toEqual([2, 3]);
+	});
+
+	test("sessions: deduped by file, costliest first", () => {
+		const session = (file: string, costTotal: number): UsageSessionSummary => ({
+			file, folder: "/f", title: file, startedAt: 0, endedAt: 0,
+			requests: 0, toolCalls: 0, subagents: 0, totalTokens: 0, costTotal,
+			unpricedRequests: 0, models: [],
+		});
+		const merged = mergeSessionSummaries([[session("/a", 5)], [session("/a", 7), session("/b", 2)]]);
+		expect(merged.map(session => session.file)).toEqual(["/a", "/b"]);
+		expect(merged[0]?.costTotal).toBe(7);
 	});
 });

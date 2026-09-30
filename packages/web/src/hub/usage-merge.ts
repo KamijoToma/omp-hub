@@ -10,7 +10,23 @@
  * dashboard derives those from row-level sums the aggregate never carries, so
  * per-profile views stay the source of exact numbers.
  */
-import type { MachineUsageStats, UsageAggregate, UsageModelStats, UsageTimePoint } from "./api";
+import type {
+	MachineDashboardStats,
+	MachineProviderUsage,
+	MachineUsageStats,
+	UsageAgentTypeStats,
+	UsageAggregate,
+	UsageCostPoint,
+	UsageFolderStats,
+	UsageModelSeriesPoint,
+	UsageModelStats,
+	UsageProviderAggregate,
+	UsageProviderHourPoint,
+	UsageProviderSeriesPoint,
+	UsageRecentRequest,
+	UsageSessionSummary,
+	UsageTimePoint,
+} from "./api";
 
 /** Mutable sum accumulator over one {@link UsageAggregate}-shaped scope. */
 interface Accumulator {
@@ -144,4 +160,195 @@ export function mergeMachineUsage(parts: readonly MachineUsageStats[]): MachineU
 	const timeSeries: UsageTimePoint[] = [...series.values()].sort((a, b) => a.timestamp - b.timestamp);
 
 	return { overall: finish(overall), byModel, timeSeries };
+}
+
+/** Sums partial aggregate rows (same formulas as {@link mergeMachineUsage}). */
+function sumPartials(rows: readonly Partial<UsageAggregate>[]): UsageAggregate {
+	const target = newAccumulator();
+	for (const row of rows) {
+		add(target, {
+			totalRequests: row.totalRequests ?? 0,
+			failedRequests: row.failedRequests ?? 0,
+			errorRate: 0,
+			totalInputTokens: row.totalInputTokens ?? 0,
+			totalOutputTokens: row.totalOutputTokens ?? 0,
+			totalCacheReadTokens: row.totalCacheReadTokens ?? 0,
+			totalCacheWriteTokens: row.totalCacheWriteTokens ?? 0,
+			cacheRate: 0,
+			cacheSavings: 0,
+			totalCost: row.totalCost ?? 0,
+			unpricedRequests: row.unpricedRequests ?? 0,
+			avgDuration: row.avgDuration ?? null,
+			avgTtft: row.avgTtft ?? null,
+			avgTokensPerSecond: row.avgTokensPerSecond ?? null,
+			lastTimestamp: 0,
+		});
+	}
+	return finish(target);
+}
+
+/**
+ * Merges per-profile model-dashboard payloads for the "all profiles" view:
+ * the base stats via {@link mergeMachineUsage}, folder/agent splits summed,
+ * daily model and cost series summed per (bucket, provider, model) key.
+ */
+export function mergeModelDashboards(parts: readonly MachineDashboardStats[]): MachineDashboardStats {
+	const base = mergeMachineUsage(parts);
+	const folderRows = new Map<string, Partial<UsageAggregate>[]>();
+	for (const part of parts) {
+		for (const row of part.byFolder) {
+			const bucket = folderRows.get(row.folder);
+			if (bucket) bucket.push(row);
+			else folderRows.set(row.folder, [row]);
+		}
+	}
+	const folders: UsageFolderStats[] = [...folderRows.entries()].map(([folder, rows]) => ({ folder, ...sumPartials(rows) }));
+
+	const agentTypes = new Map<string, UsageAgentTypeStats>();
+	for (const part of parts) {
+		for (const row of part.byAgentType) {
+			const target = agentTypes.get(row.agentType) ?? {
+				agentType: row.agentType,
+				totalRequests: 0,
+				totalInputTokens: 0,
+				totalOutputTokens: 0,
+				totalCacheReadTokens: 0,
+				totalCacheWriteTokens: 0,
+				totalCost: 0,
+			};
+			target.totalRequests += row.totalRequests;
+			target.totalInputTokens += row.totalInputTokens;
+			target.totalOutputTokens += row.totalOutputTokens;
+			target.totalCacheReadTokens += row.totalCacheReadTokens;
+			target.totalCacheWriteTokens += row.totalCacheWriteTokens;
+			target.totalCost += row.totalCost;
+			agentTypes.set(row.agentType, target);
+		}
+	}
+
+	const seriesKey = (point: { timestamp: number; provider: string; model: string }): string =>
+		`${point.timestamp}\u0000${point.provider}\u0000${point.model}`;
+	const modelSeries = new Map<string, UsageModelSeriesPoint>();
+	const costSeries = new Map<string, UsageCostPoint>();
+	for (const part of parts) {
+		for (const point of part.modelSeries) {
+			const key = seriesKey(point);
+			const target = modelSeries.get(key);
+			if (target) target.requests += point.requests;
+			else modelSeries.set(key, { ...point });
+		}
+		for (const point of part.costSeries) {
+			const key = seriesKey(point);
+			const target = costSeries.get(key);
+			if (target) {
+				target.cost += point.cost;
+				target.unpricedRequests += point.unpricedRequests;
+				target.costInput += point.costInput;
+				target.costOutput += point.costOutput;
+				target.costCacheRead += point.costCacheRead;
+				target.costCacheWrite += point.costCacheWrite;
+				target.requests += point.requests;
+			} else {
+				costSeries.set(key, { ...point });
+			}
+		}
+	}
+
+	return {
+		...base,
+		byFolder: folders.sort((a, b) => b.totalCost - a.totalCost),
+		byAgentType: [...agentTypes.values()].sort((a, b) => b.totalRequests - a.totalRequests),
+		modelSeries: [...modelSeries.values()].sort((a, b) => a.timestamp - b.timestamp),
+		costSeries: [...costSeries.values()].sort((a, b) => a.timestamp - b.timestamp),
+	};
+}
+
+/**
+ * Merges per-profile provider payloads: provider totals summed (distinct-model
+ * counts take the max — summing would double-count cross-profile), hour burn
+ * and daily series summed per key, tok/s re-weighted by requests.
+ */
+export function mergeProviderUsage(parts: readonly MachineProviderUsage[]): MachineProviderUsage {
+	const providers = new Map<string, { row: UsageProviderAggregate; speedWeighted: number; speedWeight: number }>();
+	const hourly = new Map<string, UsageProviderHourPoint>();
+	const series = new Map<string, UsageProviderSeriesPoint>();
+	for (const part of parts) {
+		for (const row of part.providers) {
+			let target = providers.get(row.provider);
+			if (!target) {
+				target = {
+					row: { ...row },
+					speedWeighted: (row.avgTokensPerSecond ?? 0) * row.totalRequests,
+					speedWeight: row.totalRequests,
+				};
+				providers.set(row.provider, target);
+				continue;
+			}
+			target.speedWeighted += (row.avgTokensPerSecond ?? 0) * row.totalRequests;
+			target.speedWeight += row.totalRequests;
+			target.row.totalRequests += row.totalRequests;
+			target.row.failedRequests += row.failedRequests;
+			target.row.models = Math.max(target.row.models, row.models);
+			target.row.totalInputTokens += row.totalInputTokens;
+			target.row.totalOutputTokens += row.totalOutputTokens;
+			target.row.totalCacheReadTokens += row.totalCacheReadTokens;
+			target.row.totalCacheWriteTokens += row.totalCacheWriteTokens;
+			target.row.totalTokens += row.totalTokens;
+			target.row.totalCost += row.totalCost;
+			target.row.unpricedRequests += row.unpricedRequests;
+		}
+		for (const point of part.hourly) {
+			const key = `${point.provider}\u0000${point.hour}`;
+			const target = hourly.get(key);
+			if (target) {
+				target.totalTokens += point.totalTokens;
+				target.outputTokens += point.outputTokens;
+				target.requests += point.requests;
+			} else {
+				hourly.set(key, { ...point });
+			}
+		}
+		for (const point of part.series) {
+			const key = `${point.timestamp}\u0000${point.provider}`;
+			const target = series.get(key);
+			if (target) {
+				target.totalTokens += point.totalTokens;
+				target.cost += point.cost;
+				target.unpricedRequests += point.unpricedRequests;
+				target.requests += point.requests;
+			} else {
+				series.set(key, { ...point });
+			}
+		}
+	}
+
+	return {
+		providers: [...providers.values()]
+			.map(({ row, speedWeighted, speedWeight }) => ({
+				...row,
+				avgTokensPerSecond: speedWeight > 0 ? speedWeighted / speedWeight : null,
+			}))
+			.sort((a, b) => b.totalCost - a.totalCost),
+		hourly: [...hourly.values()],
+		series: [...series.values()].sort((a, b) => a.timestamp - b.timestamp),
+	};
+}
+
+/** Flattens per-profile recent-request tails into one newest-first list. */
+export function mergeRecentRequests(parts: readonly (readonly UsageRecentRequest[])[], cap: number): UsageRecentRequest[] {
+	return parts.flat().sort((a, b) => b.timestamp - a.timestamp).slice(0, cap);
+}
+
+/**
+ * Deduplicates per-profile session summaries by session file (a session lives
+ * in exactly one profile's store, but a resumed file can appear twice) and
+ * returns them costliest-first.
+ */
+export function mergeSessionSummaries(parts: readonly (readonly UsageSessionSummary[])[]): UsageSessionSummary[] {
+	const byFile = new Map<string, UsageSessionSummary>();
+	for (const row of parts.flat()) {
+		const target = byFile.get(row.file);
+		if (!target || row.costTotal > target.costTotal) byFile.set(row.file, row);
+	}
+	return [...byFile.values()].sort((a, b) => b.costTotal - a.costTotal);
 }
