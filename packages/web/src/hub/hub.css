@@ -315,6 +315,28 @@
 	margin-top: 2px;
 }
 
+.hb-search-settings summary {
+	cursor: pointer;
+}
+
+.hb-search-mode {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 10px 0 0;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+}
+
+.hb-search-mode label {
+	cursor: pointer;
+}
+
+.hb-search-mode .sh-field-hint {
+	margin: 0;
+}
+
 /* tools whitelist multi-select (start form) */
 .hb-tools-picker {
 	position: relative;

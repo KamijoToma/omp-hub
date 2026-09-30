@@ -30,7 +30,7 @@ function textResult(body: unknown): { content: Array<{ type: "text"; text: strin
  * format, urgency values, when to use what) because the model sees nothing
  * else about the hub.
  */
-export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
+export function buildFleetTools(request: FleetRequest, searchMode: "fleet" | "sql" = "fleet"): ToolDefinition[] {
 	const tool = (
 		name: string,
 		label: string,
@@ -83,6 +83,7 @@ export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
 				...(p.text === undefined ? {} : { text: p.text }),
 				...(p.clearQueue === undefined ? {} : { clearQueue: p.clearQueue }),
 			})).body),
+		...(searchMode === "fleet" ? [
 		tool("fleet_get_messages", "Read worker messages",
 			"Without cursor return the latest messages (20 by default); messages stay chronological. Pass nextCursor (the oldest returned id) as cursor to page strictly earlier history while hasMore is true. Includes tool output and custom messages; leafId identifies the current branch tip.",
 			type({ id: type.string, "cursor?": type.string, "limit?": type.number }),
@@ -129,6 +130,12 @@ export function buildFleetTools(request: FleetRequest): ToolDefinition[] {
 				}
 				return assertFetched(await request("POST", `${sessionPath(p.id)}/message-context`, body)).body;
 			}),
+		] : [
+			tool("fleet_query_messages", "Query worker messages",
+				"Query one namespace worker's visible active branch with read-only SQLite SELECT/WITH. Tables: messages(id, parent_id, seq, timestamp, role, tool_name) and parts(message_id, part_index, kind, text); parent_id points to the previous visible branch message (hidden entries are skipped). parts_fts is a trigram full-text index on parts.text (join parts_fts.rowid = parts.rowid). timestamp is ISO-8601 text; use >= and < for ranges. Full stored text, tool-call arguments and tool results are indexed, but hidden custom messages, thinking and images are excluded. SQL must be one statement <=4096 characters. Result: columns, up to 50 rows, truncated flag, leafId. No claim is needed.",
+				type({ id: type.string, sql: type.string }),
+				async p => assertFetched(await request("POST", `${sessionPath(p.id)}/query`, { sql: p.sql })).body),
+		]),
 		tool("fleet_get_input", "Read worker input",
 			"List pending select/editor/ask steps, including requestId. Can answer even if no human guest is connected.",
 			type({ id: type.string }), async p => assertFetched(await request("GET", `${sessionPath(p.id)}/input`)).body),

@@ -35,6 +35,8 @@ export interface SessionConfig {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — the child registers fleet tools; its `fleet-req` frames are proxied. */
 	superagent?: true;
+	/** Selected fleet-only transcript search mode. */
+	searchMode?: "fleet" | "sql";
 	/** 0.9.0: callable-tool whitelist (protocol §2 `start.tools`); the child restricts the SDK session to it. */
 	tools?: string[];
 	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */

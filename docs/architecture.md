@@ -217,6 +217,17 @@ Hub additions:
   pre-namespace fleet proxy allowlist. Upgrade every daemon, stop old
   superagents, and rotate `HUB_TOKEN` if an old daemon may still possess it;
   otherwise do not treat namespaces as an isolation guarantee.
+- **SQL-mode transcripts are a scoped derived view, not an SDK `read` grant.**
+  The worker selects only its visible current branch fields; a short-lived
+  child builds the transient in-memory SQLite projection, off the session
+  host's event loop. The Hub checks both machines' versions and namespace
+  membership before dispatch and again before releasing a result. The child
+  receives no source path or hub token and uses Bun ≥1.4.0 `node:sqlite` with
+  a default-deny authorizer, zero attached databases, bounded output, a
+  256 MiB SQLite heap cap and a hard deadline. This restricts SQL queries, not the
+  daemon's OS account: existing collab links and agent credentials still
+  require separate protection. SDK `readSqlite` alone is unsafe here because
+  `query_only` does not block `ATTACH`.
 - Relay endpoints stay unauthenticated for upstream wire compatibility; room IDs are random and
   payloads are AES-GCM sealed. There is no host-identity proof or global room quota: a viewer
   with a room link can claim the host slot after a disconnect, and an unauthenticated client can

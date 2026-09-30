@@ -85,7 +85,7 @@ No TUI opens on an agent machine. Use the browser or attach a terminal with `omp
 
 ## Install from a GitHub release
 
-The Hub/source archive requires Bun ≥ 1.3.14; an agent machine needs working omp provider credentials (`~/.omp/agent` or provider API keys). The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. These examples use the `v0.9.1` assets. For changes made after that tag, use the source checkout below until the next release.
+The Hub and published `v0.9.1` source archive run on Bun ≥ 1.3.14. The current source **agent** requires Bun ≥ 1.4.0 for its confined SQL transcript-query worker; the compiled native agent bundles its own runtime. An agent machine needs working omp provider credentials (`~/.omp/agent` or provider API keys). The [published releases](https://github.com/KamijoToma/omp-hub/releases) provide a source archive with the hub, **already-built** web UI, agent source and third-party licenses; it contains neither `node_modules` nor Docker build files. These examples use the `v0.9.1` assets. For changes made after that tag, use the source checkout below until the next release.
 
 ```bash
 # On the hub machine, from any working directory:

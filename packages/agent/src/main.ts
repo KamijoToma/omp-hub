@@ -19,6 +19,13 @@ import { Supervisor } from "./supervisor";
 import { createUsageProxy, stopProfileDashboards, type UsageProxy } from "./usage-proxy";
 
 const DEFAULT_MAX_SESSIONS = 8;
+/** The SQL projection uses node:sqlite's authorizer, first available in Bun 1.4. */
+export function assertSqlRuntimeSupport(version = Bun.version): void {
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/.exec(version);
+	if (!match || Number(match[1]) < 1 || Number(match[1]) === 1 && Number(match[2]) < 4) {
+		throw new Error(`Bun >=1.4.0 is required for SQL query isolation (running ${version})`);
+	}
+}
 
 const USAGE = [
 	"Usage: bun src/main.ts --hub <url> [options]",
@@ -148,6 +155,7 @@ async function main(): Promise<void> {
 		process.stderr.write(`${USAGE}\n`);
 		return;
 	}
+	assertSqlRuntimeSupport();
 
 	const log = createLogger();
 	const machineId = await resolveMachineId(options.machineId);
@@ -252,6 +260,7 @@ async function main(): Promise<void> {
 					profile: frame.profile,
 					sessionFile: frame.sessionFile,
 					superagent: frame.superagent === true ? true : undefined,
+					searchMode: frame.searchMode,
 					tools: frame.tools,
 					prewalk: frame.prewalk,
 					planYolo: frame.planYolo,
@@ -299,7 +308,9 @@ async function main(): Promise<void> {
 	log.info("agent daemon started");
 }
 
-void main().catch(err => {
-	process.stderr.write(`omp-hub agent fatal: ${errorMessage(err)}\n`);
-	process.exit(1);
-});
+if (import.meta.main) {
+	void main().catch(err => {
+		process.stderr.write(`omp-hub agent fatal: ${errorMessage(err)}\n`);
+		process.exit(1);
+	});
+}

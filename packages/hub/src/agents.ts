@@ -58,6 +58,8 @@ export type AgentCommand =
 			sessionFile?: string;
 			/** Fleet-operator session (protocol §2): the child registers the fleet tools. */
 			superagent?: boolean;
+			/** Fleet operator transcript access mode; never accepted for plain workers. */
+			searchMode?: "fleet" | "sql";
 			/** Callable-tool whitelist (protocol §2 `start.tools`); omitted means the default set. */
 			tools?: string[];
 			/** One-shot prewalk hand-off at startup (0.9.0+): true = SDK default target, or an explicit model/role pattern. */
@@ -109,6 +111,7 @@ export type SessionCmdName =
 	| "fleet-get-messages"
 	| "fleet-search-messages"
 	| "fleet-get-message"
+	| "fleet-query-messages"
 	| "fleet-get-input"
 	| "fleet-answer-input"
 	| "fleet-message"
@@ -117,7 +120,7 @@ export type SessionCmdName =
 	| "set-setting";
 
 /** Machine-level commands the daemon itself answers (protocol §2 "Machine commands"). */
-export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "search-session-messages" | "read-session-message" | "get-subscriptions" | "restart-daemon";
+export type MachineCmdName = "list-dir" | "list-profiles" | "list-sessions" | "search-sessions" | "read-session-messages" | "search-session-messages" | "read-session-message" | "query-session-messages" | "get-subscriptions" | "restart-daemon";
 
 /** Every `cmd` name on the agent channel. */
 export type CmdName = SessionCmdName | MachineCmdName;
@@ -146,6 +149,8 @@ export interface CmdRequest {
 	paths?: string[];
 	/** `search-sessions` needle; matched case-insensitively (protocol §2). */
 	query?: string;
+	/** SQL over one worker's isolated, active-branch transcript projection. */
+	sql?: string;
 	/** `upload-file` client-supplied file name, or `rename` target name (protocol §2). */
 	name?: string;
 	/** `upload-file` payload, base64 (the `/agent` channel speaks JSON TEXT only). */
@@ -389,6 +394,13 @@ export function supportsFleetMessageSearch(version: string | null): boolean {
 
 /** Namespace snapshots, content-part filters, and message context require 0.15.0+. */
 export function supportsFleetSearchContext(version: string | null): boolean {
+	if (version === null) return false;
+	const triple = versionTriple(version);
+	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 15));
+}
+
+/** Raw SQL over the isolated transcript projection requires a 0.15.0+ daemon. */
+export function supportsFleetSqlQuery(version: string | null): boolean {
 	if (version === null) return false;
 	const triple = versionTriple(version);
 	return triple !== null && (triple[0] > 0 || (triple[0] === 0 && triple[1] >= 15));
@@ -982,7 +994,8 @@ export class AgentRegistry {
 			const record = this.#sessions.get(id);
 			if (!record?.sessionFile) continue;
 			if (statuses.get(id) !== undefined) continue;
-			if (record.superagent && (!record.namespaceId || !supportsFleetNamespace(conn.version))) {
+			if (record.superagent && (!record.namespaceId || !supportsFleetNamespace(conn.version) ||
+				(record.searchMode === "sql" && !supportsFleetSqlQuery(conn.version)))) {
 				log.warn(`machine ${conn.machineId}: refusing to resume scoped operator ${id} on an incompatible daemon`);
 				continue;
 			}
@@ -997,6 +1010,7 @@ export class AgentRegistry {
 				...(fresh.sessionFile ? { sessionFile: fresh.sessionFile } : {}),
 				...(fresh.tools ? { tools: fresh.tools } : {}),
 				...(fresh.superagent ? { superagent: true } : {}),
+				...(fresh.superagent ? { searchMode: fresh.searchMode ?? "fleet" } : {}),
 				relayUrl: conn.ws.data.wsBase,
 				webUrl: conn.ws.data.httpBase,
 			});

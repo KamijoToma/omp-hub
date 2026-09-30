@@ -2,7 +2,7 @@
  * HTTP API (docs/protocol.md §3): machine/session registry for the web UI.
  * Everything except `/api/health` requires `Authorization: Bearer <HUB_TOKEN>`.
  */
-import { newCmdReqId, supportsFleetNamespace, supportsRecentFleetMessages, versionTriple, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
+import { newCmdReqId, supportsFleetNamespace, supportsFleetSqlQuery, supportsRecentFleetMessages, versionTriple, type AgentRegistry, type CmdLoopCondition, type CmdLoopLimit, type CmdName, type CmdRequest } from "./agents";
 import { derivePublicBase, type Config } from "./config";
 import { FleetMoveInProgressError, type FleetEvent, type FleetState } from "./fleet-state";
 import { getFleetMessageContext, searchFleetNamespace, searchFleetSession } from "./fleet-search";
@@ -515,11 +515,22 @@ async function createSession(req: Request, ctx: ApiContext, fleetOwner?: Session
 	if (superagent !== undefined && typeof superagent !== "boolean") {
 		return json({ error: "superagent must be a boolean" }, 400);
 	}
+	const requestedMode = body.searchMode;
+	if (requestedMode !== undefined && requestedMode !== "fleet" && requestedMode !== "sql") {
+		return json({ error: "searchMode must be fleet or sql" }, 400);
+	}
+	if (requestedMode !== undefined && superagent !== true) {
+		return json({ error: "searchMode requires superagent" }, 400);
+	}
+	const searchMode = superagent === true ? requestedMode ?? "fleet" : undefined;
 	if (superagent === true) {
 		if (namespaceId === null) return json({ error: "superagent requires namespaceId" }, 400);
 		if (!supportsFleetNamespace(ctx.agents.agentVersion(machineId))) {
 			return json({ error: "machine daemon must be upgraded for namespace-scoped superagents" }, 409);
 		}
+	}
+	if (searchMode === "sql" && !supportsFleetSqlQuery(ctx.agents.agentVersion(machineId))) {
+		return json({ error: "machine daemon must be upgraded for SQL transcript search" }, 409);
 	}
 
 	// Tool whitelist (protocol §2 `start.tools`): a non-empty array of non-empty
@@ -559,6 +570,7 @@ async function createSession(req: Request, ctx: ApiContext, fleetOwner?: Session
 			name: field(body, "name"),
 			profile,
 			...(superagent === true ? { superagent: true as const } : {}),
+			...(searchMode === undefined ? {} : { searchMode }),
 			...(tools === undefined ? {} : { tools }),
 			namespaceId,
 		});
@@ -590,6 +602,7 @@ async function createSession(req: Request, ctx: ApiContext, fleetOwner?: Session
 			...(profile === undefined ? {} : { profile }),
 			...(file === undefined ? {} : { sessionFile: file }),
 			...(superagent === true ? { superagent: true } : {}),
+			...(searchMode === undefined ? {} : { searchMode }),
 			...(tools === undefined ? {} : { tools }),
 			...(prewalk === undefined ? {} : { prewalk }),
 			...(planYolo === undefined ? {} : { planYolo }),
@@ -658,6 +671,9 @@ function restartSession(id: string, req: Request, ctx: ApiContext): Response {
 		if (!supportsFleetNamespace(ctx.agents.agentVersion(record.machineId))) {
 			return json({ error: "machine daemon must be upgraded for namespace-scoped superagents" }, 409);
 		}
+		if (record.searchMode === "sql" && !supportsFleetSqlQuery(ctx.agents.agentVersion(record.machineId))) {
+			return json({ error: "machine daemon must be upgraded for SQL transcript search" }, 409);
+		}
 	}
 	const base = derivePublicBase(req, ctx.cfg);
 	const dispatched = ctx.agents.send(record.machineId, {
@@ -669,6 +685,7 @@ function restartSession(id: string, req: Request, ctx: ApiContext): Response {
 		...(record.sessionFile ? { sessionFile: record.sessionFile } : {}),
 		...(record.tools ? { tools: record.tools } : {}),
 		...(record.superagent ? { superagent: true } : {}),
+		...(record.superagent ? { searchMode: record.searchMode ?? "fleet" } : {}),
 		relayUrl: base.wsBase,
 		webUrl: base.httpBase,
 	});
@@ -1729,6 +1746,7 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 	const namespaceId = ownerScope.namespaceId;
 	const ownerVersion = ownerScope.membershipVersion;
 	const ownerStillInScope = (): boolean =>
+		ctx.sessions.get(owner.id) === owner && owner.superagent === true &&
 		owner.status === "live" && ctx.agents.isOnline(owner.machineId) &&
 		ctx.fleet.membership(owner.id).namespaceId === namespaceId &&
 		ctx.fleet.membership(owner.id).membershipVersion === ownerVersion;
@@ -1741,6 +1759,7 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 		record.superagent !== true && ctx.fleet.membership(record.id).controllerId === owner.id;
 	const routeParts = route.slice("/api/fleet/".length).split("/");
 	if (route === "/api/fleet/search" && req.method === "POST") {
+		if (owner.searchMode === "sql") return json({ error: "fleet transcript search is unavailable in SQL mode" }, 403);
 		return searchFleetNamespace(req, ctx, owner, namespaceId, ownerVersion);
 	}
 
@@ -1803,6 +1822,13 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 	const worker = target(id);
 	if (!worker) return json({ error: "session not found" }, 404);
 	const action = routeParts[2];
+	// Transcript modes are mutually exclusive; all other orchestration routes
+	// remain available to operators in either mode.
+	if ((action === "messages" || action === "search" || action === "message-context") &&
+		owner.searchMode === "sql") return json({ error: "fleet transcript search is unavailable in SQL mode" }, 403);
+	if (action === "query" && req.method === "POST" && owner.searchMode !== "sql") {
+		return json({ error: "SQL transcript query requires SQL mode" }, 403);
+	}
 	if (action === undefined && req.method === "GET") return json({ session: fleetSession(worker) });
 	if (action === "claim" && req.method === "POST") {
 		if (worker.superagent) return json({ error: "another operator cannot be controlled" }, 403);
@@ -1812,7 +1838,7 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 		return json({ ok: true, controllerId: owner.id });
 	}
 	const reading = (req.method === "GET" && (action === "messages" || action === "search" || action === "input")) ||
-		((action === "watch" || action === "message-context") && req.method === "POST");
+		(req.method === "POST" && (action === "watch" || action === "message-context" || action === "query"));
 	if (!reading && !controlled(worker)) return json({ error: "claim this session before managing it" }, 403);
 	const version = ctx.fleet.membership(worker.id).membershipVersion;
 	const stillAllowed = (): boolean => {
@@ -1820,6 +1846,43 @@ async function handleFleetApi(route: string, req: Request, ctx: ApiContext): Pro
 		return ownerStillInScope() && scope.namespaceId === namespaceId && scope.membershipVersion === version &&
 			(reading || scope.controllerId === owner.id);
 	};
+	if (action === "query" && req.method === "POST") {
+		if (worker.superagent) return json({ error: "operator sessions cannot be queried" }, 403);
+		const body = await jsonBody(req);
+		if (!body || Object.keys(body).length !== 1 || typeof body.sql !== "string" ||
+			body.sql.trim() === "" || Buffer.byteLength(body.sql, "utf8") > 4096) {
+			return json({ error: "sql must be 1–4096 UTF-8 bytes" }, 400);
+		}
+		if (!stillAllowed()) return json({ error: "session membership changed" }, 409);
+		if (!ctx.agents.isOnline(worker.machineId)) return json({ error: "agent offline" }, 502);
+		if (!supportsFleetSqlQuery(ctx.agents.agentVersion(owner.machineId)) ||
+			!supportsFleetSqlQuery(ctx.agents.agentVersion(worker.machineId))) {
+			return json({ error: "SQL transcript queries require agent 0.15.0+ on operator and worker machines" }, 409);
+		}
+		const liveWorker = worker.status === "live";
+		if (!liveWorker && (!isTerminalStatus(worker.status) || !worker.sessionFile)) {
+			return json({ error: "session history unavailable" }, 409);
+		}
+		const workerStatus = worker.status;
+		const workerFile = worker.sessionFile;
+		const workerMachine = worker.machineId;
+		const result = await ctx.agents.sendCmd(workerMachine, {
+			reqId: newCmdReqId(), cmd: liveWorker ? "fleet-query-messages" : "query-session-messages",
+			...(liveWorker ? { id } : { path: workerFile }), sql: body.sql,
+		});
+		if (!stillAllowed() || ctx.sessions.get(id) !== worker || worker.status !== workerStatus ||
+			worker.machineId !== workerMachine || worker.sessionFile !== workerFile) {
+			return json({ error: "session membership changed" }, 409);
+		}
+		if (!result.ok) {
+			const status = result.error.startsWith("invalid SQL:") ? 400 :
+				result.error === "query timeout" || result.error === "cmd timeout" ? 504 :
+				result.error.startsWith("session history unavailable") || result.error === "unknown session" ? 409 : 502;
+			return json({ error: status === 502 ? "query failed" : status === 400 ? "invalid SQL" :
+				status === 409 ? "session history unavailable" : result.error }, status);
+		}
+		return json(result.data);
+	}
 	if (action === "stop" && req.method === "POST") {
 		return ctx.fleet.mutateWorker(id, async () => stillAllowed()
 			? stopSession(id, ctx)

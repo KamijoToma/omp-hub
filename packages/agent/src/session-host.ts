@@ -44,6 +44,7 @@ import type * as SettingsGateway from "./settings-gateway";
 import { buildCollabCtx, sessionContextPayload } from "./collab-ctx";
 import { createFleetClient, getFleetMessage, pageFleetMessages, searchFleetMessages } from "./fleet-client";
 import { buildFleetTools } from "./fleet-tools";
+import { queryBranchMessages } from "./sql-query";
 import { createLogger, errorMessage, type Logger } from "./log";
 import type { SessionLinks } from "./supervisor";
 import type { LoopConditionConfig, LoopStatus } from "./session-loop";
@@ -59,6 +60,7 @@ interface HostConfig {
 	sessionFile?: string;
 	/** 0.8.0: fleet-operator session — registers the fleet tools and may issue `fleet-req`. */
 	superagent?: boolean;
+	searchMode?: "fleet" | "sql";
 	/** 0.9.0: callable-tool whitelist; omitted means the SDK's default tool set. */
 	tools?: string[];
 	/** 0.9.0: arm the one-shot prewalk hand-off at startup; `true` = `@smol`, a string = explicit pattern. */
@@ -136,6 +138,8 @@ export type CommandFrame = {
 	pageLimit?: number;
 	/** Search the active fleet branch: optional literal needle and timestamp bounds. */
 	query?: string;
+	/** Scoped fleet SQL projection; never a path or SDK query. */
+	sql?: string;
 	from?: string;
 	to?: string;
 	/** Fleet search filters and hub-owned namespace pagination snapshot. */
@@ -1218,6 +1222,8 @@ export async function executeCommand(session: AgentSession, frame: CommandFrame,
 				messageId: frame.messageId, before: frame.before, after: frame.after, leafId: frame.leafId,
 				toolCallId: frame.toolCallId, contentCursor: frame.contentCursor,
 			});
+		case "fleet-query-messages":
+			return queryBranchMessages(session.sessionManager, frame.sql);
 		case "fleet-get-input":
 			return { pending: ui?.getPendingInput() ?? [] };
 		case "fleet-answer-input": {
@@ -1611,6 +1617,10 @@ function parseConfig(argv: string[]): HostConfig {
 		const value = config[key];
 		return typeof value === "string" && value.trim() ? value : undefined;
 	};
+	if (config.searchMode !== undefined && (config.superagent !== true ||
+		(config.searchMode !== "fleet" && config.searchMode !== "sql"))) {
+		throw new Error("--config.searchMode requires a superagent and must be fleet or sql");
+	}
 
 	return {
 		id: config.id as string,
@@ -1622,6 +1632,7 @@ function parseConfig(argv: string[]): HostConfig {
 		webUrl: typeof config.webUrl === "string" ? config.webUrl : "",
 		agentDir: optional("agentDir"),
 		superagent: config.superagent === true,
+		...(config.superagent === true ? { searchMode: config.searchMode === "sql" ? "sql" : "fleet" } : {}),
 		tools: parseTools(config.tools),
 		prewalk: parseHandoffSelector(config.prewalk),
 		planYolo: parseHandoffSelector(config.planYolo),
@@ -1829,7 +1840,7 @@ async function run(): Promise<void> {
 		}
 	}
 
-	const fleetTools = fleetClient ? buildFleetTools((method, path, body) => fleetClient.request(method, path, body)) : undefined;
+	const fleetTools = fleetClient ? buildFleetTools((method, path, body) => fleetClient.request(method, path, body), config.searchMode) : undefined;
 	const { session, eventBus, setToolUIContext } = await createAgentSession({
 		cwd: config.cwd,
 		agentDir: config.agentDir,

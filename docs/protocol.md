@@ -6,9 +6,15 @@ Revision **0.15.0** — fleet search defaults to the operator's namespace when
 `id` is omitted, with participant/content filters, newest-first global pages,
 opaque snapshot cursors and explicit partial coverage. `fleet_get_message`
 reads an inclusive message anchor, nonadjacent ID-paired tools and bounded
-continuations of complete visible content. Search/context never grants shell
-or arbitrary-file access. New namespace/context/filter operations require
-0.15.0 daemons; plain per-session search keeps its 0.14.0 contract.
+continuations of complete visible content. Authenticated superagent starts
+may choose `searchMode: "fleet" | "sql"` (default `"fleet"`) in the web start
+form's Advanced settings. Fleet mode retains message, literal/time and anchored
+evidence search; SQL mode exposes a read-only transcript query tool instead.
+SQL runs on the worker machine against its visible active branch through the
+namespace-checked fleet proxy, without granting SDK filesystem or shell tools.
+SQL queries require source daemons running Bun ≥1.4.0 for the isolated
+`node:sqlite` authorizer. New namespace/context/filter operations and SQL
+mode require 0.15.0 daemons; plain per-session search keeps its 0.14.0 contract.
 
 Revision **0.14.0** — `fleet_search_messages` searches one namespace worker's
 active-branch transcript by literal text and/or timestamp range (§2–§4).
@@ -162,7 +168,7 @@ daemon; use TLS/WSS outside loopback.
 ```ts
 { t: "welcome", relayUrl: string, webUrl: string }                 // answer to hello
 { t: "start", id: string, cwd: string, name?: string, prompt?: string, profile?: string,
-  sessionFile?: string, superagent?: boolean, tools?: string[], relayUrl: string, webUrl: string }
+  sessionFile?: string, superagent?: boolean, searchMode?: "fleet" | "sql", tools?: string[], relayUrl: string, webUrl: string }
 { t: "stop", id: string, reason?: string }
 { t: "ping", ts: number }                                          // hub watchdog, 30 s
 { t: "usage-req", reqId: string, method: "GET" | "HEAD" | "POST",
@@ -201,6 +207,11 @@ Semantics:
   filesystem/shell/extension/MCP tools. Admin starts must supply `namespaceId`
   and target a ≥0.12.0 daemon; fleet-initiated starts are always **plain**
   workers that inherit the operator's namespace.
+- `start.searchMode` is meaningful only with `superagent:true` and a namespace:
+  `"fleet"` (default, including older records) exposes the existing message
+  pager/search; `"sql"` selects confined SQL querying instead. A plain worker
+  cannot supply this field. The hub stores the choice for restarts and refuses
+  SQL mode on an agent older than 0.15.0.
 - `start.tools` whitelists plain sessions' callable tools: `toolNames` +
   `restrictToolNames` excludes discovered extensions/MCP/ambient custom tools. Omitted
   means the default plain-session tool set. A superagent start with `tools` is rejected:
@@ -571,6 +582,7 @@ lookups.
 { t: "cmd", reqId: string, cmd: "read-session-message", path: string, messageId: string,
   before?: number, after?: number, leafId?: string, toolCallId?: string,
   contentCursor?: string } // 0.15.0+
+{ t: "cmd", reqId: string, cmd: "query-session-messages", path: string, sql: string } // 0.15.0+, hub-owned managed file
 ```
 
 - `list-dir` → `data: DirListing`:
@@ -709,9 +721,16 @@ interface SessionSearchHit {
   stores as `read-session-messages`. On 0.15.0+, content filters and hub-owned
   snapshot/order/boundary fields mirror live `fleet-search-messages`; the hub
   supplies these fields for stable namespace pages, not arbitrary file access.
+  Matches beyond the ordinary 2,000-character block projection return bounded
+  snippets rather than an untruncated output.
 - `read-session-message {path,messageId,before?,after?,leafId?,toolCallId?,contentCursor?}`
   (0.15.0+) uses the same anchored context/continuation as live
   `fleet-get-message` (§3), without writing the transcript.
+- `query-session-messages {path,sql}` (0.15.0+) builds a transient read-only
+  SQLite projection of the hub-owned managed session file's active branch and
+  executes the query in a separately deadline-bound process. The fleet caller
+  never chooses the path; no transcript database is left on disk. This
+  requires the source daemon's Bun ≥1.4.0.
 
 ## 3. HTTP API (`/api/*`)
 
@@ -729,6 +748,7 @@ interface SessionRecord {
   name: string;               // display name (default: basename(cwd))
   profile?: string;           // named omp profile; absent ⇒ default profile
   superagent?: true;          // 0.8.0: fleet-operator session (§4 fleet-req); set at start, daemon strips it from fleet-initiated starts
+  searchMode?: "fleet" | "sql"; // superagent only; 0.15.0, persisted across restart; older records default to fleet
   tools?: string[];           // 0.9.0: callable-tool whitelist (§2 start.tools); absent ⇒ default tool set
   namespaceId: string | null; // null = no fleet access; hub-controlled, never model-supplied
   membershipVersion: number;  // incremented on reassignment or controller transfer
@@ -812,9 +832,9 @@ interface Notice {              // 0.8.0+, in-memory only
 | `POST /api/sessions/:id/cycle` | `{direction?, roleCycle?}` → `{ ok: true, switched, model, thinkingLevel }` (§2 `cycle-model`, 0.9.0+; `roleCycle` 0.10.0+); 400 bad `direction` or non-boolean `roleCycle`; same error set |
 | `GET /api/sessions/:id/settings` | → `{ ok: true, settings: SettingWire[] }` (§2 `get-settings`, 0.9.0+); same error set |
 | `POST /api/sessions/:id/settings` | `{settingId, value}` → `{ ok: true, setting: SettingWire }` (§2 `set-setting`, 0.9.0+; `value: null` clears the override); 400 missing `settingId` or absent `value` key, 400 unknown/disallowed id or type-invalid value (agent-reported); same error set |
-| `POST /api/sessions` | `{machineId,cwd,name?,prompt?,profile?,sessionFile?,namespaceId?,superagent?,tools?,prewalk?,planYolo?}` → 202 `{session}` (`starting`); 404 unknown/offline machine or namespace; 400 invalid fields or `superagent:true` without `namespaceId`/combined with `tools`; 409 when the target daemon is too old for namespace-scoped superagents. Plain sessions may omit `namespaceId` to stay outside fleet. `profile` chooses the omp profile and `sessionFile` resumes history. Fleet-created workers cannot choose privileged start fields (§3 Namespace and fleet routes) |
+| `POST /api/sessions` | `{machineId,cwd,name?,prompt?,profile?,sessionFile?,namespaceId?,superagent?,searchMode?,tools?,prewalk?,planYolo?}` → 202 `{session}` (`starting`); 404 unknown/offline machine or namespace; 400 invalid fields, `searchMode` on a plain session, or `superagent:true` without `namespaceId`/combined with `tools`; 409 when the daemon lacks namespace-scoped superagents or SQL mode (≥0.15.0 required). Plain sessions may omit `namespaceId` to stay outside fleet. `profile` chooses the omp profile and `sessionFile` resumes history. Fleet-created workers cannot choose privileged start fields (§3 Namespace and fleet routes) |
 | `POST /api/sessions/:id/stop` | → `{ ok: true }` only when the stop frame reached a connected daemon; 404 unknown id, 409 already exited, 502 offline/send failure |
-| `POST /api/sessions/:id/restart` | → 202 `{ session }` (0.10.0+): restarts a terminal session under its OLD id — re-sends the record's stored `start` fields (`cwd`/`name`/`profile`/`tools`/`superagent`), resuming the session file when one was minted (plain `start.sessionFile`), a fresh start otherwise; the registry record flips back to `starting` via the daemon-restart `reissue` path. 404 unknown id / unknown machine / machine offline; 409 not terminal; 502 agent write failed. The reconcile grants the re-armed record a restart grace window so the heartbeat racing the fresh child's spawn cannot retire it |
+| `POST /api/sessions/:id/restart` | → 202 `{ session }` (0.10.0+): restarts a terminal session under its OLD id — re-sends the record's stored `start` fields (`cwd`/`name`/`profile`/`tools`/`superagent`/`searchMode`), resuming the session file when one was minted (plain `start.sessionFile`), a fresh start otherwise; the registry record flips back to `starting` via the daemon-restart `reissue` path. 404 unknown id / unknown machine / machine offline; 409 not terminal or SQL-mode daemon too old; 502 agent write failed. The reconcile grants the re-armed record a restart grace window so the heartbeat racing the fresh child's spawn cannot retire it |
 | `POST /api/notices` | `{message, urgency?, sessionId?}` → `{ ok: true, notice }` (0.8.0+): record a human-facing notification; urgency ∈ `"info"|"warn"|"urgent"` (default `"info"`); `sessionId` optionally attributes it to a session record. 400 blank/oversize (>2000 chars) `message` or bad urgency |
 | `GET /api/notices` | → `{ notices: Notice[] }` — newest first, capped at the 50 most recent (0.8.0+). Notices are in-memory only (like the registry beyond the state file: restart drops them); web clients poll this listing for toasts |
 | `POST /api/hub/restart` | → `{ ok: true }` (0.6.0+): flushes the state snapshot (below), spawns the same interpreter/script/env detached — the fresh process waits for the port — answers, then releases. 501 when the entry did not wire a restart (library use) |
@@ -855,6 +875,7 @@ read/watch.
 | `GET /api/fleet/sessions/:id/search?query=&from=&to=&cursor=&limit=` | Single-session `fleet_search_messages` → `{hits,nextCursor,hasMore,leafId}`. Latest 20 matches by default (limit 1–50), returned chronologically; oldest hit id is the exclusive backward cursor. Blank optional time/cursor fields are omitted. Content filter arrays are JSON-encoded query values (`roles`, `toolNames`, `sources`, `fields`) and require both daemons ≥0.15.0; plain search retains ≥0.14.0. Hits include `sessionId`; 0.15.0 adds sequence/tool correlation/original match locations. Invalid arguments → 400; out-of-namespace id → 404; removed cursor → 409. Terminal history uses only the registered managed file |
 | `POST /api/fleet/search` | Namespace `fleet_search_messages` (omit tool `id`) → `{hits,nextCursor,hasMore,partial,coverage}`. JSON query/filter contract and frozen global pagination below. Requires operator ≥0.15.0; unavailable/older workers remain declared failures, never silently disappear |
 | `POST /api/fleet/sessions/:id/message-context` | `fleet_get_message {id,messageId,before?,after?,leafId?,toolCallId?,contentCursor?}` → `{anchorId,leafId,messages,relatedIds,contextTruncated?,content?}`. Always includes the visible anchor, ID-pairs tools and supports full visible-content continuation. Same-namespace reads do not require claiming control. Both daemons ≥0.15.0; missing/rewound anchor or snapshot → 409 |
+| `POST /api/fleet/sessions/:id/query` | SQL-mode-only `fleet_query_messages` accepts exactly `{sql:string}` (1–4096 UTF-8 bytes) for a same-namespace worker, without claiming it. Both operator and worker daemons must be ≥0.15.0; a fleet-mode operator gets 403, an out-of-namespace id 404, a disconnected worker 502. The hub sends a live child `fleet-query-messages` or a terminal read-only machine `query-session-messages` using only the recorded managed file; responses recheck membership after dispatch. `{columns:string[],rows:unknown[][],truncated:boolean,leafId:string|null}` is bounded to 50 rows, 2,000 characters per text cell and 64 KiB total; invalid SQL → 400, deadline → 504, unexpected worker failure → 502. A SQL-mode operator cannot call the legacy fleet `/messages` or `/search` routes |
 | `GET /api/fleet/sessions/:id/input` | `{pending:[{requestId,kind,title,options?,prefill?}]}` |
 | `POST /api/fleet/sessions/:id/input` | `{requestId,answer}`; first valid answer wins against writable guests, stale request → 409, bad option → 400 |
 | `POST /api/fleet/sessions/:id/message` | `{text,mode:"start"|"steer"|"follow_up"}` → `{ok:true,scheduled:true,operationId}`; scheduling, not completion |
@@ -973,6 +994,25 @@ near a long-output/argument match. Adding `id` to search selects one session;
 do not combine it with `sessionIds`, `machineIds` or `cwd`. Search evidence is
 not a Git mutation/audit event; forked histories can contain inherited calls.
 
+**SQL transcript queries (0.15.0).**
+
+SQL mode presents only the selected worker's current visible branch:
+`messages(id,parent_id,seq,timestamp,role,tool_name)` and
+`parts(message_id,part_index,kind,text)`, plus a trigram `parts_fts` index
+over stored text (`parts_fts.rowid = parts.rowid`). `parent_id` means the
+previous **visible** branch entry. Text, tool-call arguments and tool results
+are indexed without the ordinary 2,000-character display truncation; hidden
+custom messages, image payloads and thinking blocks are excluded. The worker
+selects only these visible fields, then a separate deadline-bound child builds
+the ephemeral in-memory SQLite projection and executes SQL; no SQLite indexing
+runs on the session host's event loop. The child receives no filesystem path,
+hub token or cross-worker registry. A default-deny SQLite authorizer permits
+read-only access to these tables and approved functions, disables ATTACH,
+PRAGMA, extension loading and mutations; a 256 MiB SQLite heap cap and a
+4 s end-to-end deadline bound each query. `PRAGMA query_only` alone does
+**not** prevent ATTACH; never expose the SDK's broad `read` or `write` tools
+to a SQL-mode superagent.
+
 An admin move first fences new fleet mutations and waits for commands already
 dispatched to the worker to acknowledge before committing membership and
 clearing old watches. Competing writes/moves return 409 while the fence is
@@ -1046,14 +1086,14 @@ parent → child (stdin):
 { t: "fleet-notification", event: FleetEvent } // unsolicited push to operator child
 { t: "cmd", reqId: string, cmd: "get-state"|"get-context"|"set-model"|"set-thinking"|"get-tree"|"navigate-tree"
      |"compact"|"shake"|"handoff"|"retry"|"loop"|"goal"|"set-extended-context"|"clear-context"|"upload-file"|"rename"|"generate-title"|"prompt"
-     |"fleet-fork-session"|"fleet-get-messages"|"fleet-search-messages"|"fleet-get-message"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
+     |"fleet-fork-session"|"fleet-get-messages"|"fleet-search-messages"|"fleet-get-message"|"fleet-query-messages"|"fleet-get-input"|"fleet-answer-input"|"fleet-message"|"fleet-interrupt",
   provider?: string, modelId?: string, level?: string, role?: string, persist?: boolean,
   entryId?: string, summarize?: boolean,
   instructions?: string, mode?: string,
   action?: string, objective?: string, tokenBudget?: number,
   prompt?: string, limit?: object, condition?: object, enabled?: boolean,
   name?: string, dataB64?: string, text?: string,
-  cursor?: string, pageLimit?: number, query?: string, from?: string, to?: string, requestId?: string, answer?: string,
+  cursor?: string, pageLimit?: number, query?: string, from?: string, to?: string, sql?: string, requestId?: string, answer?: string,
   roles?: string[], toolNames?: string[], sources?: string[], fields?: string[],
   snapshotLeafId?: string|null, searchOrder?: "timestamp", searchBefore?: {timestamp:string,sequence:number},
   messageId?: string, before?: number, after?: number, leafId?: string, toolCallId?: string, contentCursor?: string,
