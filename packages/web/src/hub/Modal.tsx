@@ -13,20 +13,32 @@ export interface ModalProps {
 	children: ReactNode;
 	/** Header slot before the title (e.g. a back button inside a multi-view modal). */
 	leading?: ReactNode;
+	/**
+	 * Returning true consumes Esc: the owner handles the key itself (e.g. the
+	 * model palette's clear-query → close ladder) and the modal stays open.
+	 */
+	onEscape?: () => boolean;
 }
 
-export function Modal({ title, onClose, children, leading }: ModalProps): ReactNode {
+export function Modal({ title, onClose, children, leading, onEscape }: ModalProps): ReactNode {
 	// Capture phase: Esc closes the dialog before the composer's palette sees it.
 	useEffect(() => {
 		const onKeyDown = (e: KeyboardEvent): void => {
 			if (e.key !== "Escape") return;
+			if (onEscape?.()) return;
 			e.preventDefault();
 			e.stopPropagation();
 			onClose();
 		};
 		document.addEventListener("keydown", onKeyDown, true);
 		return () => document.removeEventListener("keydown", onKeyDown, true);
-	}, [onClose]);
+	}, [onClose, onEscape]);
+
+	// Restore focus to whatever opened the dialog (a11y: dialogs must return focus).
+	useEffect(() => {
+		const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		return () => previous?.focus();
+	}, []);
 
 	return (
 		<div className="hb-modal-backdrop" onClick={onClose}>

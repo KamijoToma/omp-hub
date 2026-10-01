@@ -80,7 +80,6 @@ import { rewindTargetMap, rewindToEntry, RewindPicker } from "./RewindPicker";
 import { navigate } from "./router";
 import { SlashPalette } from "./SlashPalette";
 import { SteeringQueueBar } from "./SteeringQueueBar";
-import { ThinkingPicker } from "./ThinkingPicker";
 import { TreePicker } from "./TreePicker";
 import { useSteeringQueue } from "./steering-queue";
 import { pushToast, useLocalToasts } from "./toasts";
@@ -204,6 +203,9 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	const [railOpen, setRailOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [modal, setModal] = useState<ModalKind | null>(null);
+	// Seed payload for the open dialog (e.g. `/model sonnet:high`'s pattern);
+	// cleared together with the dialog.
+	const [modalArgs, setModalArgs] = useState<string | null>(null);
 	// Composer text mirrored from the vendored textarea (which owns the draft
 	// state). Seeded from the persisted draft so the palette matches the
 	// restored buffer right after a session switch.
@@ -552,12 +554,15 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	// Latest command context, so the long-lived composer wrapper never sees a stale one.
 	const ctx: CommandContext = {
 		// Session switching and settings live in the persistent page frame.
-		openModal: kind => {
+		openModal: (kind, args) => {
 			if (kind === "sessions") onOpenSwitcher();
 			else if (kind === "settings") {
 				setPaletteDismissed(true);
 				onOpenSettings();
-			} else setModal(kind);
+			} else {
+				setModal(kind);
+				setModalArgs(args ?? null);
+			}
 		},
 		toggleTheme,
 		leaveSession: onLeave,
@@ -764,7 +769,10 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 	}, [snap.phase]);
 
 	const drawerAgent = selectedId != null ? snap.agents.find(a => a.id === selectedId) : undefined;
-	const closeModal = useCallback(() => setModal(null), []);
+	const closeModal = useCallback(() => {
+		setModal(null);
+		setModalArgs(null);
+	}, []);
 	const localToasts = useLocalToasts();
 	const toasts = useMemo(() => {
 		// The host echoes every guest join into the room; our own join is what
@@ -872,9 +880,11 @@ function Session({ client, sessionId, record, displayName, registryLive, onLeave
 				onNewLink={onLeave}
 			/>
 			<Toasts notices={toasts} />
-			{modal === "model" && <ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
 			{modal === "context" && <ContextModal sessionId={sessionId} onClose={closeModal} />}
-			{modal === "thinking" && <ThinkingPicker sessionId={sessionId} notify={notify} onClose={closeModal} />}
+			{modal === "thinking" && <ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} title="Thinking" />}
+			{modal === "model" && (
+				<ModelPicker sessionId={sessionId} notify={notify} onClose={closeModal} initialQuery={modalArgs ?? ""} />
+			)}
 			{modal === "rewind" && (
 				<RewindPicker
 					sessionId={sessionId}

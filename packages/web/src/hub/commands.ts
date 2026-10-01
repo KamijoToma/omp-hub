@@ -14,7 +14,9 @@ import type { LoopLimit, MachineSession } from "./api";
 /**
  * Dialog a command opens; `SessionView` maps each kind to a component.
  * `"rewind"` and `"tree"` open from the slash table; `"context"` is the
- * exception: the header gauge opens it, no command does.
+ * exception: the header gauge opens it, no command does. `args` seeds the
+ * dialog (`/model sonnet:high` pre-fills the palette query; other kinds
+ * ignore it).
  */
 export type ModalKind =
 	| "model"
@@ -35,7 +37,7 @@ export type ModalKind =
 export const UNKNOWN_COMMAND_MESSAGE = "host-only or unknown command — not sent";
 
 export interface CommandContext {
-	openModal(kind: ModalKind): void;
+	openModal(kind: ModalKind, args?: string): void;
 	/** Flip the vendored theme store between light and dark. */
 	toggleTheme(): void;
 	/** Leave the current session through the shared frame (including queued-message warning). */
@@ -253,7 +255,7 @@ export function matchResumableSession(
 
 /** §6 command table; also the palette order and the `/help` list. */
 export const COMMANDS: readonly CommandSpec[] = [
-	{ name: "model", description: "switch the session model", run: ctx => ctx.openModal("model") },
+	{ name: "model", description: "switch the session model — [pattern] like sonnet:high", run: (ctx, args) => ctx.openModal("model", args.trim() || undefined) },
 	{ name: "thinking", description: "set the thinking level", run: ctx => ctx.openModal("thinking") },
 	{ name: "rewind", description: "rewind to an earlier message", run: ctx => ctx.openModal("rewind") },
 	{

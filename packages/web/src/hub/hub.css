@@ -1091,18 +1091,47 @@
 	padding-left: 27px;
 }
 
-.hb-pick-group {
+/* One-query model palette (ModelPicker.tsx): a single grammar search field
+   (text · @roles · :level), a flat keyboard-navigable option list, and a
+   pinned detail strip with the thinking-level commit chips. */
+.hb-palette-body {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: 8px;
 }
 
-.hb-pick-list {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	padding: 0;
-	list-style: none;
+.hb-query-level {
+	position: absolute;
+	right: 8px;
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	padding: 1px 7px;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--accent);
+	background: var(--accent-muted);
+	border-radius: 999px;
+	pointer-events: none;
+}
+
+.hb-pick-hint {
+	margin: 0;
+	font-size: 11px;
+	color: var(--fg-muted);
+}
+
+.hb-pick-listbox {
+	max-height: 44vh;
+	overflow-y: auto;
+}
+
+.hb-pick-group-label {
+	padding: 8px 9px 2px;
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--fg-faint);
+	user-select: none;
 }
 
 .hb-pick-row {
@@ -1110,7 +1139,8 @@
 	align-items: center;
 	gap: 8px;
 	width: 100%;
-	padding: 7px 9px;
+	min-height: 32px;
+	padding: 6px 9px;
 	color: var(--fg);
 	text-align: left;
 	background: none;
@@ -1128,26 +1158,23 @@
 	opacity: 0.6;
 }
 
+.hb-pick-row-active {
+	background: var(--bg-overlay);
+	border-color: var(--border-strong);
+}
+
 .hb-pick-row-current {
 	background: var(--accent-muted);
 	border-color: var(--accent);
 }
 
-.hb-pick-item {
+/* Shared option list (directory picker, tree picker). */
+.hb-pick-list {
 	display: flex;
-	align-items: center;
-	gap: 4px;
-}
-
-.hb-pick-item .hb-pick-row {
-	flex: 1;
-	min-width: 0;
-}
-
-.hb-pick-item .hb-pick-thinking {
-	width: 128px;
-	padding: 5px 4px;
-	font-size: 12px;
+	flex-direction: column;
+	gap: 2px;
+	padding: 0;
+	list-style: none;
 }
 
 .hb-role-tabs {
@@ -1174,30 +1201,6 @@
 	color: var(--accent);
 	background: var(--accent-muted);
 	border-color: var(--accent);
-}
-
-.hb-role-current {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-	padding: 4px 2px;
-	font-size: 12px;
-}
-
-.hb-role-current-label {
-	flex: none;
-	color: var(--fg-muted);
-}
-
-.hb-role-current-model {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font: 400 11px / 1.5 var(--font-mono);
-	color: var(--fg);
 }
 
 .hb-role-auto {
@@ -1357,64 +1360,106 @@
 	color: var(--accent);
 }
 
-/* ---- remembered model presets (quick-switch chips) ---- */
-.hb-preset-bar {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 4px;
-	margin: 0 0 8px;
-}
-
 .hb-preset-icon {
 	flex: none;
 	color: var(--fg-faint);
 }
 
-.hb-preset-chip {
-	display: inline-flex;
+.hb-preset-level {
+	flex: none;
+	padding: 0 6px;
+	font: 400 10px / 1.6 var(--font-mono);
+	color: var(--fg-muted);
+	background: var(--bg-overlay);
+	border-radius: 999px;
+}
+
+.hb-pick-sub {
+	flex: none;
+	overflow: hidden;
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-pick-detail {
+	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 5px;
-	max-width: 100%;
-	padding: 4px 9px;
+	justify-content: space-between;
+	gap: 6px;
+	min-height: 34px;
+	padding: 8px 2px 2px;
+	border-top: 1px solid var(--border);
+}
+
+.hb-pick-facts {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.hb-pick-facts-name {
+	font-size: 12.5px;
+	color: var(--fg);
+}
+
+.hb-pick-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+.hb-level-chip {
+	padding: 3px 9px;
+	font: 400 11px / 1.5 var(--font-mono);
 	color: var(--fg-muted);
 	background: none;
 	border: 1px solid var(--border);
 	border-radius: 999px;
+	cursor: pointer;
 }
 
-.hb-preset-chip:hover:not(:disabled) {
+.hb-level-chip:hover:not(:disabled) {
 	color: var(--fg);
 	border-color: var(--border-strong);
 }
 
-.hb-preset-chip:disabled {
+.hb-level-chip:disabled {
 	cursor: default;
 	opacity: 0.6;
 }
 
-.hb-preset-chip-current {
+.hb-level-chip-on {
 	color: var(--accent);
 	background: var(--accent-muted);
 	border-color: var(--accent);
 }
 
-.hb-preset-name {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-size: 12px;
-}
-
-.hb-preset-level {
-	flex: none;
-	font: 400 10px / 1.5 var(--font-mono);
+.hb-pick-keys {
+	margin: 0;
+	font-size: 10.5px;
 	color: var(--fg-faint);
+	text-align: center;
+	user-select: none;
 }
 
-.hb-preset-mark {
-	flex: none;
-	color: var(--accent);
+@media (max-width: 640px) {
+	.hb-pick-keys {
+		display: none;
+	}
+
+	.hb-pick-row {
+		min-height: 40px;
+	}
+
+	.hb-level-chip {
+		padding: 6px 11px;
+	}
 }
 
 /* ---- directory picker (start form) ---- */

@@ -26,7 +26,6 @@ import {
 } from "./session-alerts";
 import { setSessionTimeMode, useSessionTimeMode } from "./session-time-mode";
 import { useSessionRecord } from "./sessions-store";
-import { ThinkingPickerView } from "./ThinkingPicker";
 import { useAgentState } from "./use-agent-state";
 
 export interface SettingsModalProps {
@@ -69,8 +68,9 @@ function SessionSettings({
 	onClose(): void;
 }): ReactNode {
 	const load = useAgentState(record.id);
-	if (view === "model") return <ModelPickerView load={load} sessionId={record.id} notify={notify} onClose={onClose} />;
-	if (view === "thinking") return <ThinkingPickerView load={load} sessionId={record.id} notify={notify} onClose={onClose} />;
+	if (view === "model" || view === "thinking") {
+		return <ModelPickerView load={load} sessionId={record.id} notify={notify} onClose={onClose} />;
+	}
 	if (view === "advanced") return <AdvancedSettings sessionId={record.id} notify={notify} />;
 	const busy = load.loading && !load.state;
 	const failed = load.error !== null && !load.state;
